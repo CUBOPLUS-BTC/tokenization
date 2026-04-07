@@ -5,7 +5,7 @@
 | Layer            | Technology                                        |
 | :--------------- | :------------------------------------------------ |
 | Framework        | React 18 + TypeScript 5                           |
-| Styling          | Tailwind CSS 3 + Headless UI                      |
+| Styling          | Tailwind CSS 4 + Shadcn                  |
 | State Management | Zustand (global) + React Query (server state)     |
 | Routing          | React Router v6                                   |
 | Build Tool       | Vite 5                                            |
