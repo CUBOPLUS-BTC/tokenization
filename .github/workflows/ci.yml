@@ -19,7 +19,7 @@ jobs:
 
       - name: Basic Secret Scanner
         run: |
-          if grep -rEiw 'BEGIN .* PRIVATE KEY|SECRET_KEY|PASSWORD|xoxb-|xoxp-' --exclude-dir=.git --exclude-dir=specs .; then
+          if grep -rEiw 'BEGIN .* PRIVATE KEY|SECRET_KEY|PASSWORD|xoxb-|xoxp-' --exclude-dir=.git --exclude-dir=specs --exclude-dir=.github .; then
             echo "🚨 Secrets detected!"
             exit 1
           else
