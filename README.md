@@ -29,6 +29,16 @@ The complete design is documented in [specs/](specs), including architecture, AP
 - [specs/api-contracts.md](specs/api-contracts.md)
 - [specs/frontend-spec.md](specs/frontend-spec.md)
 
+## Environment Profiles and Secrets
+
+Python services share a centralized settings module at `services/common/config.py`.
+
+- Supported profiles: `local`, `staging`, `production` (`ENV_PROFILE`)
+- Profile templates: `infra/.env.local.example`, `infra/.env.staging.example`, `infra/.env.production.example`
+- Secret convention: use either `VAR` or `VAR_FILE` (file path), with `VAR_FILE` taking precedence
+
+Do not commit real `.env` files or plaintext secrets.
+
 ## Repository Structure
 
 ```
