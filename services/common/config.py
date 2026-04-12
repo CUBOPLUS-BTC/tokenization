@@ -21,49 +21,49 @@ class Settings(BaseSettings):
     service_host: str = "0.0.0.0"
     service_port: int
 
-    wallet_service_url: str = "http://wallet:8001"
-    tokenization_service_url: str = "http://tokenization:8002"
-    marketplace_service_url: str = "http://marketplace:8003"
-    education_service_url: str = "http://education:8004"
-    nostr_service_url: str = "http://nostr:8005"
+    wallet_service_url: str
+    tokenization_service_url: str
+    marketplace_service_url: str
+    education_service_url: str
+    nostr_service_url: str
 
-    postgres_host: str = "localhost"
-    postgres_port: int = 5432
-    postgres_db: str = "tokenization"
-    postgres_user: str = ""
+    postgres_host: str
+    postgres_port: int
+    postgres_db: str
+    postgres_user: str
     postgres_password: str | None = None
     postgres_password_file: str | None = None
-    database_url: str = "postgresql://user:pass@localhost:5432/tokenization"
+    database_url: str
 
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str
 
-    bitcoin_rpc_host: str = "localhost"
-    bitcoin_rpc_port: int = 8332
-    bitcoin_rpc_user: str = ""
+    bitcoin_rpc_host: str
+    bitcoin_rpc_port: int
+    bitcoin_rpc_user: str
     bitcoin_rpc_password: str | None = None
     bitcoin_rpc_password_file: str | None = None
-    bitcoin_network: str = "regtest"
+    bitcoin_network: str
 
-    lnd_grpc_host: str = "localhost"
-    lnd_grpc_port: int = 10009
-    lnd_macaroon_path: str = ""
-    lnd_tls_cert_path: str = ""
+    lnd_grpc_host: str
+    lnd_grpc_port: int
+    lnd_macaroon_path: str
+    lnd_tls_cert_path: str
 
-    tapd_grpc_host: str = "localhost"
-    tapd_grpc_port: int = 10029
+    tapd_grpc_host: str
+    tapd_grpc_port: int
 
-    nostr_relays: str = "wss://relay.damus.io,wss://nos.lol"
+    nostr_relays: str
 
     jwt_secret: str | None = None
     jwt_secret_file: str | None = None
-    jwt_access_token_expire_minutes: int = 15
-    jwt_refresh_token_expire_days: int = 7
-    totp_issuer: str = "RWAPlatform"
+    jwt_access_token_expire_minutes: int
+    jwt_refresh_token_expire_days: int
+    totp_issuer: str
 
     openai_api_key: str | None = None
     openai_api_key_file: str | None = None
 
-    log_level: str = "INFO"
+    log_level: str
 
     @property
     def nostr_relay_list(self) -> list[str]:
