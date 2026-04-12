@@ -1,11 +1,24 @@
+from pathlib import Path
+import sys
+
 from fastapi import FastAPI
 import uvicorn
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+from common import get_settings
+
+settings = get_settings(service_name="education", default_port=8004)
 
 app = FastAPI(title="Education Service")
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "education"}
+    return {
+        "status": "ok",
+        "service": settings.service_name,
+        "env_profile": settings.env_profile,
+    }
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8004)
+    uvicorn.run(app, host=settings.service_host, port=settings.service_port)
