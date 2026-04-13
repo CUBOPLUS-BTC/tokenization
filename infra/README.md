@@ -12,6 +12,14 @@ Docker Compose files, Nginx/Traefik configuration, and environment templates.
 
 ## Local orchestration (PostgreSQL + Redis + platform services)
 
+Before first run, create the active local profile from the template:
+
+```bash
+cp infra/.env.local.example infra/.env.local
+```
+
+`infra/.env.local` is the runtime env file used by Docker Compose.
+
 Run from repository root:
 
 ```bash

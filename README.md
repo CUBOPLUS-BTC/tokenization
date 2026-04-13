@@ -28,6 +28,7 @@ The complete design is documented in [specs/](specs), including architecture, AP
 - [specs/database-schema.md](specs/database-schema.md)
 - [specs/api-contracts.md](specs/api-contracts.md)
 - [specs/frontend-spec.md](specs/frontend-spec.md)
+- [scripts/README.md](scripts/README.md) (includes Alembic migration workflow)
 
 ## Local Infrastructure Startup
 
@@ -56,7 +57,13 @@ Python services share a centralized settings module at `services/common/config.p
 - Profile templates: `infra/.env.local.example`, `infra/.env.staging.example`, `infra/.env.production.example`
 - Secret convention: use either `VAR` or `VAR_FILE` (file path), with `VAR_FILE` taking precedence
 
-For local Docker Compose, defaults in `infra/.env.local.example` target internal service names (`postgres`, `redis`, and service hostnames) so all services can connect through shared configuration.
+Create a runtime local profile before running Docker Compose:
+
+```bash
+cp infra/.env.local.example infra/.env.local
+```
+
+For local Docker Compose, defaults in `infra/.env.local` target internal service names (`postgres`, `redis`, and service hostnames) so all services can connect through shared configuration.
 
 Do not commit real `.env` files or plaintext secrets.
 
