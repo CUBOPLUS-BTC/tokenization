@@ -2,3 +2,5 @@ alembic==1.13.2
 SQLAlchemy==2.0.36
 pg8000==1.31.2
 pydantic-settings==2.6.1
+python-dotenv==1.0.1
+
