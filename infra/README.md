@@ -4,11 +4,45 @@ Docker Compose files, Nginx/Traefik configuration, and environment templates.
 
 ## Contents
 
-- `docker/` — Dockerfiles and compose files for local development
+- `docker-compose.local.yml` — Local orchestration for shared platform infra and services
 - `.env.example` — Template for required environment variables
 - `.env.local.example` — Local development profile
 - `.env.staging.example` — Staging profile
 - `.env.production.example` — Production profile
+
+## Local orchestration (PostgreSQL + Redis + platform services)
+
+Run from repository root:
+
+```bash
+docker compose -f infra/docker-compose.local.yml up -d
+```
+
+This starts:
+
+- `postgres` on `localhost:5432`
+- `redis` on `localhost:6379`
+- `wallet`, `tokenization`, `marketplace`, `education`, `nostr`
+- `gateway` on `localhost:8000`
+
+Stop and clean up:
+
+```bash
+docker compose -f infra/docker-compose.local.yml down
+```
+
+To remove persisted local database/cache volumes:
+
+```bash
+docker compose -f infra/docker-compose.local.yml down -v
+```
+
+### Health checks
+
+- Gateway: `GET http://localhost:8000/health`
+- Wallet via gateway: `GET http://localhost:8000/v1/wallet/health`
+- PostgreSQL readiness: container healthcheck with `pg_isready`
+- Redis readiness: container healthcheck with `redis-cli ping`
 
 ## Shared Python Configuration
 

@@ -1,0 +1,172 @@
+name: tokenization-local
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: tokenization-postgres
+    restart: unless-stopped
+    env_file:
+      - ./.env.local.example
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform
+
+  redis:
+    image: redis:7-alpine
+    container_name: tokenization-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform
+
+  wallet:
+    image: python:3.11-slim
+    container_name: tokenization-wallet
+    restart: unless-stopped
+    working_dir: /app/services/wallet
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8001"
+    env_file:
+      - ./.env.local.example
+    volumes:
+      - ../:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    networks:
+      - platform
+
+  tokenization:
+    image: python:3.11-slim
+    container_name: tokenization-tokenization
+    restart: unless-stopped
+    working_dir: /app/services/tokenization
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8002"
+    env_file:
+      - ./.env.local.example
+    volumes:
+      - ../:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8002:8002"
+    networks:
+      - platform
+
+  marketplace:
+    image: python:3.11-slim
+    container_name: tokenization-marketplace
+    restart: unless-stopped
+    working_dir: /app/services/marketplace
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8003"
+    env_file:
+      - ./.env.local.example
+    volumes:
+      - ../:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8003:8003"
+    networks:
+      - platform
+
+  education:
+    image: python:3.11-slim
+    container_name: tokenization-education
+    restart: unless-stopped
+    working_dir: /app/services/education
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8004"
+    env_file:
+      - ./.env.local.example
+    volumes:
+      - ../:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8004:8004"
+    networks:
+      - platform
+
+  nostr:
+    image: python:3.11-slim
+    container_name: tokenization-nostr
+    restart: unless-stopped
+    working_dir: /app/services/nostr
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8005"
+    env_file:
+      - ./.env.local.example
+    volumes:
+      - ../:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8005:8005"
+    networks:
+      - platform
+
+  gateway:
+    build:
+      context: ../services/gateway
+      dockerfile: Dockerfile
+    container_name: tokenization-gateway
+    restart: unless-stopped
+    depends_on:
+      - wallet
+      - tokenization
+      - marketplace
+      - education
+      - nostr
+    ports:
+      - "8000:8000"
+    networks:
+      - platform
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  platform:
+    driver: bridge
