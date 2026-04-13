@@ -5,16 +5,14 @@ services:
     image: postgres:15-alpine
     container_name: tokenization-postgres
     restart: unless-stopped
-    environment:
-      POSTGRES_DB: tokenization
-      POSTGRES_USER: local_user
-      POSTGRES_PASSWORD: local_password
+    env_file:
+      - ./.env.local.example
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U local_user -d tokenization"]
+      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -48,10 +46,6 @@ services:
       uvicorn main:app --host 0.0.0.0 --port 8001"
     env_file:
       - ./.env.local.example
-    environment:
-      POSTGRES_HOST: postgres
-      DATABASE_URL: postgresql://local_user:local_password@postgres:5432/tokenization
-      REDIS_URL: redis://redis:6379/0
     volumes:
       - ../:/app
     depends_on:
@@ -74,10 +68,6 @@ services:
       uvicorn main:app --host 0.0.0.0 --port 8002"
     env_file:
       - ./.env.local.example
-    environment:
-      POSTGRES_HOST: postgres
-      DATABASE_URL: postgresql://local_user:local_password@postgres:5432/tokenization
-      REDIS_URL: redis://redis:6379/0
     volumes:
       - ../:/app
     depends_on:
@@ -100,10 +90,6 @@ services:
       uvicorn main:app --host 0.0.0.0 --port 8003"
     env_file:
       - ./.env.local.example
-    environment:
-      POSTGRES_HOST: postgres
-      DATABASE_URL: postgresql://local_user:local_password@postgres:5432/tokenization
-      REDIS_URL: redis://redis:6379/0
     volumes:
       - ../:/app
     depends_on:
@@ -126,10 +112,6 @@ services:
       uvicorn main:app --host 0.0.0.0 --port 8004"
     env_file:
       - ./.env.local.example
-    environment:
-      POSTGRES_HOST: postgres
-      DATABASE_URL: postgresql://local_user:local_password@postgres:5432/tokenization
-      REDIS_URL: redis://redis:6379/0
     volumes:
       - ../:/app
     depends_on:
@@ -152,10 +134,6 @@ services:
       uvicorn main:app --host 0.0.0.0 --port 8005"
     env_file:
       - ./.env.local.example
-    environment:
-      POSTGRES_HOST: postgres
-      DATABASE_URL: postgresql://local_user:local_password@postgres:5432/tokenization
-      REDIS_URL: redis://redis:6379/0
     volumes:
       - ../:/app
     depends_on:
