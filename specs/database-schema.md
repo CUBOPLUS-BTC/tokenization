@@ -68,7 +68,7 @@ Core user accounts.
 | `updated_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 | `deleted_at`      | `TIMESTAMPTZ`  | nullable                       | Soft delete                          |
 
-**Indexes**: `idx_users_email` (UNIQUE), `idx_users_role`
+**Indexes**: `uq_users_email` (UNIQUE via UniqueConstraint), `ix_users_role`
 
 ---
 
@@ -84,7 +84,7 @@ Links Nostr public keys to platform users.
 | `relay_urls`      | `TEXT[]`       | nullable                       | Preferred relays for this identity   |
 | `created_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 
-**Indexes**: `idx_nostr_pubkey` (UNIQUE)
+**Indexes**: `uq_nostr_identities_pubkey` (UNIQUE via UniqueConstraint)
 
 ---
 
@@ -103,7 +103,7 @@ One wallet per user. Tracks aggregate balances.
 | `created_at`        | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                    |
 | `updated_at`        | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                    |
 
-**Indexes**: `idx_wallets_user_id` (UNIQUE)
+**Indexes**: `uq_wallets_user_id` (UNIQUE via UniqueConstraint)
 
 ---
 
@@ -125,7 +125,7 @@ Immutable ledger of all financial movements.
 | `created_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 | `confirmed_at`    | `TIMESTAMPTZ`  | nullable                       | When confirmed on-chain              |
 
-**Indexes**: `idx_tx_wallet_id`, `idx_tx_type`, `idx_tx_status`, `idx_tx_created_at`
+**Indexes**: `ix_transactions_wallet_id`, `ix_transactions_type`, `ix_transactions_status`, `ix_transactions_created_at`
 
 ---
 
@@ -149,7 +149,7 @@ Real-world assets submitted for tokenization.
 | `created_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 | `updated_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 
-**Indexes**: `idx_assets_owner_id`, `idx_assets_status`, `idx_assets_category`
+**Indexes**: `ix_assets_owner_id`, `ix_assets_status`, `ix_assets_category`
 
 ---
 
@@ -169,7 +169,7 @@ On-chain tokens representing fractional asset ownership.
 | `minted_at`         | `TIMESTAMPTZ`  | DEFAULT NOW()                  | When tokens were minted            |
 | `created_at`        | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                    |
 
-**Indexes**: `idx_tokens_asset_id`, `idx_tokens_taproot_asset_id` (UNIQUE)
+**Indexes**: `ix_tokens_asset_id`, `uq_tokens_taproot_asset_id` (UNIQUE via UniqueConstraint)
 
 ---
 
@@ -186,7 +186,7 @@ Tracks per-user ownership of each token.
 | `updated_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                       |                                |
 
 **Constraints**: UNIQUE(`user_id`, `token_id`)
-**Indexes**: `idx_token_bal_user`, `idx_token_bal_token`
+**Indexes**: `ix_token_balances_user_id`, `ix_token_balances_token_id`
 
 ---
 
@@ -207,7 +207,7 @@ Buy and sell orders on the marketplace.
 | `created_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 | `updated_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 
-**Indexes**: `idx_orders_token_side_status`, `idx_orders_user_id`
+**Indexes**: `ix_orders_token_id`, `ix_orders_user_id`
 
 ---
 
@@ -229,7 +229,7 @@ Executed trades between two parties.
 | `created_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 | `settled_at`      | `TIMESTAMPTZ`  | nullable                       |                                      |
 
-**Indexes**: `idx_trades_token_id`, `idx_trades_status`
+**Indexes**: `ix_trades_token_id`, `ix_trades_status`
 
 ---
 
@@ -253,7 +253,7 @@ Multisig 2-of-3 escrow for each trade.
 | `created_at`        | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                    |
 | `updated_at`        | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                    |
 
-**Indexes**: `idx_escrows_trade_id` (UNIQUE), `idx_escrows_status`
+**Indexes**: `uq_escrows_trade_id` (UNIQUE via UniqueConstraint), `ix_escrows_status`
 
 ---
 
@@ -271,7 +271,7 @@ Platform education fund ledger.
 | `description`     | `TEXT`         | nullable                       | Purpose or context                   |
 | `created_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 
-**Indexes**: `idx_treasury_type`, `idx_treasury_created_at`
+**Indexes**: `ix_treasury_type`, `ix_treasury_created_at`
 
 ---
 
@@ -314,7 +314,7 @@ User enrollments in educational courses.
 
 - Use **Alembic** for versioned schema migrations.
 - Each migration file is atomic and reversible (`upgrade()` / `downgrade()`).
-- Naming: `YYYYMMDD_HHMMSS_short_description.py`
+- Naming: `YYYYMMDD_HHMM_REVID_short_description.py` (matches `alembic.ini` `file_template`)
 - All migrations tested against a clean database in CI before deployment.
 
 ## 5. Data Retention & Privacy

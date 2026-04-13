@@ -28,13 +28,14 @@ users = sa.Table(
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
     sa.UniqueConstraint("email", name="uq_users_email"),
+    sa.Index("ix_users_role", "role"),
 )
 
 wallets = sa.Table(
     "wallets",
     metadata,
     sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-    sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False, unique=True),
+    sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
     sa.Column("onchain_balance_sat", sa.BigInteger(), nullable=False, server_default="0"),
     sa.Column("lightning_balance_sat", sa.BigInteger(), nullable=False, server_default="0"),
     sa.Column("encrypted_seed", sa.LargeBinary(), nullable=False),
@@ -42,4 +43,5 @@ wallets = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.ForeignKeyConstraint(["user_id"], ["users.id"], name="fk_wallets_user_id_users"),
+    sa.UniqueConstraint("user_id", name="uq_wallets_user_id"),
 )
