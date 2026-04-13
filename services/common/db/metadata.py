@@ -31,7 +31,7 @@ users = sa.Table(
     sa.Index("ix_users_role", "role"),
     sa.CheckConstraint(
         "role IN ('user', 'seller', 'admin', 'auditor')",
-        name="ck_users_role_allowed",
+        name="role_allowed",
     ),
 )
 
@@ -50,7 +50,7 @@ wallets = sa.Table(
     sa.UniqueConstraint("user_id", name="uq_wallets_user_id"),
     sa.CheckConstraint(
         "onchain_balance_sat >= 0 AND lightning_balance_sat >= 0",
-        name="ck_wallets_balances_non_negative",
+        name="balances_non_negative",
     ),
 )
 
@@ -60,7 +60,7 @@ nostr_identities = sa.Table(
     sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
     sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
     sa.Column("pubkey", sa.String(length=64), nullable=False),
-    sa.Column("relay_urls", postgresql.ARRAY(sa.Text), nullable=True),
+    sa.Column("relay_urls", postgresql.ARRAY(sa.Text()), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.ForeignKeyConstraint(["user_id"], ["users.id"], name="fk_nostr_identities_user_id_users"),
     sa.UniqueConstraint("pubkey", name="uq_nostr_identities_pubkey"),
@@ -85,18 +85,18 @@ transactions = sa.Table(
     sa.Index("ix_transactions_type", "type"),
     sa.Index("ix_transactions_status", "status"),
     sa.Index("ix_transactions_created_at", "created_at"),
-    sa.CheckConstraint("amount_sat > 0", name="ck_transactions_amount_positive"),
+    sa.CheckConstraint("amount_sat > 0", name="amount_positive"),
     sa.CheckConstraint(
         "direction IN ('in', 'out')",
-        name="ck_transactions_direction_allowed",
+        name="direction_allowed",
     ),
     sa.CheckConstraint(
         "status IN ('pending', 'confirmed', 'failed')",
-        name="ck_transactions_status_allowed",
+        name="status_allowed",
     ),
     sa.CheckConstraint(
         "type IN ('deposit', 'withdrawal', 'ln_send', 'ln_receive', 'escrow_lock', 'escrow_release', 'fee')",
-        name="ck_transactions_type_allowed",
+        name="type_allowed",
     ),
 )
 
@@ -111,7 +111,7 @@ assets = sa.Table(
     sa.Column("valuation_sat", sa.BigInteger(), nullable=False),
     sa.Column("documents_url", sa.Text(), nullable=True),
     sa.Column("ai_score", sa.Numeric(precision=5, scale=2), nullable=True),
-    sa.Column("ai_analysis", postgresql.JSONB, nullable=True),
+    sa.Column("ai_analysis", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column("projected_roi", sa.Numeric(precision=5, scale=2), nullable=True),
     sa.Column("status", sa.String(length=20), nullable=False, server_default="pending"),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
@@ -120,6 +120,18 @@ assets = sa.Table(
     sa.Index("ix_assets_owner_id", "owner_id"),
     sa.Index("ix_assets_status", "status"),
     sa.Index("ix_assets_category", "category"),
+    sa.CheckConstraint(
+        "category IN ('real_estate', 'commodity', 'invoice', 'art', 'other')",
+        name="category_allowed",
+    ),
+    sa.CheckConstraint(
+        "status IN ('pending', 'evaluating', 'approved', 'rejected', 'tokenized')",
+        name="status_allowed",
+    ),
+    sa.CheckConstraint(
+        "ai_score IS NULL OR (ai_score >= 0 AND ai_score <= 100)",
+        name="ai_score_range",
+    ),
 )
 
 tokens = sa.Table(
@@ -131,7 +143,7 @@ tokens = sa.Table(
     sa.Column("total_supply", sa.BigInteger(), nullable=False),
     sa.Column("circulating_supply", sa.BigInteger(), nullable=False, server_default="0"),
     sa.Column("unit_price_sat", sa.BigInteger(), nullable=False),
-    sa.Column("metadata_json", postgresql.JSONB, nullable=True),
+    sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column("minted_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.ForeignKeyConstraint(["asset_id"], ["assets.id"], name="fk_tokens_asset_id_assets"),
@@ -152,7 +164,7 @@ token_balances = sa.Table(
     sa.UniqueConstraint("user_id", "token_id", name="uq_token_balances_user_token"),
     sa.Index("ix_token_balances_user_id", "user_id"),
     sa.Index("ix_token_balances_token_id", "token_id"),
-    sa.CheckConstraint("balance >= 0", name="ck_token_balances_balance_positive"),
+    sa.CheckConstraint("balance >= 0", name="balance_non_negative"),
 )
 
 orders = sa.Table(
@@ -172,8 +184,13 @@ orders = sa.Table(
     sa.ForeignKeyConstraint(["token_id"], ["tokens.id"], name="fk_orders_token_id_tokens"),
     sa.Index("ix_orders_user_id", "user_id"),
     sa.Index("ix_orders_token_id", "token_id"),
-    sa.CheckConstraint("quantity > 0", name="ck_orders_quantity_positive"),
-    sa.CheckConstraint("price_sat > 0", name="ck_orders_price_positive"),
+    sa.CheckConstraint("side IN ('buy', 'sell')", name="side_allowed"),
+    sa.CheckConstraint("quantity > 0", name="quantity_positive"),
+    sa.CheckConstraint("price_sat > 0", name="price_sat_positive"),
+    sa.CheckConstraint(
+        "status IN ('open', 'partially_filled', 'filled', 'cancelled')",
+        name="status_allowed",
+    ),
 )
 
 trades = sa.Table(
@@ -195,6 +212,10 @@ trades = sa.Table(
     sa.ForeignKeyConstraint(["token_id"], ["tokens.id"], name="fk_trades_token_id_tokens"),
     sa.Index("ix_trades_token_id", "token_id"),
     sa.Index("ix_trades_status", "status"),
+    sa.CheckConstraint(
+        "status IN ('pending', 'escrowed', 'settled', 'disputed')",
+        name="status_allowed",
+    ),
 )
 
 escrows = sa.Table(
@@ -216,6 +237,10 @@ escrows = sa.Table(
     sa.ForeignKeyConstraint(["trade_id"], ["trades.id"], name="fk_escrows_trade_id_trades"),
     sa.UniqueConstraint("trade_id", name="uq_escrows_trade_id"),
     sa.Index("ix_escrows_status", "status"),
+    sa.CheckConstraint(
+        "status IN ('created', 'funded', 'released', 'refunded', 'disputed')",
+        name="status_allowed",
+    ),
 )
 
 treasury = sa.Table(
@@ -228,9 +253,13 @@ treasury = sa.Table(
     sa.Column("balance_after_sat", sa.BigInteger(), nullable=False),
     sa.Column("description", sa.Text(), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
-    sa.ForeignKeyConstraint(["source_trade_id"], ["trades.id"], name="fk_treasury_trade_id_trades"),
+    sa.ForeignKeyConstraint(["source_trade_id"], ["trades.id"], name="fk_treasury_source_trade_id_trades"),
     sa.Index("ix_treasury_type", "type"),
     sa.Index("ix_treasury_created_at", "created_at"),
+    sa.CheckConstraint(
+        "type IN ('fee_income', 'disbursement', 'adjustment')",
+        name="type_allowed",
+    ),
 )
 
 courses = sa.Table(
@@ -245,6 +274,14 @@ courses = sa.Table(
     sa.Column("is_published", sa.Boolean(), nullable=False, server_default=sa.false()),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
+    sa.CheckConstraint(
+        "category IN ('bitcoin', 'finance', 'programming', 'entrepreneurship')",
+        name="category_allowed",
+    ),
+    sa.CheckConstraint(
+        "difficulty IN ('beginner', 'intermediate', 'advanced')",
+        name="difficulty_allowed",
+    ),
 )
 
 enrollments = sa.Table(
@@ -259,5 +296,5 @@ enrollments = sa.Table(
     sa.ForeignKeyConstraint(["user_id"], ["users.id"], name="fk_enrollments_user_id_users"),
     sa.ForeignKeyConstraint(["course_id"], ["courses.id"], name="fk_enrollments_course_id_courses"),
     sa.UniqueConstraint("user_id", "course_id", name="uq_enrollments_user_course"),
-    sa.CheckConstraint("progress >= 0 AND progress <= 100", name="ck_enrollments_progress_range"),
+    sa.CheckConstraint("progress >= 0 AND progress <= 100", name="progress_range"),
 )
