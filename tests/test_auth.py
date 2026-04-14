@@ -615,3 +615,95 @@ class TestProtectedEndpoints:
         assert body["id"] == str(fake_user.id)
         assert body["email"] == fake_user.email
         assert body["role"] == "seller"
+
+
+# ---------------------------------------------------------------------------
+# POST /auth/nostr
+# ---------------------------------------------------------------------------
+
+class TestNostrAuth:
+    def test_nostr_login_first_time_creates_user(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user(email=None, password="")
+        
+        with (
+            patch("services.auth.main.validate_nostr_event", MagicMock(return_value=None)),
+            patch("services.auth.main.get_nostr_identity_by_pubkey", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_nostr_user", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.create_nostr_identity", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_refresh_session", AsyncMock(return_value=None)),
+        ):
+            resp = app_client.post(
+                "/auth/nostr",
+                json={
+                    "pubkey": "a" * 64,
+                    "signed_event": {
+                        "id": "b" * 64,
+                        "kind": 22242,
+                        "created_at": 1234567890,
+                        "content": "Sign-in challenge: 123",
+                        "sig": "c" * 128
+                    }
+                }
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "user" in body
+        assert "tokens" in body
+        assert body["user"]["email"] is None
+        _assert_token_structure(body["tokens"])
+
+    def test_nostr_login_existing_identity_returns_tokens(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user(email="test@nostr.com", password="")
+        fake_identity = MagicMock(user_id=fake_user.id)
+        
+        with (
+            patch("services.auth.main.validate_nostr_event", MagicMock(return_value=None)),
+            patch("services.auth.main.get_nostr_identity_by_pubkey", AsyncMock(return_value=fake_identity)),
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.create_refresh_session", AsyncMock(return_value=None)),
+        ):
+            resp = app_client.post(
+                "/auth/nostr",
+                json={
+                    "pubkey": "a" * 64,
+                    "signed_event": {
+                        "id": "b" * 64,
+                        "kind": 22242,
+                        "created_at": 1234567890,
+                        "content": "Sign-in challenge: 123",
+                        "sig": "c" * 128
+                    }
+                }
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["user"]["email"] == "test@nostr.com"
+
+    def test_nostr_login_invalid_signature_returns_401(self, client):
+        app_client, fake_conn, settings = client
+        from services.auth.nostr_utils import NostrValidationError
+        
+        with (
+            patch("services.auth.main.validate_nostr_event", MagicMock(side_effect=NostrValidationError("Bad sig"))),
+        ):
+            resp = app_client.post(
+                "/auth/nostr",
+                json={
+                    "pubkey": "a" * 64,
+                    "signed_event": {
+                        "id": "b" * 64,
+                        "kind": 22242,
+                        "created_at": 1234567890,
+                        "content": "Sign-in challenge: 123",
+                        "sig": "c" * 128
+                    }
+                }
+            )
+
+        assert resp.status_code == 401
+        assert resp.json()["error"]["code"] == "invalid_credentials"
+        assert "Bad sig" in resp.json()["error"]["message"]
