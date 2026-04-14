@@ -9,7 +9,55 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 # Add parent directory to path to allow imports from common
 sys.path.append(str(Path(__file__).resolve().parents[1]))
-from common.db.metadata import wallets, token_balances, tokens, assets
+from common.db.metadata import wallets, token_balances, tokens, assets, users, transactions
+
+async def get_user_2fa_secret(conn: AsyncConnection, user_id: str) -> str | None:
+    """Fetch the TOTP secret for a user if 2FA is enabled."""
+    stmt = sa.select(users.c.totp_secret).where(users.c.id == user_id)
+    result = await conn.execute(stmt)
+    return result.scalar()
+
+async def create_transaction(
+    conn: AsyncConnection,
+    *,
+    wallet_id: str,
+    type: str,
+    amount_sat: int,
+    direction: str,
+    status: str,
+    ln_payment_hash: str | None = None,
+    description: str | None = None,
+) -> Any:
+    """Insert a new transaction record."""
+    stmt = sa.insert(transactions).values(
+        wallet_id=wallet_id,
+        type=type,
+        amount_sat=amount_sat,
+        direction=direction,
+        status=status,
+        ln_payment_hash=ln_payment_hash,
+        description=description,
+        created_at=sa.func.now(),
+        updated_at=sa.func.now(),
+    ).returning(transactions)
+    result = await conn.execute(stmt)
+    await conn.commit()
+    return result.mappings().first()
+
+async def update_transaction_status(
+    conn: AsyncConnection,
+    transaction_id: str,
+    status: str,
+    confirmed_at: Any | None = None,
+) -> None:
+    """Update the status of an existing transaction."""
+    values = {"status": status, "updated_at": sa.func.now()}
+    if confirmed_at:
+        values["confirmed_at"] = confirmed_at
+    
+    stmt = sa.update(transactions).where(transactions.c.id == transaction_id).values(**values)
+    await conn.execute(stmt)
+    await conn.commit()
 
 async def get_wallet_by_user_id(conn: AsyncConnection, user_id: str) -> Any | None:
     """Fetch the wallet record for a specific user."""
