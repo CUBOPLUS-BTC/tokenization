@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, NamedTuple
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -359,6 +361,163 @@ class TestGetAssetDetails:
             "code": "asset_not_found",
             "message": "Asset not found.",
         }
+
+
+class TestRequestAssetEvaluation:
+    def test_owner_can_request_asset_evaluation(self, client):
+        app_client, settings = client
+        fake_user = _make_fake_user(role="seller")
+        pending_asset = _make_fake_asset(fake_user.id, status="pending")
+        queued_asset = pending_asset._replace(status="evaluating")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+
+        begin_evaluation_mock = AsyncMock(return_value=queued_asset)
+        dispatch_mock = MagicMock()
+
+        with (
+            patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=pending_asset)),
+            patch("services.tokenization.main.begin_asset_evaluation", begin_evaluation_mock),
+            patch("services.tokenization.main._dispatch_asset_evaluation", dispatch_mock),
+        ):
+            resp = app_client.post(
+                f"/assets/{pending_asset.id}/evaluate",
+                headers=_auth_headers(access_token),
+            )
+
+        assert resp.status_code == 202
+        body = resp.json()
+        assert body["message"] == "Evaluation started"
+        assert "estimated_completion" in body
+
+        begin_evaluation_mock.assert_awaited_once()
+        assert begin_evaluation_mock.await_args.kwargs == {
+            "asset_id": pending_asset.id,
+            "owner_id": str(fake_user.id),
+        }
+        dispatch_mock.assert_called_once_with(
+            pending_asset.id,
+            fallback_status="pending",
+        )
+
+    def test_non_owner_cannot_request_asset_evaluation(self, client):
+        app_client, settings = client
+        fake_user = _make_fake_user(role="seller")
+        other_owner_asset = _make_fake_asset(uuid.uuid4(), status="pending")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+
+        with (
+            patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=other_owner_asset)),
+            patch("services.tokenization.main.begin_asset_evaluation", AsyncMock()),
+        ):
+            resp = app_client.post(
+                f"/assets/{other_owner_asset.id}/evaluate",
+                headers=_auth_headers(access_token),
+            )
+
+        assert resp.status_code == 403
+        assert resp.json()["error"] == {
+            "code": "forbidden",
+            "message": "Only the owning seller can evaluate this asset.",
+        }
+
+
+class TestAssetEvaluationProcessor:
+    def test_background_evaluation_persists_results_and_emits_event(self, client):
+        _, _ = client
+        import services.tokenization.main as tokenization_main
+
+        fake_asset = _make_fake_asset(_make_fake_user(role="seller").id, status="evaluating")
+        completed_at = datetime(2026, 4, 14, 10, 30, tzinfo=timezone.utc)
+        analysis = {
+            "risk_level": "low",
+            "projected_roi_annual": 11.2,
+            "summary": "Strong underwriting profile with healthy upside.",
+        }
+        completed_asset = fake_asset._replace(
+            status="approved",
+            ai_score=88.5,
+            ai_analysis=analysis,
+            projected_roi=11.2,
+            updated_at=completed_at,
+        )
+
+        evaluation_result = SimpleNamespace(
+            ai_score=88.5,
+            ai_analysis=analysis,
+            projected_roi=11.2,
+            status="approved",
+        )
+
+        complete_evaluation_mock = AsyncMock(return_value=completed_asset)
+        publish_mock = AsyncMock(return_value=None)
+
+        with (
+            patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=fake_asset)),
+            patch("services.tokenization.main.evaluate_asset_submission", MagicMock(return_value=evaluation_result)),
+            patch("services.tokenization.main.complete_asset_evaluation", complete_evaluation_mock),
+            patch.object(tokenization_main._event_bus, "publish", publish_mock),
+        ):
+            asyncio.run(
+                tokenization_main._run_asset_evaluation(
+                    fake_asset.id,
+                    fallback_status="pending",
+                )
+            )
+
+        complete_evaluation_mock.assert_awaited_once()
+        assert complete_evaluation_mock.await_args.kwargs == {
+            "asset_id": fake_asset.id,
+            "ai_score": 88.5,
+            "ai_analysis": analysis,
+            "projected_roi": 11.2,
+            "status": "approved",
+        }
+        publish_mock.assert_awaited_once_with(
+            "ai.evaluation.complete",
+            {
+                "event": "ai_evaluation_complete",
+                "asset_id": str(fake_asset.id),
+                "owner_id": str(fake_asset.owner_id),
+                "ai_score": 88.5,
+                "projected_roi": 11.2,
+                "status": "approved",
+                "analysis": analysis,
+                "completed_at": "2026-04-14T10:30:00Z",
+            },
+        )
+
+    def test_background_evaluation_restores_previous_status_when_processing_fails(self, client):
+        _, _ = client
+        import services.tokenization.main as tokenization_main
+
+        fake_asset = _make_fake_asset(_make_fake_user(role="seller").id, status="evaluating")
+        reset_mock = AsyncMock(return_value=fake_asset._replace(status="pending"))
+        publish_mock = AsyncMock(return_value=None)
+
+        with (
+            patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=fake_asset)),
+            patch(
+                "services.tokenization.main.evaluate_asset_submission",
+                MagicMock(side_effect=RuntimeError("processor unavailable")),
+            ),
+            patch("services.tokenization.main.reset_asset_evaluation", reset_mock),
+            patch.object(tokenization_main._event_bus, "publish", publish_mock),
+        ):
+            asyncio.run(
+                tokenization_main._run_asset_evaluation(
+                    fake_asset.id,
+                    fallback_status="pending",
+                )
+            )
+
+        reset_mock.assert_awaited_once_with(
+            ANY,
+            asset_id=fake_asset.id,
+            fallback_status="pending",
+        )
+        publish_mock.assert_not_awaited()
 
 
 class TestListAssets:
