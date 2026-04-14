@@ -252,6 +252,7 @@ escrows = sa.Table(
     sa.Column("locked_amount_sat", sa.BigInteger(), nullable=False),
     sa.Column("funding_txid", sa.String(length=64), nullable=True),
     sa.Column("release_txid", sa.String(length=64), nullable=True),
+    sa.Column("collected_signatures", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column("status", sa.String(length=20), nullable=False, server_default="created"),
     sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
