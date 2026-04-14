@@ -51,6 +51,8 @@ class Settings(BaseSettings):
 
     tapd_grpc_host: str
     tapd_grpc_port: int
+    tapd_macaroon_path: str
+    tapd_tls_cert_path: str
 
     nostr_relays: str
 
