@@ -5,20 +5,25 @@ from datetime import datetime
 from pathlib import sys, Path
 
 import grpc
-from fastapi import FastAPI, HTTPException, Depends
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine, AsyncConnection
 import uvicorn
 
 # Add parent directory to path to allow imports from common
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from common import get_readiness_payload, get_settings
-from lnd_client import LNDClient
-from log_filter import SensitiveDataFilter
-from schemas_lnd import (
+from .lnd_client import LNDClient
+from .log_filter import SensitiveDataFilter
+from .schemas_lnd import (
     Invoice, InvoiceCreate, InvoiceStatus,
     Payment, PaymentCreate, PaymentStatus
 )
+from .auth import get_current_user_id
+from .schemas_wallet import WalletResponse, TokenBalance, WalletSummary
+from .db import get_wallet_by_user_id, get_token_balances_for_user
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -26,7 +31,26 @@ logger = logging.getLogger(__name__)
 logger.addFilter(SensitiveDataFilter())
 
 settings = get_settings(service_name="wallet", default_port=8001)
-app = FastAPI(title="Wallet Service")
+
+def _make_async_url(sync_url: str) -> str:
+    """Convert standard postgres:// URL to asyncpg driver URL."""
+    url = sync_url
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return "postgresql+asyncpg://" + url[len(prefix):]
+    return url
+
+_engine: AsyncEngine | None = None
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    global _engine
+    async_url = _make_async_url(settings.database_url)
+    _engine = create_async_engine(async_url, pool_pre_ping=True)
+    yield
+    await _engine.dispose()
+
+app = FastAPI(title="Wallet Service", lifespan=_lifespan)
 
 # Initialize LND client
 lnd_client = LNDClient(settings)
@@ -44,6 +68,54 @@ async def ready():
     payload = get_readiness_payload(settings)
     status_code = 200 if payload["status"] == "ready" else 503
     return JSONResponse(status_code=status_code, content=payload)
+
+# --- Wallet Summary ---
+
+@app.get("/wallet", response_model=WalletResponse, tags=["Wallet"])
+async def get_wallet_summary(
+    user_id: str = Depends(get_current_user_id)
+):
+    """
+    Returns a unified summary of on-chain, Lightning, and token balances.
+    Aggregates data from both the wallet and token domains.
+    """
+    async with _engine.connect() as conn:  # type: AsyncConnection
+        wallet_row = await get_wallet_by_user_id(conn, user_id)
+        if not wallet_row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Wallet not found for user"
+            )
+        
+        token_rows = await get_token_balances_for_user(conn, user_id)
+    
+    token_balances = [
+        TokenBalance(
+            token_id=row["token_id"],
+            asset_name=row["asset_name"],
+            symbol=None, # See implementation plan note on missing symbol column
+            balance=row["balance"],
+            unit_price_sat=row["unit_price_sat"]
+        )
+        for row in token_rows
+    ]
+
+    onchain = wallet_row["onchain_balance_sat"]
+    lightning = wallet_row["lightning_balance_sat"]
+    
+    # Compute total value: sum of BTC balances + sum of token valuations
+    tokens_valuation = sum(t.balance * t.unit_price_sat for t in token_balances)
+    total_value = onchain + lightning + tokens_valuation
+
+    return WalletResponse(
+        wallet=WalletSummary(
+            id=wallet_row["id"],
+            onchain_balance_sat=onchain,
+            lightning_balance_sat=lightning,
+            token_balances=token_balances,
+            total_value_sat=total_value
+        )
+    )
 
 # --- Lightning Endpoints ---
 

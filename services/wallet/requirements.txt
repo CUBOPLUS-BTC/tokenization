@@ -4,3 +4,6 @@ pydantic-settings
 grpcio
 protobuf
 cryptography
+sqlalchemy[asyncio]
+asyncpg
+python-jose[cryptography]
