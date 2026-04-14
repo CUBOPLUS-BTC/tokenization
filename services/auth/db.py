@@ -23,6 +23,7 @@ from common.db.metadata import (
     refresh_token_sessions as refresh_token_sessions_table,
     users as users_table,
     wallets as wallets_table,
+    nostr_identities as nostr_identities_table,
 )
 
 
@@ -162,3 +163,57 @@ async def revoke_refresh_session(
 
     await conn.commit()
     return True
+
+
+async def get_nostr_identity_by_pubkey(
+    conn: AsyncConnection, pubkey: str
+) -> sa.engine.Row | None:
+    result = await conn.execute(
+        sa.select(nostr_identities_table).where(
+            nostr_identities_table.c.pubkey == pubkey
+        )
+    )
+    return result.fetchone()
+
+
+async def create_nostr_user(
+    conn: AsyncConnection,
+    *,
+    display_name: str,
+) -> sa.engine.Row:
+    """Insert a new user initialized via Nostr (no email/password)."""
+    new_id = uuid.uuid4()
+    now = datetime.now(tz=timezone.utc)
+    await conn.execute(
+        sa.insert(users_table).values(
+            id=new_id,
+            display_name=display_name,
+            role="user",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    await conn.commit()
+    row = await get_user_by_id(conn, str(new_id))
+    assert row is not None  # just inserted
+    return row
+
+
+async def create_nostr_identity(
+    conn: AsyncConnection,
+    *,
+    user_id: str,
+    pubkey: str,
+    relay_urls: list[str] | None = None,
+) -> None:
+    now = datetime.now(tz=timezone.utc)
+    await conn.execute(
+        sa.insert(nostr_identities_table).values(
+            id=uuid.uuid4(),
+            user_id=_as_uuid(user_id),
+            pubkey=pubkey,
+            relay_urls=relay_urls,
+            created_at=now,
+        )
+    )
+    await conn.commit()
