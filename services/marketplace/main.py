@@ -524,6 +524,9 @@ async def place_order(
                         user_id=_row_value(matched_order, "user_id"),
                     )
                     continue
+                if str(exc) == "order_insufficient_quantity":
+                    order_row = await get_order_by_id(conn, _row_value(order_row, "id")) or order_row
+                    continue
                 raise
             except LookupError as exc:
                 if str(exc) == "wallet_not_found":

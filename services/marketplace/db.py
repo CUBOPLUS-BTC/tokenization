@@ -47,6 +47,31 @@ def _row_value(row: object, key: str, default: object | None = None):
     return getattr(row, key, default)
 
 
+def _remaining_quantity(row: object) -> int:
+    quantity = int(_row_value(row, "quantity", 0))
+    filled_quantity = int(_row_value(row, "filled_quantity", 0))
+    return max(quantity - filled_quantity, 0)
+
+
+def _validate_trade_inputs(
+    *,
+    buy_order: object,
+    sell_order: object,
+    quantity: int,
+    price_sat: int,
+) -> None:
+    if quantity <= 0:
+        raise ValueError("quantity_must_be_positive")
+    if price_sat <= 0:
+        raise ValueError("price_sat_must_be_positive")
+    if _row_value(buy_order, "side") != "buy" or _row_value(sell_order, "side") != "sell":
+        raise ValueError("invalid_order_side")
+    if _row_value(buy_order, "token_id") != _row_value(sell_order, "token_id"):
+        raise ValueError("token_mismatch")
+    if quantity > _remaining_quantity(buy_order) or quantity > _remaining_quantity(sell_order):
+        raise ValueError("order_insufficient_quantity")
+
+
 async def get_user_by_id(
     conn: AsyncConnection,
     user_id: str | uuid.UUID,
@@ -269,6 +294,7 @@ async def find_best_match(
     stmt = sa.select(orders_table).where(orders_table.c.token_id == _as_uuid(token_id))
     stmt = stmt.where(orders_table.c.status.in_(_OPEN_ORDER_STATUSES))
     stmt = stmt.where(orders_table.c.user_id != _as_uuid(requester_id))
+    stmt = stmt.where(orders_table.c.quantity > orders_table.c.filled_quantity)
 
     if incoming_side == "buy":
         stmt = stmt.where(orders_table.c.side == "sell")
@@ -421,10 +447,16 @@ async def apply_order_fill(
     order_row: object,
     quantity: int,
 ) -> None:
+    if quantity <= 0:
+        raise ValueError("quantity_must_be_positive")
+
     current_filled = int(_row_value(order_row, "filled_quantity", 0))
     total_quantity = int(_row_value(order_row, "quantity", 0))
-    new_filled = current_filled + quantity
-    new_status = "filled" if new_filled >= total_quantity else "partially_filled"
+    new_filled = min(current_filled + quantity, total_quantity)
+    if new_filled <= current_filled:
+        raise ValueError("order_already_filled")
+
+    new_status = "filled" if new_filled == total_quantity else "partially_filled"
 
     await conn.execute(
         sa.update(orders_table)
@@ -480,6 +512,13 @@ async def create_trade_escrow(
     price_sat: int,
     fee_sat: int = 0,
 ) -> tuple[sa.engine.Row, sa.engine.Row]:
+    _validate_trade_inputs(
+        buy_order=buy_order,
+        sell_order=sell_order,
+        quantity=quantity,
+        price_sat=price_sat,
+    )
+
     buyer_id = _row_value(buy_order, "user_id")
     seller_id = _row_value(sell_order, "user_id")
     token_id = _row_value(buy_order, "token_id")
@@ -558,43 +597,56 @@ async def settle_trade(
     price_sat: int,
     fee_sat: int = 0,
 ) -> sa.engine.Row:
+    _validate_trade_inputs(
+        buy_order=buy_order,
+        sell_order=sell_order,
+        quantity=quantity,
+        price_sat=price_sat,
+    )
+
     buyer_id = _row_value(buy_order, "user_id")
     seller_id = _row_value(sell_order, "user_id")
     token_id = _row_value(buy_order, "token_id")
     total_sat = quantity * price_sat
+    now = _utc_now()
 
-    buyer_wallet = await get_wallet_by_user_id(conn, buyer_id)
-    seller_wallet = await get_wallet_by_user_id(conn, seller_id)
-    if buyer_wallet is None or seller_wallet is None:
-        raise LookupError("wallet_not_found")
+    try:
+        buyer_wallet = await get_wallet_by_user_id(conn, buyer_id)
+        seller_wallet = await get_wallet_by_user_id(conn, seller_id)
+        if buyer_wallet is None or seller_wallet is None:
+            raise LookupError("wallet_not_found")
 
-    await debit_wallet_balance(conn, wallet_row=buyer_wallet, amount_sat=total_sat + fee_sat)
-    await credit_wallet_balance(conn, wallet_row=seller_wallet, amount_sat=total_sat)
-    await decrement_token_balance(conn, user_id=seller_id, token_id=token_id, quantity=quantity)
-    await increment_token_balance(conn, user_id=buyer_id, token_id=token_id, quantity=quantity)
-    await apply_order_fill(conn, order_row=buy_order, quantity=quantity)
-    await apply_order_fill(conn, order_row=sell_order, quantity=quantity)
+        await debit_wallet_balance(conn, wallet_row=buyer_wallet, amount_sat=total_sat + fee_sat)
+        await credit_wallet_balance(conn, wallet_row=seller_wallet, amount_sat=total_sat)
+        await decrement_token_balance(conn, user_id=seller_id, token_id=token_id, quantity=quantity)
+        await increment_token_balance(conn, user_id=buyer_id, token_id=token_id, quantity=quantity)
+        await apply_order_fill(conn, order_row=buy_order, quantity=quantity)
+        await apply_order_fill(conn, order_row=sell_order, quantity=quantity)
 
-    result = await conn.execute(
-        sa.insert(trades_table)
-        .values(
-            id=uuid.uuid4(),
-            buy_order_id=_row_value(buy_order, "id"),
-            sell_order_id=_row_value(sell_order, "id"),
-            token_id=token_id,
-            quantity=quantity,
-            price_sat=price_sat,
-            total_sat=total_sat,
-            fee_sat=fee_sat,
-            status="settled",
-            created_at=_utc_now(),
-            settled_at=_utc_now(),
+        result = await conn.execute(
+            sa.insert(trades_table)
+            .values(
+                id=uuid.uuid4(),
+                buy_order_id=_row_value(buy_order, "id"),
+                sell_order_id=_row_value(sell_order, "id"),
+                token_id=token_id,
+                quantity=quantity,
+                price_sat=price_sat,
+                total_sat=total_sat,
+                fee_sat=fee_sat,
+                status="settled",
+                created_at=now,
+                settled_at=now,
+            )
+            .returning(trades_table)
         )
-        .returning(trades_table)
-    )
-    trade_row = result.fetchone()
-    await conn.commit()
-    assert trade_row is not None
+        trade_row = result.fetchone()
+        assert trade_row is not None
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+
     return trade_row
 
 
