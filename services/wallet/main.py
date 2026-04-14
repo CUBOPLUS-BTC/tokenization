@@ -14,6 +14,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from common import get_readiness_payload, get_settings
 from lnd_client import LNDClient
+from log_filter import SensitiveDataFilter
 from schemas_lnd import (
     Invoice, InvoiceCreate, InvoiceStatus,
     Payment, PaymentCreate, PaymentStatus
@@ -22,6 +23,7 @@ from schemas_lnd import (
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.addFilter(SensitiveDataFilter())
 
 settings = get_settings(service_name="wallet", default_port=8001)
 app = FastAPI(title="Wallet Service")
