@@ -158,32 +158,6 @@ def _normalize_uuid_claim(value: object) -> str | None:
         return None
 
 
-async def _require_2fa(
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
-    x_2fa_code: Annotated[str | None, Header()] = None,
-) -> None:
-    """Dependency that enforces X-2FA-Code if 2FA is enabled for the user."""
-    async with _engine.connect() as conn:
-        secret = await get_user_2fa_secret(conn, principal.id)
-
-    # Only enforce if 2FA is actually enabled
-    if secret:
-        if not x_2fa_code:
-            raise ContractError(
-                code="2fa_required",
-                message="Two-factor authentication code is required for this operation.",
-                status_code=status.HTTP_403_FORBIDDEN,
-            )
-
-        totp = pyotp.TOTP(secret)
-        if not totp.verify(x_2fa_code, valid_window=1):
-            raise ContractError(
-                code="invalid_2fa_code",
-                message="The provided two-factor authentication code is invalid or expired.",
-                status_code=status.HTTP_401_UNAUTHORIZED,
-            )
-
-
 def _user_out(row) -> UserOut:
     return UserOut(
         id=str(row.id),
@@ -276,6 +250,32 @@ async def _get_current_principal(
         role=row.role,
         created_at=row.created_at,
     )
+
+
+async def _require_2fa(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    x_2fa_code: Annotated[str | None, Header(None)] = None,
+) -> None:
+    """Dependency that enforces X-2FA-Code if 2FA is enabled for the user."""
+    async with _engine.connect() as conn:
+        secret = await get_user_2fa_secret(conn, principal.id)
+
+    # Only enforce if 2FA is actually enabled
+    if secret:
+        if not x_2fa_code:
+            raise ContractError(
+                code="2fa_required",
+                message="Two-factor authentication code is required for this operation.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        totp = pyotp.TOTP(secret)
+        if not totp.verify(x_2fa_code, valid_window=1):
+            raise ContractError(
+                code="invalid_2fa_code",
+                message="The provided two-factor authentication code is invalid or expired.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
 
 
 def _require_roles(*allowed_roles: str):

@@ -722,8 +722,8 @@ class TestTwoFactor:
             patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
         ):
             # We need an access token for the authenticated endpoints
-            token_pair = issue_token_pair(str(fake_user.id), fake_user.role, None, settings.jwt_secret)
-            headers = {"Authorization": f"Bearer {token_pair['access_token']}"}
+            token_pair = issue_token_pair(user_id=str(fake_user.id), role=fake_user.role, wallet_id=None, secret=settings.jwt_secret)
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
 
             resp = app_client.post("/auth/2fa/enable", headers=headers)
 
@@ -743,8 +743,8 @@ class TestTwoFactor:
             patch("services.auth.main.get_user_2fa_secret", AsyncMock(return_value="SECRET")),
             patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
         ):
-            token_pair = issue_token_pair(str(fake_user.id), fake_user.role, None, settings.jwt_secret)
-            headers = {"Authorization": f"Bearer {token_pair['access_token']}"}
+            token_pair = issue_token_pair(user_id=str(fake_user.id), role=fake_user.role, wallet_id=None, secret=settings.jwt_secret)
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
 
             resp = app_client.post("/auth/2fa/enable", headers=headers)
 
@@ -763,8 +763,8 @@ class TestTwoFactor:
             patch("services.auth.main.get_user_2fa_secret", AsyncMock(return_value=secret)),
             patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
         ):
-            token_pair = issue_token_pair(str(fake_user.id), fake_user.role, None, settings.jwt_secret)
-            headers = {"Authorization": f"Bearer {token_pair['access_token']}"}
+            token_pair = issue_token_pair(user_id=str(fake_user.id), role=fake_user.role, wallet_id=None, secret=settings.jwt_secret)
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
 
             resp = app_client.post(
                 "/auth/2fa/verify",
@@ -784,8 +784,8 @@ class TestTwoFactor:
             patch("services.auth.main.get_user_2fa_secret", AsyncMock(return_value=secret)),
             patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
         ):
-            token_pair = issue_token_pair(str(fake_user.id), fake_user.role, None, settings.jwt_secret)
-            headers = {"Authorization": f"Bearer {token_pair['access_token']}"}
+            token_pair = issue_token_pair(user_id=str(fake_user.id), role=fake_user.role, wallet_id=None, secret=settings.jwt_secret)
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
 
             resp = app_client.post(
                 "/auth/2fa/verify",
@@ -804,8 +804,8 @@ class TestTwoFactor:
             patch("services.auth.main.get_user_2fa_secret", AsyncMock(return_value=None)),
             patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
         ):
-            token_pair = issue_token_pair(str(fake_user.id), fake_user.role, None, settings.jwt_secret)
-            headers = {"Authorization": f"Bearer {token_pair['access_token']}"}
+            token_pair = issue_token_pair(user_id=str(fake_user.id), role=fake_user.role, wallet_id=None, secret=settings.jwt_secret)
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
 
             resp = app_client.post(
                 "/auth/2fa/verify",
