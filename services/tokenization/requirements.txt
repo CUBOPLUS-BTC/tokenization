@@ -6,3 +6,4 @@ protobuf
 sqlalchemy
 asyncpg
 python-jose[cryptography]
+redis

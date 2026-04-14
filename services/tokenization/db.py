@@ -16,6 +16,9 @@ from common.db.metadata import tokens as tokens_table
 from common.db.metadata import users as users_table
 
 
+_EVALUABLE_ASSET_STATUSES = ("pending", "approved", "rejected")
+
+
 def _as_uuid(value: str | uuid.UUID) -> uuid.UUID:
     return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
 
@@ -87,6 +90,79 @@ async def get_asset_by_id(
         .where(assets_table.c.id == _as_uuid(asset_id))
     )
     return result.fetchone()
+
+
+async def begin_asset_evaluation(
+    conn: AsyncConnection,
+    *,
+    asset_id: str | uuid.UUID,
+    owner_id: str | uuid.UUID,
+) -> sa.engine.Row | None:
+    now = _utc_now()
+    result = await conn.execute(
+        sa.update(assets_table)
+        .where(assets_table.c.id == _as_uuid(asset_id))
+        .where(assets_table.c.owner_id == _as_uuid(owner_id))
+        .where(assets_table.c.status.in_(_EVALUABLE_ASSET_STATUSES))
+        .values(
+            status="evaluating",
+            updated_at=now,
+        )
+        .returning(assets_table)
+    )
+    row = result.fetchone()
+    await conn.commit()
+    return row
+
+
+async def complete_asset_evaluation(
+    conn: AsyncConnection,
+    *,
+    asset_id: str | uuid.UUID,
+    ai_score: float,
+    ai_analysis: dict[str, object],
+    projected_roi: float,
+    status: str,
+) -> sa.engine.Row | None:
+    now = _utc_now()
+    result = await conn.execute(
+        sa.update(assets_table)
+        .where(assets_table.c.id == _as_uuid(asset_id))
+        .where(assets_table.c.status == "evaluating")
+        .values(
+            ai_score=ai_score,
+            ai_analysis=ai_analysis,
+            projected_roi=projected_roi,
+            status=status,
+            updated_at=now,
+        )
+        .returning(assets_table)
+    )
+    row = result.fetchone()
+    await conn.commit()
+    return row
+
+
+async def reset_asset_evaluation(
+    conn: AsyncConnection,
+    *,
+    asset_id: str | uuid.UUID,
+    fallback_status: str,
+) -> sa.engine.Row | None:
+    now = _utc_now()
+    result = await conn.execute(
+        sa.update(assets_table)
+        .where(assets_table.c.id == _as_uuid(asset_id))
+        .where(assets_table.c.status == "evaluating")
+        .values(
+            status=fallback_status,
+            updated_at=now,
+        )
+        .returning(assets_table)
+    )
+    row = result.fetchone()
+    await conn.commit()
+    return row
 
 
 async def list_assets(

@@ -70,3 +70,8 @@ class AssetDetailResponse(BaseModel):
 class AssetListResponse(BaseModel):
     assets: list[AssetOut]
     next_cursor: str | None
+
+
+class AssetEvaluationRequestResponse(BaseModel):
+    message: str
+    estimated_completion: datetime
