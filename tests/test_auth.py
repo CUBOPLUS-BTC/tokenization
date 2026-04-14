@@ -707,3 +707,111 @@ class TestNostrAuth:
         assert resp.status_code == 401
         assert resp.json()["error"]["code"] == "invalid_credentials"
         assert "Bad sig" in resp.json()["error"]["message"]
+
+
+class TestTwoFactor:
+    """Tests for 2FA enrollment and verification flows."""
+
+    def test_enable_2fa_returns_totp_uri_and_backup_codes(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "password")
+
+        with (
+            patch("services.auth.main.get_user_2fa_secret", AsyncMock(return_value=None)),
+            patch("services.auth.main.enable_2fa", AsyncMock(return_value=None)),
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+        ):
+            # We need an access token for the authenticated endpoints
+            token_pair = issue_token_pair(user_id=str(fake_user.id), role=fake_user.role, wallet_id=None, secret=settings.jwt_secret)
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
+
+            resp = app_client.post("/auth/2fa/enable", headers=headers)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "totp_uri" in body
+        assert "backup_codes" in body
+        assert body["totp_uri"].startswith("otpauth://totp/")
+        assert "secret=" in body["totp_uri"]
+        assert len(body["backup_codes"]) == 8
+
+    def test_enable_2fa_already_enabled_returns_409(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "password")
+
+        with (
+            patch("services.auth.main.get_user_2fa_secret", AsyncMock(return_value="SECRET")),
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+        ):
+            token_pair = issue_token_pair(user_id=str(fake_user.id), role=fake_user.role, wallet_id=None, secret=settings.jwt_secret)
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
+
+            resp = app_client.post("/auth/2fa/enable", headers=headers)
+
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "2fa_already_enabled"
+
+    def test_verify_2fa_valid_code_returns_success(self, client):
+        import pyotp
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "password")
+        secret = "JBSWY3DPEHPK3PXP" # Base32
+        totp = pyotp.TOTP(secret)
+        valid_code = totp.now()
+
+        with (
+            patch("services.auth.main.get_user_2fa_secret", AsyncMock(return_value=secret)),
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+        ):
+            token_pair = issue_token_pair(user_id=str(fake_user.id), role=fake_user.role, wallet_id=None, secret=settings.jwt_secret)
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
+
+            resp = app_client.post(
+                "/auth/2fa/verify",
+                json={"totp_code": valid_code},
+                headers=headers
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["message"] == "2FA verification successful."
+
+    def test_verify_2fa_invalid_code_returns_401(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "password")
+        secret = "JBSWY3DPEHPK3PXP" # Base32
+
+        with (
+            patch("services.auth.main.get_user_2fa_secret", AsyncMock(return_value=secret)),
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+        ):
+            token_pair = issue_token_pair(user_id=str(fake_user.id), role=fake_user.role, wallet_id=None, secret=settings.jwt_secret)
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
+
+            resp = app_client.post(
+                "/auth/2fa/verify",
+                json={"totp_code": "000000"},
+                headers=headers
+            )
+
+        assert resp.status_code == 401
+        assert resp.json()["error"]["code"] == "invalid_2fa_code"
+
+    def test_verify_2fa_not_enabled_returns_400(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "password")
+
+        with (
+            patch("services.auth.main.get_user_2fa_secret", AsyncMock(return_value=None)),
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+        ):
+            token_pair = issue_token_pair(user_id=str(fake_user.id), role=fake_user.role, wallet_id=None, secret=settings.jwt_secret)
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
+
+            resp = app_client.post(
+                "/auth/2fa/verify",
+                json={"totp_code": "123456"},
+                headers=headers
+            )
+
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "2fa_not_enabled"

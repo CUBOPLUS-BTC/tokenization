@@ -91,6 +91,15 @@ class RoleCheckResponse(BaseModel):
     required_roles: list[str]
 
 
+class TwoFactorEnableResponse(BaseModel):
+    totp_uri: str
+    backup_codes: list[str]
+
+
+class TwoFactorVerifyRequest(BaseModel):
+    totp_code: str = Field(min_length=6, max_length=6)
+
+
 # ---------------------------------------------------------------------------
 # Error schema (contract: { "error": { "code": "...", "message": "..." } })
 # ---------------------------------------------------------------------------

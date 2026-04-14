@@ -49,6 +49,33 @@ async def get_user_by_id(
     return result.fetchone()
 
 
+async def enable_2fa(
+    conn: AsyncConnection,
+    user_id: str,
+    totp_secret: str,
+    backup_codes: list[str],
+) -> None:
+    """Set the TOTP secret and backup codes for a user."""
+    await conn.execute(
+        sa.update(users_table)
+        .where(users_table.c.id == _as_uuid(user_id))
+        .values(totp_secret=totp_secret, backup_codes=backup_codes)
+    )
+    await conn.commit()
+
+
+async def get_user_2fa_secret(
+    conn: AsyncConnection, user_id: str
+) -> str | None:
+    """Return the user's totp_secret if set."""
+    result = await conn.execute(
+        sa.select(users_table.c.totp_secret).where(
+            users_table.c.id == _as_uuid(user_id)
+        )
+    )
+    return result.scalar()
+
+
 async def create_user(
     conn: AsyncConnection,
     *,
