@@ -19,7 +19,18 @@ from pathlib import Path
 import sys
 import uuid
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Security, status
+from typing import Annotated, Optional
+
+import pyotp
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Request,
+    Security,
+    status,
+)
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -42,6 +53,8 @@ from .schemas import (
     RegisterRequest,
     RoleCheckResponse,
     TokensOut,
+    TwoFactorEnableResponse,
+    TwoFactorVerifyRequest,
     UserOut,
 )
 from .jwt_utils import decode_token, issue_token_pair
@@ -51,7 +64,9 @@ from .db import (
     create_nostr_user,
     create_refresh_session,
     create_user,
+    enable_2fa,
     get_nostr_identity_by_pubkey,
+    get_user_2fa_secret,
     get_user_by_email,
     get_user_by_id,
     revoke_refresh_session,
@@ -141,6 +156,32 @@ def _normalize_uuid_claim(value: object) -> str | None:
         return str(uuid.UUID(str(value)))
     except (TypeError, ValueError, AttributeError):
         return None
+
+
+async def _require_2fa(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    x_2fa_code: Annotated[str | None, Header()] = None,
+) -> None:
+    """Dependency that enforces X-2FA-Code if 2FA is enabled for the user."""
+    async with _engine.connect() as conn:
+        secret = await get_user_2fa_secret(conn, principal.id)
+
+    # Only enforce if 2FA is actually enabled
+    if secret:
+        if not x_2fa_code:
+            raise ContractError(
+                code="2fa_required",
+                message="Two-factor authentication code is required for this operation.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        totp = pyotp.TOTP(secret)
+        if not totp.verify(x_2fa_code, valid_window=1):
+            raise ContractError(
+                code="invalid_2fa_code",
+                message="The provided two-factor authentication code is invalid or expired.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
 
 
 def _user_out(row) -> UserOut:
@@ -331,6 +372,80 @@ async def register(body: RegisterRequest):
             conn=conn,
             status_code=status.HTTP_201_CREATED,
         )
+
+
+@app.post(
+    "/auth/2fa/enable",
+    response_model=TwoFactorEnableResponse,
+    summary="Enable two-factor authentication",
+)
+async def enable_2fa_endpoint(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    """Generate a TOTP secret and backup codes for the user."""
+    async with _engine.connect() as conn:
+        existing_secret = await get_user_2fa_secret(conn, principal.id)
+        if existing_secret:
+            raise ContractError(
+                code="2fa_already_enabled",
+                message="Two-factor authentication is already enabled for this account.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        # Generate TOTP secret
+        totp_secret = pyotp.random_base32()
+
+        # Generate 8 backup codes (8-char hex strings)
+        backup_codes = [uuid.uuid4().hex[:8] for _ in range(8)]
+
+        await enable_2fa(
+            conn,
+            user_id=principal.id,
+            totp_secret=totp_secret,
+            backup_codes=backup_codes,
+        )
+
+    # Build provisioning URI
+    totp = pyotp.TOTP(totp_secret)
+    totp_uri = totp.provisioning_uri(
+        name=principal.email or principal.display_name,
+        issuer_name=settings.totp_issuer,
+    )
+
+    return TwoFactorEnableResponse(
+        totp_uri=totp_uri,
+        backup_codes=backup_codes,
+    )
+
+
+@app.post(
+    "/auth/2fa/verify",
+    summary="Verify a two-factor authentication code",
+)
+async def verify_2fa_endpoint(
+    body: TwoFactorVerifyRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    """Verify a TOTP code to confirm 2FA works."""
+    async with _engine.connect() as conn:
+        secret = await get_user_2fa_secret(conn, principal.id)
+
+    if not secret:
+        raise ContractError(
+            code="2fa_not_enabled",
+            message="Two-factor authentication is not enabled for this account.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    totp = pyotp.TOTP(secret)
+    if not totp.verify(body.totp_code, valid_window=1):
+        raise ContractError(
+            code="invalid_2fa_code",
+            message="The provided two-factor authentication code is invalid or expired.",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    return {"message": "2FA verification successful."}
 
 
 @app.post(
