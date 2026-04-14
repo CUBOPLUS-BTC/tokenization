@@ -1,1 +1,1 @@
-# Wallet Service package
+"""Wallet service package."""

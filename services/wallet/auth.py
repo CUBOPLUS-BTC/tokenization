@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -14,6 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 # Add parent directory to path to allow imports from common
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from common import get_settings
+
+os.environ.setdefault("TAPD_MACAROON_PATH", "")
+os.environ.setdefault("TAPD_TLS_CERT_PATH", "")
 
 settings = get_settings(service_name="wallet", default_port=8001)
 _bearer_scheme = HTTPBearer()

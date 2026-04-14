@@ -3,3 +3,7 @@ uvicorn
 pydantic-settings
 grpcio
 protobuf
+sqlalchemy
+asyncpg
+python-jose[cryptography]
+redis

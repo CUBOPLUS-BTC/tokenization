@@ -416,26 +416,41 @@ Role: seller (owner only)
 **Request Body:**
 ```json
 {
+  "taproot_asset_id": "hex_id",
   "total_supply": 1000,
   "unit_price_sat": 100000
 }
 ```
 
-**Preconditions**: Asset status must be `approved`.
+**Preconditions**:
+- Asset status must be `approved`.
+- `taproot_asset_id` must resolve in `tapd` and the Taproot asset amount must match `total_supply`.
 
 **Response (201):**
 ```json
 {
-  "token": {
+  "asset": {
     "id": "uuid",
-    "asset_id": "uuid",
-    "taproot_asset_id": "hex_id",
-    "total_supply": 1000,
-    "unit_price_sat": 100000,
-    "minted_at": "2026-04-07T12:10:00Z"
+    "status": "tokenized",
+    "token": {
+      "id": "uuid",
+      "taproot_asset_id": "hex_id",
+      "total_supply": 1000,
+      "circulating_supply": 1000,
+      "unit_price_sat": 100000,
+      "issuance_metadata": {
+        "asset_id": "hex_id",
+        "asset_name": "Downtown Office Building",
+        "genesis_point": "hex_outpoint:0",
+        "meta_hash": "hex_meta_hash"
+      },
+      "minted_at": "2026-04-07T12:10:00Z"
+    }
   }
 }
 ```
+
+All issued fractions are credited to the originating seller's token balance so they can be listed on the marketplace immediately after tokenization.
 
 ---
 
