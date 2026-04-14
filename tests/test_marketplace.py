@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import sys
 from typing import Any, NamedTuple
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import uuid
 
 import pytest
@@ -214,6 +214,41 @@ def test_place_sell_order_rejects_when_reserved_balance_exhausts_holdings(client
     create_order_mock.assert_not_called()
 
 
+def test_place_buy_order_rejects_when_reserved_sats_exhaust_wallet_balance(client):
+    app_client, _, settings = client
+    fake_user = _make_fake_user(role="user")
+    access_token = _issue_access_token(fake_user, settings.jwt_secret)
+    token_id = uuid.uuid4()
+
+    with (
+        patch("services.marketplace.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+        patch("services.marketplace.main.get_token_by_id", AsyncMock(return_value={"id": token_id})),
+        patch(
+            "services.marketplace.main.get_wallet_by_user_id",
+            AsyncMock(return_value=_make_wallet(fake_user.id, onchain=700_000, lightning=200_000)),
+        ),
+        patch("services.marketplace.main.get_reserved_buy_commitment", AsyncMock(return_value=850_000)),
+        patch("services.marketplace.main.create_order", AsyncMock()) as create_order_mock,
+    ):
+        response = app_client.post(
+            "/orders",
+            headers=_auth_headers(access_token),
+            json={
+                "token_id": str(token_id),
+                "side": "buy",
+                "quantity": 1,
+                "price_sat": 100_000,
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"] == {
+        "code": "insufficient_sats",
+        "message": "Insufficient wallet balance for this buy order.",
+    }
+    create_order_mock.assert_not_called()
+
+
 def test_place_buy_order_matches_resting_sell_order_and_emits_trade_event(client):
     app_client, marketplace_main, settings = client
     fake_user = _make_fake_user(role="user")
@@ -383,3 +418,46 @@ def test_settle_trade_synchronizes_wallet_and_token_balances(marketplace_setting
     )
     assert apply_fill_mock.await_count == 2
     fake_conn.commit.assert_awaited_once()
+
+
+def test_cancel_order_allows_owner_to_cancel_partially_filled_order(client):
+    app_client, _, settings = client
+    fake_user = _make_fake_user(role="user")
+    access_token = _issue_access_token(fake_user, settings.jwt_secret)
+    token_id = uuid.uuid4()
+    existing_order = _make_order(
+        user_id=fake_user.id,
+        token_id=token_id,
+        side="sell",
+        quantity=10,
+        price_sat=100_000,
+        filled_quantity=4,
+        status="partially_filled",
+    )
+    cancelled_order = {
+        **existing_order,
+        "status": "cancelled",
+    }
+
+    with (
+        patch("services.marketplace.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+        patch("services.marketplace.main.get_order_by_id", AsyncMock(return_value=existing_order)),
+        patch("services.marketplace.main.cancel_order", AsyncMock(return_value=cancelled_order)) as cancel_order_mock,
+    ):
+        response = app_client.delete(
+            f"/orders/{existing_order['id']}",
+            headers=_auth_headers(access_token),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "order": {
+            "id": str(existing_order["id"]),
+            "status": "cancelled",
+        }
+    }
+    cancel_order_mock.assert_awaited_once_with(
+        ANY,
+        order_id=existing_order["id"],
+        user_id=str(fake_user.id),
+    )
