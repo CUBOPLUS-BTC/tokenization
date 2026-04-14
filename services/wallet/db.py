@@ -9,7 +9,33 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 # Add parent directory to path to allow imports from common
 sys.path.append(str(Path(__file__).resolve().parents[1]))
+from common import get_settings
 from common.db.metadata import wallets, token_balances, tokens, assets, users, transactions
+
+settings = get_settings(service_name="wallet", default_port=8001)
+
+def _make_async_url(sync_url: str) -> str:
+    """Convert standard postgres:// URL to asyncpg driver URL."""
+    url = sync_url
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return "postgresql+asyncpg://" + url[len(prefix):]
+    return url
+
+_engine: sa.ext.asyncio.AsyncEngine | None = None
+
+def get_engine() -> sa.ext.asyncio.AsyncEngine:
+    global _engine
+    if _engine is None:
+        async_url = _make_async_url(settings.database_url)
+        _engine = sa.ext.asyncio.create_async_engine(async_url, pool_pre_ping=True)
+    return _engine
+
+async def get_db_conn():
+    """Dependency that provides an async database connection."""
+    engine = get_engine()
+    async with engine.connect() as conn:
+        yield conn
 
 async def get_user_2fa_secret(conn: AsyncConnection, user_id: str) -> str | None:
     """Fetch the TOTP secret for a user if 2FA is enabled."""
