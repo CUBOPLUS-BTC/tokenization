@@ -40,3 +40,4 @@ class Payment(BaseModel):
     status: PaymentStatus
     fee_sats: int = 0
     failure_reason: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)

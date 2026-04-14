@@ -21,9 +21,12 @@ from .schemas_lnd import (
     Invoice, InvoiceCreate, InvoiceStatus,
     Payment, PaymentCreate, PaymentStatus
 )
-from .auth import get_current_user_id
+from .auth import get_current_user_id, require_2fa
 from .schemas_wallet import WalletResponse, TokenBalance, WalletSummary
-from .db import get_wallet_by_user_id, get_token_balances_for_user
+from .db import (
+    get_wallet_by_user_id, get_token_balances_for_user,
+    create_transaction, get_db_conn, get_engine
+)
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -32,23 +35,12 @@ logger.addFilter(SensitiveDataFilter())
 
 settings = get_settings(service_name="wallet", default_port=8001)
 
-def _make_async_url(sync_url: str) -> str:
-    """Convert standard postgres:// URL to asyncpg driver URL."""
-    url = sync_url
-    for prefix in ("postgresql://", "postgres://"):
-        if url.startswith(prefix):
-            return "postgresql+asyncpg://" + url[len(prefix):]
-    return url
-
-_engine: AsyncEngine | None = None
-
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    global _engine
-    async_url = _make_async_url(settings.database_url)
-    _engine = create_async_engine(async_url, pool_pre_ping=True)
+    # Engine is initialized on first use in db.get_engine()
     yield
-    await _engine.dispose()
+    engine = get_engine()
+    await engine.dispose()
 
 app = FastAPI(title="Wallet Service", lifespan=_lifespan)
 
@@ -79,7 +71,7 @@ async def get_wallet_summary(
     Returns a unified summary of on-chain, Lightning, and token balances.
     Aggregates data from both the wallet and token domains.
     """
-    async with _engine.connect() as conn:  # type: AsyncConnection
+    async with get_engine().connect() as conn:  # type: AsyncConnection
         wallet_row = await get_wallet_by_user_id(conn, user_id)
         if not wallet_row:
             raise HTTPException(
@@ -120,9 +112,28 @@ async def get_wallet_summary(
 # --- Lightning Endpoints ---
 
 @app.post("/lightning/invoices", response_model=Invoice, tags=["Lightning"])
-async def create_invoice(req: InvoiceCreate):
+async def create_invoice(
+    req: InvoiceCreate,
+    user_id: str = Depends(get_current_user_id),
+    conn: AsyncConnection = Depends(get_db_conn)
+):
     try:
         resp = lnd_client.create_invoice(memo=req.memo or "", amount_sats=req.amount_sats)
+        
+        # Persist transaction
+        wallet = await get_wallet_by_user_id(conn, user_id)
+        if wallet:
+            await create_transaction(
+                conn,
+                wallet_id=wallet["id"],
+                type="ln_receive",
+                direction="in",
+                amount_sat=req.amount_sats,
+                status="pending",
+                ln_payment_hash=resp.r_hash.hex(),
+                description=req.memo
+            )
+
         return Invoice(
             payment_request=resp.payment_request,
             payment_hash=resp.r_hash.hex(),
@@ -140,32 +151,65 @@ async def create_invoice(req: InvoiceCreate):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/lightning/payments", response_model=Payment, tags=["Lightning"])
-async def pay_invoice(req: PaymentCreate):
+async def pay_invoice(
+    req: PaymentCreate,
+    user_id: str = Depends(get_current_user_id),
+    _=Depends(require_2fa),
+    conn: AsyncConnection = Depends(get_db_conn)
+):
     try:
+        # Get wallet info first to ensure we can persist
+        wallet = await get_wallet_by_user_id(conn, user_id)
+        if not wallet:
+             raise HTTPException(status_code=404, detail="Wallet not found")
+
         resp = lnd_client.pay_invoice(payment_request=req.payment_request)
         
         status = PaymentStatus.SUCCEEDED
+        db_status = "confirmed"
         failure_reason = None
         if resp.payment_error:
             status = PaymentStatus.FAILED
+            db_status = "failed"
             failure_reason = resp.payment_error
+
+        # Persist transaction
+        # NOTE: We record amount from route if success, or 0 if failed (simplified)
+        amount_sat = resp.payment_route.total_amt if resp.payment_route else 0
+        
+        await create_transaction(
+            conn,
+            wallet_id=wallet["id"],
+            type="ln_send",
+            direction="out",
+            amount_sat=amount_sat,
+            status=db_status,
+            ln_payment_hash=resp.payment_hash.hex(),
+            description=f"Payment to {req.payment_request[:20]}..."
+        )
 
         return Payment(
             payment_hash=resp.payment_hash.hex(),
             payment_preimage=resp.payment_preimage.hex() if not resp.payment_error else None,
             status=status,
             fee_sats=resp.payment_route.total_fees if resp.payment_route else 0,
-            failure_reason=failure_reason
+            failure_reason=failure_reason,
+            created_at=datetime.utcnow()
         )
     except grpc.RpcError as e:
         logger.error(f"gRPC error paying invoice: {e}")
         raise HTTPException(status_code=503, detail="Lightning service unavailable")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Unexpected error paying invoice: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/lightning/invoices/{r_hash}", response_model=Invoice, tags=["Lightning"])
-async def get_invoice(r_hash: str):
+async def get_invoice(
+    r_hash: str,
+    user_id: str = Depends(get_current_user_id)
+):
     try:
         ln_invoice = lnd_client.lookup_invoice(r_hash_str=r_hash)
         
@@ -173,13 +217,13 @@ async def get_invoice(r_hash: str):
             0: InvoiceStatus.OPEN,
             1: InvoiceStatus.SETTLED,
             2: InvoiceStatus.CANCELED,
-            3: InvoiceStatus.ACCEPTED
+            3: InvoiceStatus.ACCEPTED,
         }
         
         return Invoice(
             payment_request=ln_invoice.payment_request,
-            payment_hash=ln_invoice.r_hash.hex(),
-            r_hash=ln_invoice.r_hash.hex(),
+            payment_hash=r_hash,
+            r_hash=r_hash,
             amount_sats=ln_invoice.value,
             memo=ln_invoice.memo,
             status=status_map.get(ln_invoice.state, InvoiceStatus.OPEN),
@@ -192,7 +236,7 @@ async def get_invoice(r_hash: str):
         logger.error(f"gRPC error looking up invoice: {e}")
         raise HTTPException(status_code=503, detail="Lightning service unavailable")
     except Exception as e:
-        logger.error(f"Unexpected error looking up invoice: {e}")
+        logger.error(f"Unexpected error fetching invoice: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 if __name__ == "__main__":
