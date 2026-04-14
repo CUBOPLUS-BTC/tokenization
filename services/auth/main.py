@@ -13,7 +13,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 import uvicorn
 
@@ -29,7 +30,12 @@ from .db import create_user, get_user_by_email
 
 import bcrypt
 
+# Pre-computed once at start-up; used so that logins for missing or null-credential
+# accounts always run a full bcrypt verification to prevent timing side-channels.
+_DUMMY_HASH: str = bcrypt.hashpw(b"__placeholder__", bcrypt.gensalt()).decode("utf-8")
+
 # SQLAlchemy async engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncConnection
 
 # -------------------------------------------------------------------------------
@@ -75,6 +81,24 @@ def _error(code: str, message: str, status_code: int) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
         content={"error": {"code": code, "message": message}},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return _error(
+        code="validation_error",
+        message="Request payload failed validation.",
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    return _error(
+        code="http_error",
+        message=str(exc.detail),
+        status_code=exc.status_code,
     )
 
 
@@ -129,12 +153,19 @@ async def register(body: RegisterRequest):
             )
 
         password_hash = bcrypt.hashpw(body.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-        row = await create_user(
-            conn,
-            email=body.email,
-            password_hash=password_hash,
-            display_name=body.display_name,
-        )
+        try:
+            row = await create_user(
+                conn,
+                email=body.email,
+                password_hash=password_hash,
+                display_name=body.display_name,
+            )
+        except IntegrityError:
+            return _error(
+                "email_taken",
+                "An account with that email already exists.",
+                status.HTTP_409_CONFLICT,
+            )
 
     secret = settings.jwt_secret or "dev-secret-change-me"
     return JSONResponse(
@@ -158,9 +189,10 @@ async def login(body: LoginRequest):
     async with _engine.connect() as conn:  # type: AsyncConnection
         row = await get_user_by_email(conn, body.email)
 
-    # Constant-time comparison: always verify even if user not found
-    _DUMMY_HASH = bcrypt.hashpw(b"dummy-to-prevent-timing-attack", bcrypt.gensalt()).decode("utf-8")
-    stored_hash = row.password_hash if row else _DUMMY_HASH
+    # Always run bcrypt to prevent user-enumeration via response timing.
+    # A null password_hash means the account was created via social auth and
+    # cannot be accessed with an email+password login → return 401, not 500.
+    stored_hash = (row.password_hash or _DUMMY_HASH) if row is not None else _DUMMY_HASH
 
     # bcrypt requires bytes
     try:
