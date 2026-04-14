@@ -23,6 +23,7 @@ users = sa.Table(
     sa.Column("display_name", sa.String(length=100), nullable=False),
     sa.Column("role", sa.String(length=20), nullable=False, server_default="user"),
     sa.Column("totp_secret", sa.String(length=255), nullable=True),
+    sa.Column("backup_codes", postgresql.JSONB, nullable=True),
     sa.Column("is_verified", sa.Boolean(), nullable=False, server_default=sa.false()),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
