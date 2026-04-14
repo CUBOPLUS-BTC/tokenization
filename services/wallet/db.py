@@ -20,6 +20,7 @@ from common import get_settings
 from common.db.metadata import assets as assets_table
 from common.db.metadata import token_balances as token_balances_table
 from common.db.metadata import tokens as tokens_table
+from common.db.metadata import trades as trades_table
 from common.db.metadata import transactions as transactions_table
 from common.db.metadata import users as users_table
 from common.db.metadata import wallets as wallets_table
@@ -125,17 +126,45 @@ async def get_token_balances_for_user(
     conn: AsyncConnection,
     user_id: str,
 ) -> list[dict[str, Any]]:
+    latest_trade_prices = (
+        sa.select(
+            trades_table.c.token_id.label("token_id"),
+            trades_table.c.price_sat.label("market_price_sat"),
+            sa.func.row_number()
+            .over(
+                partition_by=trades_table.c.token_id,
+                order_by=(
+                    sa.func.coalesce(trades_table.c.settled_at, trades_table.c.created_at).desc(),
+                    trades_table.c.id.desc(),
+                ),
+            )
+            .label("price_rank"),
+        )
+        .where(trades_table.c.status == "settled")
+        .subquery()
+    )
+
     stmt = (
         sa.select(
             token_balances_table.c.token_id,
             assets_table.c.name.label("asset_name"),
             token_balances_table.c.balance,
-            tokens_table.c.unit_price_sat,
+            sa.func.coalesce(
+                latest_trade_prices.c.market_price_sat,
+                tokens_table.c.unit_price_sat,
+            ).label("unit_price_sat"),
         )
         .select_from(
             token_balances_table
             .join(tokens_table, token_balances_table.c.token_id == tokens_table.c.id)
             .join(assets_table, tokens_table.c.asset_id == assets_table.c.id)
+            .outerjoin(
+                latest_trade_prices,
+                sa.and_(
+                    latest_trade_prices.c.token_id == token_balances_table.c.token_id,
+                    latest_trade_prices.c.price_rank == 1,
+                ),
+            )
         )
         .where(token_balances_table.c.user_id == _as_uuid(user_id))
     )
