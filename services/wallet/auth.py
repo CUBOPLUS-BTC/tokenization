@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Header
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 import pyotp
@@ -41,7 +41,7 @@ def get_current_user_id(
 async def require_2fa(
     user_id: Annotated[str, Depends(get_current_user_id)],
     conn: Annotated[AsyncConnection, Depends(get_db_conn)],
-    x_2fa_code: Annotated[str | None, Header(None)] = None,
+    x_2fa_code: Annotated[str | None, Header()] = None,
 ) -> None:
     """Dependency that enforces X-2FA-Code if 2FA is enabled for the user."""
     secret = await get_user_2fa_secret(conn, user_id)
