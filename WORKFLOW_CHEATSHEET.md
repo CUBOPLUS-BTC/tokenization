@@ -3,6 +3,7 @@
 This guide summarizes the commands used to keep your fork updated and manage branches for new issues.
 
 ## 1. Syncing your fork with the official repository
+
 Run these commands whenever you want to bring the latest changes from the main project to your local environment and your GitHub fork (`origin`).
 
 ```powershell
@@ -18,6 +19,7 @@ git push origin main
 ```
 
 ## 2. Starting a new Issue
+
 Always start new work from the updated `main` branch to keep a clean history.
 
 ```powershell
@@ -29,6 +31,7 @@ git checkout -b feat/your-issue-name
 ```
 
 ## 3. Updating an active feature branch
+
 If `main` has new changes and you want them in your current working branch:
 
 ```powershell
@@ -43,6 +46,7 @@ git push origin feat/your-active-branch --force-with-lease
 ```
 
 ## 4. Useful verification commands
+
 ```powershell
 # See your remotes
 git remote -v
