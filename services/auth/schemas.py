@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -34,6 +35,14 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
+
+
 # ---------------------------------------------------------------------------
 # Response schemas
 # ---------------------------------------------------------------------------
@@ -55,6 +64,16 @@ class TokensOut(BaseModel):
 class AuthResponse(BaseModel):
     user: UserOut
     tokens: TokensOut
+
+
+class MessageResponse(BaseModel):
+    message: str
+
+
+class RoleCheckResponse(BaseModel):
+    status: Literal["allowed"]
+    actor_role: str
+    required_roles: list[str]
 
 
 # ---------------------------------------------------------------------------

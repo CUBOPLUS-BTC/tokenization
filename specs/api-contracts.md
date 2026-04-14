@@ -115,6 +115,8 @@ POST /auth/refresh
 }
 ```
 
+**Response (200):** Same token structure as register. The refresh token is rotated on every successful call.
+
 ### 2.5 Enable 2FA
 
 ```
@@ -141,6 +143,26 @@ Authorization: Bearer <token>
 ```json
 {
   "totp_code": "123456"
+}
+```
+
+### 2.7 Logout
+
+```
+POST /auth/logout
+```
+
+**Request Body:**
+```json
+{
+  "refresh_token": "eyJ..."
+}
+```
+
+**Response (200):**
+```json
+{
+  "message": "Session revoked."
 }
 ```
 

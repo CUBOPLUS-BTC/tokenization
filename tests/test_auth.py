@@ -1,4 +1,4 @@
-"""Unit tests for POST /auth/register and POST /auth/login.
+"""Unit tests for auth registration, session controls, and RBAC.
 
 These tests run entirely in-process using an AsyncMock database layer,
 so no real PostgreSQL connection is required.
@@ -8,6 +8,8 @@ Run with:
 """
 from __future__ import annotations
 
+import os
+import sys
 import uuid
 from collections import namedtuple
 from contextlib import asynccontextmanager
@@ -17,6 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 import bcrypt
+
+from services.auth.jwt_utils import decode_token, issue_token_pair
 
 # ---------------------------------------------------------------------------
 # Patch the settings + engine BEFORE importing the app so that it never tries
@@ -28,18 +32,27 @@ import bcrypt
 # A fake user row that mimics a SQLAlchemy Row
 FakeUser = namedtuple(
     "FakeUser",
-    ["id", "email", "password_hash", "display_name", "role", "created_at"],
+    [
+        "id",
+        "email",
+        "password_hash",
+        "display_name",
+        "role",
+        "created_at",
+        "deleted_at",
+    ],
 )
 
 
-def _make_fake_user(email: str, password: str) -> FakeUser:
+def _make_fake_user(email: str, password: str, *, role: str = "user") -> FakeUser:
     return FakeUser(
         id=uuid.uuid4(),
         email=email,
         password_hash=bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
         display_name="Alice",
-        role="user",
+        role=role,
         created_at=datetime.now(tz=timezone.utc),
+        deleted_at=None,
     )
 
 
@@ -49,15 +62,37 @@ def _make_fake_user(email: str, password: str) -> FakeUser:
 
 @pytest.fixture()
 def fake_settings():
-    """Minimal settings object that the auth service needs."""
-    s = MagicMock()
-    s.service_name = "auth"
-    s.env_profile = "local"
-    s.service_host = "0.0.0.0"
-    s.service_port = 8000
-    s.database_url = "postgresql://user:pass@localhost/testdb"
-    s.jwt_secret = "test-secret-key-for-unit-tests"
-    return s
+    """Environment values required to build auth settings during tests."""
+    return {
+        "ENV_PROFILE": "local",
+        "WALLET_SERVICE_URL": "http://wallet:8001",
+        "TOKENIZATION_SERVICE_URL": "http://tokenization:8002",
+        "MARKETPLACE_SERVICE_URL": "http://marketplace:8003",
+        "EDUCATION_SERVICE_URL": "http://education:8004",
+        "NOSTR_SERVICE_URL": "http://nostr:8005",
+        "POSTGRES_HOST": "localhost",
+        "POSTGRES_PORT": "5432",
+        "POSTGRES_DB": "testdb",
+        "POSTGRES_USER": "user",
+        "DATABASE_URL": "postgresql://user:pass@localhost/testdb",
+        "REDIS_URL": "redis://localhost:6379/0",
+        "BITCOIN_RPC_HOST": "localhost",
+        "BITCOIN_RPC_PORT": "18443",
+        "BITCOIN_RPC_USER": "bitcoin",
+        "BITCOIN_NETWORK": "regtest",
+        "LND_GRPC_HOST": "localhost",
+        "LND_GRPC_PORT": "10009",
+        "LND_MACAROON_PATH": "tests/fixtures/admin.macaroon",
+        "LND_TLS_CERT_PATH": "tests/fixtures/tls.cert",
+        "TAPD_GRPC_HOST": "localhost",
+        "TAPD_GRPC_PORT": "10029",
+        "NOSTR_RELAYS": "wss://relay.example.com",
+        "JWT_SECRET": "test-secret-key-for-unit-tests",
+        "JWT_ACCESS_TOKEN_EXPIRE_MINUTES": "15",
+        "JWT_REFRESH_TOKEN_EXPIRE_DAYS": "7",
+        "TOTP_ISSUER": "Platform",
+        "LOG_LEVEL": "INFO",
+    }
 
 
 @pytest.fixture()
@@ -76,18 +111,25 @@ def client(fake_settings):
     fake_engine.connect = _fake_connect
     fake_engine.dispose = AsyncMock()
 
-    with (
-        patch("services.auth.main.get_settings", return_value=fake_settings),
-        patch("services.auth.main.create_async_engine", return_value=fake_engine),
-        patch("services.auth.main._engine", fake_engine),
-    ):
-        # Import app AFTER patching
-        from services.auth.main import app
+    with patch.dict(os.environ, fake_settings, clear=False):
+        for module_name in ("services.auth.main", "common", "common.config"):
+            sys.modules.pop(module_name, None)
 
-        # Override lifespan so it doesn't rebuild the engine
-        app.router.lifespan_context = None  # disable lifespan for sync TestClient
+        import services.auth.main as auth_main
 
-        yield TestClient(app, raise_server_exceptions=True), fake_conn, fake_settings
+        auth_main._engine = fake_engine
+
+        with (
+            patch.object(auth_main, "create_refresh_session", AsyncMock()),
+            patch.object(auth_main, "rotate_refresh_session", AsyncMock(return_value=True)),
+            patch.object(auth_main, "revoke_refresh_session", AsyncMock(return_value=True)),
+        ):
+            app = auth_main.app
+
+            # Override lifespan so it doesn't rebuild the engine
+            app.router.lifespan_context = None  # disable lifespan for sync TestClient
+
+            yield TestClient(app, raise_server_exceptions=True), fake_conn, auth_main.settings
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +150,88 @@ def _assert_user_structure(user: dict, email: str):
     assert "display_name" in user
     assert user["role"] == "user"
     assert "created_at" in user
+
+
+def _auth_headers(access_token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {access_token}"}
+
+
+def _issue_access_token(fake_user: FakeUser, secret: str) -> str:
+    return issue_token_pair(
+        user_id=str(fake_user.id),
+        role=fake_user.role,
+        wallet_id=None,
+        secret=secret,
+    ).access_token
+
+
+class InMemoryRefreshSessions:
+    def __init__(self) -> None:
+        self._sessions: dict[str, dict[str, object]] = {}
+
+    async def create(
+        self,
+        conn,
+        *,
+        user_id: str,
+        token_jti: str,
+        expires_at: datetime,
+    ) -> None:
+        self._sessions[token_jti] = {
+            "user_id": user_id,
+            "expires_at": expires_at,
+            "revoked_at": None,
+            "replaced_by_jti": None,
+        }
+
+    async def rotate(
+        self,
+        conn,
+        *,
+        user_id: str,
+        current_token_jti: str,
+        replacement_token_jti: str,
+        replacement_expires_at: datetime,
+    ) -> bool:
+        session = self._sessions.get(current_token_jti)
+        if session is None:
+            return False
+        if session["user_id"] != user_id:
+            return False
+        if session["revoked_at"] is not None:
+            return False
+        if session["expires_at"] <= datetime.now(tz=timezone.utc):
+            return False
+
+        session["revoked_at"] = datetime.now(tz=timezone.utc)
+        session["replaced_by_jti"] = replacement_token_jti
+        self._sessions[replacement_token_jti] = {
+            "user_id": user_id,
+            "expires_at": replacement_expires_at,
+            "revoked_at": None,
+            "replaced_by_jti": None,
+        }
+        return True
+
+    async def revoke(
+        self,
+        conn,
+        *,
+        user_id: str,
+        token_jti: str,
+    ) -> bool:
+        session = self._sessions.get(token_jti)
+        if session is None:
+            return False
+        if session["user_id"] != user_id:
+            return False
+        if session["revoked_at"] is not None:
+            return False
+        if session["expires_at"] <= datetime.now(tz=timezone.utc):
+            return False
+
+        session["revoked_at"] = datetime.now(tz=timezone.utc)
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -346,3 +470,148 @@ class TestLogin:
             json={"email": "alice@example.com"},
         )
         assert resp.status_code == 422
+
+
+class TestRefreshTokens:
+    def test_refresh_rotation_rejects_token_reuse(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123")
+        session_store = InMemoryRefreshSessions()
+
+        with (
+            patch("services.auth.main.get_user_by_email", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.create_refresh_session", AsyncMock(side_effect=session_store.create)),
+            patch("services.auth.main.rotate_refresh_session", AsyncMock(side_effect=session_store.rotate)),
+        ):
+            login_resp = app_client.post(
+                "/auth/login",
+                json={"email": "alice@example.com", "password": "SecureP@ss123"},
+            )
+            initial_refresh_token = login_resp.json()["tokens"]["refresh_token"]
+
+            refresh_resp = app_client.post(
+                "/auth/refresh",
+                json={"refresh_token": initial_refresh_token},
+            )
+            reuse_resp = app_client.post(
+                "/auth/refresh",
+                json={"refresh_token": initial_refresh_token},
+            )
+
+        assert login_resp.status_code == 200
+        assert refresh_resp.status_code == 200
+        assert reuse_resp.status_code == 401
+        assert reuse_resp.json()["error"]["code"] == "invalid_refresh_token"
+
+        refreshed_token = refresh_resp.json()["tokens"]["refresh_token"]
+        assert refreshed_token != initial_refresh_token
+
+        old_claims = decode_token(initial_refresh_token, settings.jwt_secret, expected_type="refresh")
+        new_claims = decode_token(refreshed_token, settings.jwt_secret, expected_type="refresh")
+        assert old_claims["jti"] != new_claims["jti"]
+
+    def test_logout_revokes_refresh_session(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123")
+        session_store = InMemoryRefreshSessions()
+
+        with (
+            patch("services.auth.main.get_user_by_email", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.create_refresh_session", AsyncMock(side_effect=session_store.create)),
+            patch("services.auth.main.rotate_refresh_session", AsyncMock(side_effect=session_store.rotate)),
+            patch("services.auth.main.revoke_refresh_session", AsyncMock(side_effect=session_store.revoke)),
+        ):
+            login_resp = app_client.post(
+                "/auth/login",
+                json={"email": "alice@example.com", "password": "SecureP@ss123"},
+            )
+            refresh_token = login_resp.json()["tokens"]["refresh_token"]
+
+            logout_resp = app_client.post(
+                "/auth/logout",
+                json={"refresh_token": refresh_token},
+            )
+            reuse_resp = app_client.post(
+                "/auth/refresh",
+                json={"refresh_token": refresh_token},
+            )
+
+        assert logout_resp.status_code == 200
+        assert logout_resp.json() == {"message": "Session revoked."}
+        assert reuse_resp.status_code == 401
+        assert reuse_resp.json()["error"]["code"] == "invalid_refresh_token"
+
+
+class TestProtectedEndpoints:
+    def test_missing_bearer_token_returns_contract_401(self, client):
+        app_client, *_ = client
+
+        resp = app_client.get("/auth/roles/admin")
+
+        assert resp.status_code == 401
+        body = resp.json()
+        assert body["error"]["code"] == "authentication_required"
+        assert set(body.keys()) == {"error"}
+        assert set(body["error"].keys()) == {"code", "message"}
+
+    def test_invalid_bearer_token_returns_contract_401(self, client):
+        app_client, *_ = client
+
+        resp = app_client.get(
+            "/auth/roles/admin",
+            headers=_auth_headers("not-a-valid-jwt"),
+        )
+
+        assert resp.status_code == 401
+        body = resp.json()
+        assert body["error"]["code"] == "invalid_token"
+        assert set(body.keys()) == {"error"}
+        assert set(body["error"].keys()) == {"code", "message"}
+
+    @pytest.mark.parametrize(
+        ("role", "path", "expected_status"),
+        [
+            ("user", "/auth/roles/user", 200),
+            ("user", "/auth/roles/seller", 403),
+            ("seller", "/auth/roles/seller", 200),
+            ("seller", "/auth/roles/admin", 403),
+            ("admin", "/auth/roles/admin", 200),
+            ("admin", "/auth/roles/auditor", 200),
+            ("auditor", "/auth/roles/auditor", 200),
+            ("auditor", "/auth/roles/user", 403),
+        ],
+    )
+    def test_role_enforcement(self, client, role, path, expected_status):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123", role=role)
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+
+        with patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)):
+            resp = app_client.get(path, headers=_auth_headers(access_token))
+
+        assert resp.status_code == expected_status
+        body = resp.json()
+
+        if expected_status == 200:
+            assert body["status"] == "allowed"
+            assert body["actor_role"] == role
+        else:
+            assert body["error"]["code"] == "forbidden"
+            assert set(body.keys()) == {"error"}
+            assert set(body["error"].keys()) == {"code", "message"}
+
+    def test_me_returns_authenticated_user(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123", role="seller")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+
+        with patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)):
+            resp = app_client.get("/auth/me", headers=_auth_headers(access_token))
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == str(fake_user.id)
+        assert body["email"] == fake_user.email
+        assert body["role"] == "seller"
