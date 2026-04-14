@@ -64,6 +64,24 @@ class TapdClient:
         stub = self._get_stub()
         return stub.ListAssets(tap.ListAssetRequest())
 
+    def fetch_asset(self, taproot_asset_id: str) -> tap.Asset:
+        stub = self._get_stub()
+        response = stub.FetchAsset(
+            tap.FetchAssetRequest(
+                asset_specifier=tap.AssetSpecifier(asset_id_str=taproot_asset_id),
+                include_unconfirmed_mints=True,
+            )
+        )
+        if not response.assets:
+            raise LookupError(f"Taproot asset not found: {taproot_asset_id}")
+        return response.assets[0]
+
+    def fetch_asset_meta(self, taproot_asset_id: str) -> tap.FetchAssetMetaResponse:
+        stub = self._get_stub()
+        return stub.FetchAssetMeta(
+            tap.FetchAssetMetaRequest(asset_id_str=taproot_asset_id)
+        )
+
     def __del__(self):
         if self._channel:
             self._channel.close()

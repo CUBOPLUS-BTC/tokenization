@@ -45,6 +45,7 @@ class FakeAsset(NamedTuple):
     circulating_supply: int | None = None
     unit_price_sat: int | None = None
     minted_at: datetime | None = None
+    token_metadata: dict[str, Any] | None = None
 
 
 def _make_fake_user(*, role: str = "seller") -> FakeUser:
@@ -67,6 +68,7 @@ def _make_fake_asset(
     ai_analysis: dict[str, Any] | None = None,
     projected_roi: float | None = None,
     tokenized: bool = False,
+    token_metadata: dict[str, Any] | None = None,
 ) -> FakeAsset:
     now = datetime.now(tz=timezone.utc)
     return FakeAsset(
@@ -89,6 +91,43 @@ def _make_fake_asset(
         circulating_supply=350 if tokenized else None,
         unit_price_sat=100_000 if tokenized else None,
         minted_at=now if tokenized else None,
+        token_metadata=token_metadata,
+    )
+
+
+def _make_taproot_asset(*, asset_id: str, amount: int, name: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        amount=amount,
+        script_key=bytes.fromhex("11" * 32),
+        asset_genesis=SimpleNamespace(
+            genesis_point="f" * 64 + ":0",
+            name=name,
+            meta_hash=bytes.fromhex("22" * 32),
+            asset_id=bytes.fromhex(asset_id),
+            asset_type=0,
+            output_index=0,
+        ),
+        asset_group=SimpleNamespace(
+            tweaked_group_key=bytes.fromhex("33" * 32),
+        ),
+        chain_anchor=SimpleNamespace(
+            anchor_outpoint="e" * 64 + ":1",
+            anchor_block_hash="d" * 64,
+            block_height=144,
+        ),
+        decimal_display=SimpleNamespace(decimal_display=0),
+    )
+
+
+def _make_taproot_meta() -> SimpleNamespace:
+    return SimpleNamespace(
+        data=b'{"issuer":"tapd"}',
+        type=1,
+        meta_hash=bytes.fromhex("22" * 32),
+        decimal_display=0,
+        universe_commitments=True,
+        canonical_universe_urls=["https://universe.example.com"],
+        delegation_key=bytes.fromhex("44" * 32),
     )
 
 
@@ -338,6 +377,7 @@ class TestGetAssetDetails:
             "total_supply": fake_asset.total_supply,
             "circulating_supply": fake_asset.circulating_supply,
             "unit_price_sat": fake_asset.unit_price_sat,
+            "issuance_metadata": None,
             "minted_at": fake_asset.minted_at.isoformat().replace("+00:00", "Z"),
         }
 
@@ -421,6 +461,147 @@ class TestRequestAssetEvaluation:
             "code": "forbidden",
             "message": "Only the owning seller can evaluate this asset.",
         }
+
+
+class TestTokenizeAsset:
+    def test_owner_can_tokenize_approved_asset_with_taproot_metadata(self, client):
+        app_client, settings = client
+        fake_user = _make_fake_user(role="seller")
+        approved_asset = _make_fake_asset(fake_user.id, status="approved")
+        taproot_asset_id = "ab" * 32
+        token_metadata = {
+            "asset_id": taproot_asset_id,
+            "asset_name": approved_asset.name,
+            "meta_reveal": {
+                "data": '{"issuer":"tapd"}',
+            },
+        }
+        tokenized_asset = approved_asset._replace(
+            status="tokenized",
+            token_id=uuid.uuid4(),
+            taproot_asset_id=taproot_asset_id,
+            total_supply=1_000,
+            circulating_supply=1_000,
+            unit_price_sat=100_000,
+            minted_at=datetime.now(tz=timezone.utc),
+            token_metadata=token_metadata,
+        )
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        tapd_asset = _make_taproot_asset(
+            asset_id=taproot_asset_id,
+            amount=1_000,
+            name=approved_asset.name,
+        )
+        tapd_meta = _make_taproot_meta()
+        create_asset_token_mock = AsyncMock(return_value=tokenized_asset)
+
+        with (
+            patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=approved_asset)),
+            patch("services.tokenization.main.create_asset_token", create_asset_token_mock),
+            patch("services.tokenization.main.tapd_client.fetch_asset", return_value=tapd_asset),
+            patch("services.tokenization.main.tapd_client.fetch_asset_meta", return_value=tapd_meta),
+        ):
+            resp = app_client.post(
+                f"/assets/{approved_asset.id}/tokenize",
+                headers=_auth_headers(access_token),
+                json={
+                    "taproot_asset_id": taproot_asset_id,
+                    "total_supply": 1_000,
+                    "unit_price_sat": 100_000,
+                },
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()["asset"]
+        assert body["status"] == "tokenized"
+        assert body["token"] == {
+            "id": str(tokenized_asset.token_id),
+            "taproot_asset_id": taproot_asset_id,
+            "total_supply": 1_000,
+            "circulating_supply": 1_000,
+            "unit_price_sat": 100_000,
+            "issuance_metadata": token_metadata,
+            "minted_at": tokenized_asset.minted_at.isoformat().replace("+00:00", "Z"),
+        }
+
+        create_asset_token_mock.assert_awaited_once()
+        assert create_asset_token_mock.await_args.kwargs["asset_id"] == approved_asset.id
+        assert create_asset_token_mock.await_args.kwargs["owner_id"] == str(fake_user.id)
+        assert create_asset_token_mock.await_args.kwargs["taproot_asset_id"] == taproot_asset_id
+        assert create_asset_token_mock.await_args.kwargs["total_supply"] == 1_000
+        assert create_asset_token_mock.await_args.kwargs["circulating_supply"] == 1_000
+        assert create_asset_token_mock.await_args.kwargs["unit_price_sat"] == 100_000
+        issuance_metadata = create_asset_token_mock.await_args.kwargs["issuance_metadata"]
+        assert issuance_metadata["asset_id"] == taproot_asset_id
+        assert issuance_metadata["asset_name"] == approved_asset.name
+        assert issuance_metadata["group_key"] == "33" * 32
+        assert issuance_metadata["anchor_outpoint"] == "e" * 64 + ":1"
+        assert issuance_metadata["meta_reveal"]["data"] == '{"issuer":"tapd"}'
+
+    def test_only_approved_assets_can_be_tokenized(self, client):
+        app_client, settings = client
+        fake_user = _make_fake_user(role="seller")
+        pending_asset = _make_fake_asset(fake_user.id, status="pending")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+
+        with (
+            patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=pending_asset)),
+            patch("services.tokenization.main.tapd_client.fetch_asset") as fetch_asset_mock,
+        ):
+            resp = app_client.post(
+                f"/assets/{pending_asset.id}/tokenize",
+                headers=_auth_headers(access_token),
+                json={
+                    "taproot_asset_id": "ab" * 32,
+                    "total_supply": 1_000,
+                    "unit_price_sat": 100_000,
+                },
+            )
+
+        assert resp.status_code == 409
+        assert resp.json()["error"] == {
+            "code": "asset_state_conflict",
+            "message": "Only approved assets can be tokenized.",
+        }
+        fetch_asset_mock.assert_not_called()
+
+    def test_tokenization_rejects_taproot_supply_mismatch(self, client):
+        app_client, settings = client
+        fake_user = _make_fake_user(role="seller")
+        approved_asset = _make_fake_asset(fake_user.id, status="approved")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        taproot_asset_id = "ab" * 32
+        tapd_asset = _make_taproot_asset(
+            asset_id=taproot_asset_id,
+            amount=900,
+            name=approved_asset.name,
+        )
+
+        with (
+            patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=approved_asset)),
+            patch("services.tokenization.main.tapd_client.fetch_asset", return_value=tapd_asset),
+            patch("services.tokenization.main.tapd_client.fetch_asset_meta", return_value=_make_taproot_meta()),
+            patch("services.tokenization.main.create_asset_token", AsyncMock()) as create_asset_token_mock,
+        ):
+            resp = app_client.post(
+                f"/assets/{approved_asset.id}/tokenize",
+                headers=_auth_headers(access_token),
+                json={
+                    "taproot_asset_id": taproot_asset_id,
+                    "total_supply": 1_000,
+                    "unit_price_sat": 100_000,
+                },
+            )
+
+        assert resp.status_code == 409
+        assert resp.json()["error"] == {
+            "code": "taproot_supply_mismatch",
+            "message": "Taproot asset supply does not match the requested total supply.",
+        }
+        create_asset_token_mock.assert_not_called()
 
 
 class TestAssetEvaluationProcessor:

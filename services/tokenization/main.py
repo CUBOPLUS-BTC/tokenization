@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 import uvicorn
 
@@ -24,10 +25,12 @@ from auth.jwt_utils import decode_token
 from google.protobuf.json_format import MessageToDict
 from common import get_readiness_payload, get_settings
 from tokenization.tapd_client import TapdClient
+from tokenization.tapd_grpc import taprootassets as taproot_rpc
 from tokenization.db import (
     begin_asset_evaluation,
     complete_asset_evaluation,
     create_asset,
+    create_asset_token,
     get_asset_by_id,
     get_user_by_id,
     list_assets,
@@ -46,6 +49,7 @@ from tokenization.schemas import (
     AssetResponse,
     AssetStatus,
     AssetTokenOut,
+    AssetTokenizationRequest,
 )
 
 settings = get_settings(service_name="tokenization", default_port=8002)
@@ -178,6 +182,46 @@ def _asset_evaluation_conflict_error(message: str) -> ContractError:
     )
 
 
+def _asset_tokenization_conflict_error(message: str) -> ContractError:
+    return ContractError(
+        code="asset_state_conflict",
+        message=message,
+        status_code=status.HTTP_409_CONFLICT,
+    )
+
+
+def _taproot_asset_not_found_error() -> ContractError:
+    return ContractError(
+        code="taproot_asset_not_found",
+        message="Taproot asset not found.",
+        status_code=status.HTTP_404_NOT_FOUND,
+    )
+
+
+def _taproot_lookup_error() -> ContractError:
+    return ContractError(
+        code="taproot_lookup_failed",
+        message="Unable to fetch Taproot issuance details.",
+        status_code=status.HTTP_502_BAD_GATEWAY,
+    )
+
+
+def _taproot_asset_mismatch_error() -> ContractError:
+    return ContractError(
+        code="taproot_asset_mismatch",
+        message="Taproot asset lookup did not return the requested asset id.",
+        status_code=status.HTTP_409_CONFLICT,
+    )
+
+
+def _taproot_supply_mismatch_error() -> ContractError:
+    return ContractError(
+        code="taproot_supply_mismatch",
+        message="Taproot asset supply does not match the requested total supply.",
+        status_code=status.HTTP_409_CONFLICT,
+    )
+
+
 def _aware_datetime(value):
     if value is None:
         return None
@@ -197,6 +241,102 @@ def _optional_float(value: object) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _decode_bytes(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return value.hex()
+    return str(value)
+
+
+def _hex_bytes(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value.hex()
+    return str(value)
+
+
+def _jsonable_value(value: object):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, bytes):
+        return _decode_bytes(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonable_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable_value(item) for item in value]
+    try:
+        return MessageToDict(value, preserving_proto_field_name=True)
+    except Exception:
+        pass
+    if hasattr(value, "_asdict"):
+        return {key: _jsonable_value(item) for key, item in value._asdict().items()}
+    if hasattr(value, "__dict__"):
+        return {
+            key: _jsonable_value(item)
+            for key, item in vars(value).items()
+            if not key.startswith("_")
+        }
+    return str(value)
+
+
+def _enum_name(enum_type: object, value: object) -> str | None:
+    if value is None:
+        return None
+    try:
+        return enum_type.Name(int(value)).lower()
+    except Exception:
+        return str(value)
+
+
+def _build_taproot_issuance_metadata(
+    taproot_asset: object,
+    taproot_meta: object,
+) -> dict[str, object]:
+    asset_genesis = getattr(taproot_asset, "asset_genesis", None)
+    asset_group = getattr(taproot_asset, "asset_group", None)
+    chain_anchor = getattr(taproot_asset, "chain_anchor", None)
+    decimal_display = getattr(getattr(taproot_asset, "decimal_display", None), "decimal_display", None)
+
+    return {
+        "asset_id": _hex_bytes(getattr(asset_genesis, "asset_id", None)),
+        "asset_name": getattr(asset_genesis, "name", None),
+        "asset_type": _enum_name(
+            taproot_rpc.AssetType,
+            getattr(asset_genesis, "asset_type", None),
+        ),
+        "genesis_point": getattr(asset_genesis, "genesis_point", None),
+        "meta_hash": _hex_bytes(getattr(asset_genesis, "meta_hash", None)),
+        "output_index": getattr(asset_genesis, "output_index", None),
+        "script_key": _hex_bytes(getattr(taproot_asset, "script_key", None)),
+        "group_key": _hex_bytes(getattr(asset_group, "tweaked_group_key", None)),
+        "anchor_outpoint": getattr(chain_anchor, "anchor_outpoint", None),
+        "anchor_block_hash": getattr(chain_anchor, "anchor_block_hash", None),
+        "anchor_block_height": getattr(chain_anchor, "block_height", None),
+        "decimal_display": decimal_display,
+        "meta_reveal": {
+            "type": _enum_name(
+                taproot_rpc.AssetMetaType,
+                getattr(taproot_meta, "type", None),
+            ),
+            "meta_hash": _hex_bytes(getattr(taproot_meta, "meta_hash", None)),
+            "data": _decode_bytes(getattr(taproot_meta, "data", None)),
+            "decimal_display": getattr(taproot_meta, "decimal_display", None),
+            "universe_commitments": getattr(taproot_meta, "universe_commitments", None),
+            "canonical_universe_urls": _jsonable_value(
+                getattr(taproot_meta, "canonical_universe_urls", None)
+            ),
+            "delegation_key": _hex_bytes(getattr(taproot_meta, "delegation_key", None)),
+            "raw": _jsonable_value(taproot_meta),
+        },
+        "taproot_asset": _jsonable_value(taproot_asset),
+    }
 
 
 def _asset_out(row: object) -> AssetOut:
@@ -231,6 +371,7 @@ def _asset_token_out(row: object) -> AssetTokenOut | None:
         total_supply=_row_value(row, "total_supply"),
         circulating_supply=_row_value(row, "circulating_supply"),
         unit_price_sat=_row_value(row, "unit_price_sat"),
+        issuance_metadata=_optional_row_value(row, "token_metadata"),
         minted_at=minted_at,
     )
 
@@ -597,6 +738,79 @@ async def request_asset_evaluation(
         message="Evaluation started",
         estimated_completion=datetime.now(tz=timezone.utc) + timedelta(minutes=5),
     ).model_dump(mode="json")
+
+
+@app.post(
+    "/assets/{asset_id}/tokenize",
+    status_code=status.HTTP_201_CREATED,
+    response_model=AssetDetailResponse,
+    summary="Tokenize an approved asset into tradable fractions",
+)
+async def tokenize_asset(
+    asset_id: uuid.UUID,
+    body: AssetTokenizationRequest,
+    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin")),
+):
+    async with _runtime_engine().connect() as conn:
+        asset_row = await get_asset_by_id(conn, asset_id)
+
+    if asset_row is None:
+        raise _asset_not_found_error()
+    if str(_row_value(asset_row, "owner_id")) != principal.id:
+        raise _asset_ownership_error()
+
+    asset_status = _row_value(asset_row, "status")
+    if _optional_row_value(asset_row, "token_id") is not None or asset_status == "tokenized":
+        raise _asset_tokenization_conflict_error("Asset has already been tokenized.")
+    if asset_status != "approved":
+        raise _asset_tokenization_conflict_error("Only approved assets can be tokenized.")
+
+    try:
+        taproot_asset = tapd_client.fetch_asset(body.taproot_asset_id)
+        taproot_meta = tapd_client.fetch_asset_meta(body.taproot_asset_id)
+    except LookupError as exc:
+        raise _taproot_asset_not_found_error() from exc
+    except Exception as exc:
+        raise _taproot_lookup_error() from exc
+
+    taproot_asset_id = _hex_bytes(
+        getattr(getattr(taproot_asset, "asset_genesis", None), "asset_id", None)
+    )
+    if taproot_asset_id != body.taproot_asset_id:
+        raise _taproot_asset_mismatch_error()
+
+    issued_supply = int(getattr(taproot_asset, "amount", 0))
+    if issued_supply != body.total_supply:
+        raise _taproot_supply_mismatch_error()
+
+    issuance_metadata = _build_taproot_issuance_metadata(taproot_asset, taproot_meta)
+
+    try:
+        async with _runtime_engine().connect() as conn:
+            tokenized_row = await create_asset_token(
+                conn,
+                asset_id=asset_id,
+                owner_id=principal.id,
+                taproot_asset_id=body.taproot_asset_id,
+                total_supply=issued_supply,
+                circulating_supply=issued_supply,
+                unit_price_sat=body.unit_price_sat,
+                issuance_metadata=issuance_metadata,
+            )
+    except IntegrityError as exc:
+        raise _asset_tokenization_conflict_error(
+            "Token issuance conflicts with an existing token record."
+        ) from exc
+
+    if tokenized_row is None:
+        raise _asset_tokenization_conflict_error(
+            "Asset status changed before tokenization could complete. Please retry."
+        )
+
+    return AssetDetailResponse(asset=_asset_detail_out(tokenized_row)).model_dump(
+        mode="json",
+        exclude_none=True,
+    )
 
 
 @app.get(

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import uuid
 
 import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from pathlib import Path
@@ -12,6 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common.db.metadata import assets as assets_table
+from common.db.metadata import token_balances as token_balances_table
 from common.db.metadata import tokens as tokens_table
 from common.db.metadata import users as users_table
 
@@ -82,6 +84,7 @@ async def get_asset_by_id(
             tokens_table.c.total_supply,
             tokens_table.c.circulating_supply,
             tokens_table.c.unit_price_sat,
+            tokens_table.c.metadata.label("token_metadata"),
             tokens_table.c.minted_at,
         )
         .select_from(
@@ -182,3 +185,63 @@ async def list_assets(
     stmt = stmt.order_by(assets_table.c.created_at.desc(), assets_table.c.id.desc())
     result = await conn.execute(stmt)
     return result.fetchall()
+
+
+async def create_asset_token(
+    conn: AsyncConnection,
+    *,
+    asset_id: str | uuid.UUID,
+    owner_id: str | uuid.UUID,
+    taproot_asset_id: str,
+    total_supply: int,
+    circulating_supply: int,
+    unit_price_sat: int,
+    issuance_metadata: dict[str, object] | None,
+) -> sa.engine.Row | None:
+    now = _utc_now()
+    token_id = uuid.uuid4()
+
+    try:
+        updated_asset = await conn.execute(
+            sa.update(assets_table)
+            .where(assets_table.c.id == _as_uuid(asset_id))
+            .where(assets_table.c.owner_id == _as_uuid(owner_id))
+            .where(assets_table.c.status == "approved")
+            .values(
+                status="tokenized",
+                updated_at=now,
+            )
+            .returning(assets_table.c.id)
+        )
+        if updated_asset.fetchone() is None:
+            await conn.rollback()
+            return None
+
+        await conn.execute(
+            sa.insert(tokens_table).values(
+                id=token_id,
+                asset_id=_as_uuid(asset_id),
+                taproot_asset_id=taproot_asset_id,
+                total_supply=total_supply,
+                circulating_supply=circulating_supply,
+                unit_price_sat=unit_price_sat,
+                metadata=issuance_metadata,
+                minted_at=now,
+                created_at=now,
+            )
+        )
+        await conn.execute(
+            sa.insert(token_balances_table).values(
+                id=uuid.uuid4(),
+                user_id=_as_uuid(owner_id),
+                token_id=token_id,
+                balance=circulating_supply,
+                updated_at=now,
+            )
+        )
+        await conn.commit()
+    except IntegrityError:
+        await conn.rollback()
+        raise
+
+    return await get_asset_by_id(conn, asset_id)

@@ -17,6 +17,15 @@ def _strip_and_require_text(value: str) -> str:
     return normalized
 
 
+def _normalize_hex_string(value: str) -> str:
+    normalized = _strip_and_require_text(value).lower()
+    try:
+        bytes.fromhex(normalized)
+    except ValueError as exc:
+        raise ValueError("Value must be valid hexadecimal.") from exc
+    return normalized
+
+
 class AssetCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1)
@@ -28,6 +37,20 @@ class AssetCreateRequest(BaseModel):
     @classmethod
     def _validate_text_fields(cls, value: str) -> str:
         return _strip_and_require_text(value)
+
+
+class AssetTokenizationRequest(BaseModel):
+    taproot_asset_id: str = Field(min_length=64, max_length=64)
+    total_supply: int = Field(gt=0)
+    unit_price_sat: int = Field(gt=0)
+
+    @field_validator("taproot_asset_id")
+    @classmethod
+    def _validate_taproot_asset_id(cls, value: str) -> str:
+        normalized = _normalize_hex_string(value)
+        if len(normalized) != 64:
+            raise ValueError("Taproot asset id must be 32 bytes encoded as hex.")
+        return normalized
 
 
 class AssetOut(BaseModel):
@@ -53,6 +76,7 @@ class AssetTokenOut(BaseModel):
     total_supply: int
     circulating_supply: int
     unit_price_sat: int
+    issuance_metadata: dict[str, Any] | None = None
     minted_at: datetime
 
 
