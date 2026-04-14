@@ -1,6 +1,6 @@
 # Long-Term Objectives
 
-link: [Long-Term Objectives](strategy/long-term-objectives.md)
+link: [Long-Term Objectives](long-term-objectives.md)
 
 ## Objectives
 

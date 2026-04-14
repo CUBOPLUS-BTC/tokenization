@@ -1,6 +1,6 @@
 # Mission and Vision
 
-link: [Mission and Vision](strategy/mission-vision.md)
+link: [Mission and Vision](mission-vision.md)
 
 ## Vision
 

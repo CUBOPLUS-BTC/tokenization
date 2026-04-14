@@ -29,6 +29,7 @@ The complete design is documented in [specs/](specs), including architecture, AP
 - [specs/api-contracts.md](specs/api-contracts.md)
 - [specs/frontend-spec.md](specs/frontend-spec.md)
 - [scripts/README.md](scripts/README.md) (includes Alembic migration workflow)
+- [strategy/README.md](strategy/README.md)
 
 ## Local Infrastructure Startup
 

@@ -1,6 +1,6 @@
 # Action Plan
 
-link: [Action Plan](strategy/action-plan.md)
+link: [Action Plan](action-plan.md)
 
 ## Phase 1: Release Readiness
 

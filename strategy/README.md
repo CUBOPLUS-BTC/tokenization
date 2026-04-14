@@ -2,9 +2,9 @@
 
 This directory captures the project strategy at a glance:
 
-- `mission-vision.md`
-- `long-term-objectives.md`
-- `action-plan.md`
+- [mission-vision.md](mission-vision.md)
+- [long-term-objectives.md](long-term-objectives.md)
+- [action-plan.md](action-plan.md)
 
 Each document uses a simple wiki-style layout with:
 
