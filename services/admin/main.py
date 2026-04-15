@@ -23,7 +23,7 @@ import uvicorn
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from auth.jwt_utils import decode_token
-from common import get_readiness_payload, get_settings
+from common import configure_logging, get_readiness_payload, get_settings, install_http_security, record_audit_event
 from admin.db import (
     create_course,
     disburse_treasury,
@@ -51,6 +51,7 @@ from marketplace.db import resolve_dispute
 
 
 settings = get_settings(service_name="admin", default_port=8006)
+configure_logging(settings.log_level)
 _bearer_scheme = HTTPBearer(auto_error=False)
 _engine: AsyncEngine | object | None = None
 
@@ -343,6 +344,16 @@ def _build_user_page(
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Admin Service", lifespan=_lifespan)
+install_http_security(
+    app,
+    settings,
+    sensitive_paths=(
+        "/users/",
+        "/courses",
+        "/treasury/disburse",
+        "/escrows/",
+    ),
+)
 
 
 @app.exception_handler(ContractError)
@@ -412,12 +423,25 @@ async def list_users_endpoint(
     summary="Update a user's role (admin only)",
 )
 async def update_user_role_endpoint(
+    request: Request,
     user_id: uuid.UUID,
     body: UpdateUserRoleRequest,
     principal: AuthenticatedPrincipal = Depends(_require_admin),
 ):
     async with _runtime_engine().connect() as conn:
         row = await update_user_role(conn, user_id=user_id, new_role=body.role)
+        if row is not None:
+            await record_audit_event(
+                conn,
+                settings=settings,
+                request=request,
+                action="admin.user_role.update",
+                actor_id=principal.id,
+                actor_role=principal.role,
+                target_type="user",
+                target_id=user_id,
+                metadata={"new_role": body.role},
+            )
 
     if row is None:
         return _error("user_not_found", "User not found.", status.HTTP_404_NOT_FOUND)
@@ -437,6 +461,7 @@ async def update_user_role_endpoint(
     summary="Create a new course (admin only)",
 )
 async def create_course_endpoint(
+    request: Request,
     body: CreateCourseRequest,
     principal: AuthenticatedPrincipal = Depends(_require_admin),
 ):
@@ -448,6 +473,17 @@ async def create_course_endpoint(
             content_url=str(body.content_url),
             category=body.category,
             difficulty=body.difficulty,
+        )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="admin.course.create",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="course",
+            target_id=_row_value(row, "id"),
+            metadata={"category": body.category, "difficulty": body.difficulty},
         )
 
     return CourseResponse(course=_course_out(row)).model_dump(mode="json")
@@ -464,6 +500,7 @@ async def create_course_endpoint(
     summary="Disburse treasury funds (admin only, requires 2FA)",
 )
 async def disburse_treasury_endpoint(
+    request: Request,
     body: TreasuryDisburseRequest,
     x_2fa_code: Annotated[str | None, Header(alias="X-2FA-Code")] = None,
     principal: AuthenticatedPrincipal = Depends(_require_admin),
@@ -484,6 +521,20 @@ async def disburse_treasury_endpoint(
                     status.HTTP_409_CONFLICT,
                 )
             raise
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="admin.treasury.disburse",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="treasury_entry",
+            target_id=_row_value(row, "id"),
+            metadata={
+                "amount_sat": body.amount_sat,
+                "balance_after_sat": int(_row_value(row, "balance_after_sat", 0)),
+            },
+        )
 
     return TreasuryDisburseResponse(
         entry=_treasury_entry_out(row)
@@ -501,6 +552,7 @@ async def disburse_treasury_endpoint(
     summary="Resolve an escrow dispute (admin only, requires 2FA)",
 )
 async def resolve_escrow_dispute_endpoint(
+    request: Request,
     trade_id: uuid.UUID,
     body: AdminDisputeResolveRequest,
     x_2fa_code: Annotated[str | None, Header(alias="X-2FA-Code")] = None,
@@ -544,6 +596,17 @@ async def resolve_escrow_dispute_endpoint(
                 "Could not apply resolution due to a state conflict.",
                 status.HTTP_409_CONFLICT,
             )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="admin.dispute.resolve",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="dispute",
+            target_id=_row_value(dispute_row, "id"),
+            metadata={"trade_id": str(trade_id), "resolution": db_resolution},
+        )
 
     return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
 

@@ -23,7 +23,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from auth.jwt_utils import decode_token
 from google.protobuf.json_format import MessageToDict
-from common import InternalEventBus, RedisStreamMirror, get_readiness_payload, get_settings
+from common import (
+    InternalEventBus,
+    RedisStreamMirror,
+    configure_logging,
+    get_readiness_payload,
+    get_settings,
+    install_http_security,
+    record_audit_event,
+)
 from tokenization.tapd_client import TapdClient
 from tokenization.tapd_grpc import taprootassets as taproot_rpc
 from tokenization.db import (
@@ -54,6 +62,7 @@ from tokenization.schemas import (
 settings = get_settings(service_name="tokenization", default_port=8002)
 _bearer_scheme = HTTPBearer(auto_error=False)
 _engine: AsyncEngine | object | None = None
+configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 _background_tasks: set[asyncio.Task[Any]] = set()
 _event_bus = InternalEventBus()
@@ -600,6 +609,14 @@ def _require_roles(*allowed_roles: str):
     return dependency
 
 app = FastAPI(title="Tokenization Service", lifespan=_lifespan)
+install_http_security(
+    app,
+    settings,
+    sensitive_paths=(
+        "/assets",
+        "/assets/",
+    ),
+)
 tapd_client = TapdClient(settings)
 
 
@@ -669,6 +686,7 @@ async def tapd_assets():
     summary="Submit an asset for review",
 )
 async def submit_asset(
+    request: Request,
     body: AssetCreateRequest,
     principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin")),
 ):
@@ -681,6 +699,17 @@ async def submit_asset(
             category=body.category,
             valuation_sat=body.valuation_sat,
             documents_url=str(body.documents_url),
+        )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="tokenization.asset.submit",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="asset",
+            target_id=_row_value(row, "id"),
+            metadata={"category": body.category, "valuation_sat": body.valuation_sat},
         )
 
     try:
@@ -725,6 +754,7 @@ async def get_assets(
     summary="Request AI evaluation for an owned asset",
 )
 async def request_asset_evaluation(
+    request: Request,
     asset_id: uuid.UUID,
     principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin")),
 ):
@@ -746,6 +776,18 @@ async def request_asset_evaluation(
             asset_id=asset_id,
             owner_id=principal.id,
         )
+        if queued_row is not None:
+            await record_audit_event(
+                conn,
+                settings=settings,
+                request=request,
+                action="tokenization.asset.evaluate",
+                actor_id=principal.id,
+                actor_role=principal.role,
+                target_type="asset",
+                target_id=asset_id,
+                metadata={"previous_status": previous_status},
+            )
 
     if queued_row is None:
         raise _asset_evaluation_conflict_error(
@@ -781,6 +823,7 @@ async def request_asset_evaluation(
     summary="Tokenize an approved asset into tradable fractions",
 )
 async def tokenize_asset(
+    request: Request,
     asset_id: uuid.UUID,
     body: AssetTokenizationRequest,
     principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin")),
@@ -831,6 +874,23 @@ async def tokenize_asset(
                 unit_price_sat=body.unit_price_sat,
                 issuance_metadata=issuance_metadata,
             )
+            if tokenized_row is not None:
+                await record_audit_event(
+                    conn,
+                    settings=settings,
+                    request=request,
+                    action="tokenization.asset.tokenize",
+                    actor_id=principal.id,
+                    actor_role=principal.role,
+                    target_type="token",
+                    target_id=_row_value(tokenized_row, "token_id"),
+                    metadata={
+                        "asset_id": str(asset_id),
+                        "taproot_asset_id": body.taproot_asset_id,
+                        "total_supply": issued_supply,
+                        "unit_price_sat": body.unit_price_sat,
+                    },
+                )
     except IntegrityError as exc:
         raise _asset_tokenization_conflict_error(
             "Token issuance conflicts with an existing token record."

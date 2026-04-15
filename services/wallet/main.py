@@ -27,7 +27,7 @@ import uvicorn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from common import get_readiness_payload, get_settings
+from common import configure_logging, get_readiness_payload, get_settings, install_http_security, record_audit_event
 
 from .auth import get_current_user_id, require_2fa
 from .db import (
@@ -42,7 +42,6 @@ from .db import (
     list_wallet_transactions,
 )
 from .lnd_client import LNDClient
-from .log_filter import SensitiveDataFilter
 from .schemas import (
     OnchainAddressResponse,
     OnchainWithdrawalRequest,
@@ -61,15 +60,13 @@ from .schemas_lnd import (
 )
 from .schemas_wallet import TokenBalance, WalletResponse, WalletSummary
 
-
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.addFilter(SensitiveDataFilter())
 
 os.environ.setdefault("TAPD_MACAROON_PATH", "")
 os.environ.setdefault("TAPD_TLS_CERT_PATH", "")
 
 settings = get_settings(service_name="wallet", default_port=8001)
+configure_logging(settings.log_level)
 lnd_client = LNDClient(settings)
 
 _ALGORITHM = "HS256"
@@ -143,6 +140,15 @@ async def _noop_lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Wallet Service", lifespan=_lifespan)
+install_http_security(
+    app,
+    settings,
+    sensitive_paths=(
+        "/lightning/payments",
+        "/wallet/onchain/withdraw",
+        "/onchain/withdraw",
+    ),
+)
 _original_router_lifespan = app.router.lifespan
 
 
@@ -431,6 +437,7 @@ async def create_invoice(
 
 @app.post("/lightning/payments", response_model=Payment, tags=["Lightning"])
 async def pay_invoice(
+    request: Request,
     req: PaymentCreate,
     user_id: str = Depends(get_current_user_id),
     _: None = Depends(require_2fa),
@@ -462,6 +469,20 @@ async def pay_invoice(
             status=db_status,
             ln_payment_hash=resp.payment_hash.hex(),
             description=f"Payment to {req.payment_request[:20]}...",
+        )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="wallet.lightning.pay",
+            actor_id=user_id,
+            target_type="wallet",
+            target_id=_row_value(wallet, "id"),
+            metadata={
+                "amount_sat": amount_sat,
+                "status": db_status,
+                "payment_hash": resp.payment_hash.hex(),
+            },
         )
 
         return Payment(
@@ -551,6 +572,7 @@ async def create_onchain_address(
     include_in_schema=False,
 )
 async def withdraw_onchain(
+    request: Request,
     body: OnchainWithdrawalRequest,
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
     two_fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
@@ -594,6 +616,22 @@ async def withdraw_onchain(
             ),
             description=f"On-chain withdrawal to {body.address}",
         )
+        if row is not None:
+            await record_audit_event(
+                conn,
+                settings=settings,
+                request=request,
+                action="wallet.onchain_withdraw",
+                actor_id=principal.id,
+                actor_role=_row_value(user, "role"),
+                target_type="transaction",
+                target_id=_row_value(row, "id"),
+                metadata={
+                    "amount_sat": body.amount_sat,
+                    "fee_sat": fee_sat,
+                    "address_tail": body.address[-8:],
+                },
+            )
 
     if row is None:
         raise ContractError(

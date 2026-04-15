@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     wallet_encryption_key_file: str | None = None
 
     log_level: str
+    rate_limit_window_seconds: int = 60
+    rate_limit_write_requests: int = 60
+    rate_limit_sensitive_requests: int = 10
 
     @property
     def nostr_relay_list(self) -> list[str]:

@@ -31,10 +31,13 @@ from common import (
     InternalEventBus,
     RedisStreamFeed,
     RedisStreamMirror,
+    configure_logging,
     decode_resume_token,
     encode_resume_token,
     get_readiness_payload,
     get_settings,
+    install_http_security,
+    record_audit_event,
 )
 from marketplace.bitcoin_rpc import BitcoinRPCClient, BitcoinRPCError, FundingObservation
 from marketplace.db import (
@@ -85,6 +88,7 @@ from marketplace.schemas import (
 settings = get_settings(service_name="marketplace", default_port=8003)
 _bearer_scheme = HTTPBearer(auto_error=False)
 _engine: AsyncEngine | object | None = None
+configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 _event_bus = InternalEventBus()
 _event_bus.subscribe("trade.matched", RedisStreamMirror(settings.redis_url))
@@ -521,6 +525,15 @@ async def _refresh_escrow_funding(
 
 
 app = FastAPI(title="Marketplace Service", lifespan=_lifespan)
+install_http_security(
+    app,
+    settings,
+    sensitive_paths=(
+        "/orders",
+        "/escrows/",
+        "/trades/",
+    ),
+)
 
 
 @app.exception_handler(RequestValidationError)
@@ -767,6 +780,7 @@ async def ready():
 
 @app.post("/orders", status_code=status.HTTP_201_CREATED, response_model=OrderResponse)
 async def place_order(
+    request: Request,
     body: OrderCreateRequest,
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
@@ -859,6 +873,24 @@ async def place_order(
             published_trades.append((trade_row, escrow_row, buy_order, sell_order))
             order_row = await get_order_by_id(conn, _row_value(order_row, "id")) or order_row
 
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="marketplace.order.place",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="order",
+            target_id=_row_value(order_row, "id"),
+            metadata={
+                "token_id": str(body.token_id),
+                "side": body.side,
+                "quantity": body.quantity,
+                "price_sat": body.price_sat,
+                "matched_trades": len(published_trades),
+            },
+        )
+
     for trade_row, escrow_row, buy_order, sell_order in published_trades:
         try:
             await _publish_trade_matched(
@@ -939,6 +971,7 @@ async def get_order_book(
 
 @app.delete("/orders/{order_id}", response_model=CancelOrderResponse)
 async def delete_order(
+    request: Request,
     order_id: uuid.UUID,
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
@@ -966,6 +999,17 @@ async def delete_order(
             )
 
         cancelled_order = await cancel_order(conn, order_id=order_id, user_id=principal.id)
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="marketplace.order.cancel",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="order",
+            target_id=order_id,
+            metadata={"status": "cancelled"},
+        )
 
     assert cancelled_order is not None
     return CancelOrderResponse(
@@ -1025,6 +1069,7 @@ async def get_escrow_details(
 
 @app.post("/escrows/{trade_id}/sign", response_model=EscrowResponse)
 async def sign_escrow_release(
+    request: Request,
     trade_id: uuid.UUID,
     body: EscrowSignRequest,
     x_2fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
@@ -1083,6 +1128,17 @@ async def sign_escrow_release(
             signer_role=signer_role,
             signature=body.partial_signature,
             platform_signature=platform_sig,
+        )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="marketplace.escrow.sign_release",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="escrow",
+            target_id=_row_value(escrow_row, "id"),
+            metadata={"trade_id": str(trade_id), "signer_role": signer_role},
         )
 
     if _row_value(escrow_row, "status") == "released":
@@ -1211,6 +1267,7 @@ async def notification_stream(websocket: WebSocket):
     response_model=DisputeResponse,
 )
 async def create_dispute(
+    request: Request,
     trade_id: uuid.UUID,
     body: DisputeOpenRequest,
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
@@ -1264,6 +1321,17 @@ async def create_dispute(
                 message="Trade or escrow is not in a disputable state.",
                 status_code=status.HTTP_409_CONFLICT,
             ) from exc
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="marketplace.dispute.open",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="dispute",
+            target_id=_row_value(dispute_row, "id"),
+            metadata={"trade_id": str(trade_id)},
+        )
 
     return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
 
@@ -1273,6 +1341,7 @@ async def create_dispute(
     response_model=DisputeResponse,
 )
 async def resolve_trade_dispute(
+    request: Request,
     trade_id: uuid.UUID,
     body: DisputeResolveRequest,
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
@@ -1324,6 +1393,17 @@ async def resolve_trade_dispute(
                 message="Could not apply resolution due to a state conflict.",
                 status_code=status.HTTP_409_CONFLICT,
             ) from exc
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="marketplace.dispute.resolve",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="dispute",
+            target_id=_row_value(dispute_row, "id"),
+            metadata={"trade_id": str(trade_id), "resolution": body.resolution},
+        )
 
     return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
 
