@@ -1,3 +1,6 @@
 fastapi
 uvicorn
 pydantic-settings
+redis
+websockets
+btclib

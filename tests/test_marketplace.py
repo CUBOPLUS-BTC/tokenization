@@ -89,6 +89,7 @@ def _make_trade(
     sell_order_id: uuid.UUID,
     quantity: int,
     price_sat: int,
+    fee_sat: int = 0,
     status: str = "settled",
     created_at: datetime | None = None,
     settled_at: datetime | None = None,
@@ -102,7 +103,7 @@ def _make_trade(
         "quantity": quantity,
         "price_sat": price_sat,
         "total_sat": quantity * price_sat,
-        "fee_sat": 0,
+        "fee_sat": fee_sat,
         "status": status,
         "created_at": now,
         "settled_at": settled_at if settled_at is not None or status != "settled" else now,
@@ -136,6 +137,26 @@ def _make_escrow(
         "expires_at": expires_at or now,
         "created_at": now,
         "updated_at": now,
+    }
+
+
+def _make_treasury_entry(
+    *,
+    amount_sat: int,
+    balance_after_sat: int,
+    source_trade_id: uuid.UUID | None = None,
+    entry_type: str = "fee_income",
+    description: str | None = None,
+) -> dict[str, Any]:
+    now = datetime.now(tz=timezone.utc)
+    return {
+        "id": uuid.uuid4(),
+        "source_trade_id": source_trade_id,
+        "type": entry_type,
+        "amount_sat": amount_sat,
+        "balance_after_sat": balance_after_sat,
+        "description": description,
+        "created_at": now,
     }
 
 
@@ -873,6 +894,7 @@ def test_get_escrow_details_refreshes_funding_status_and_emits_event(client):
             "multisig_address": funded_escrow["multisig_address"],
             "locked_amount_sat": 1_000_000,
             "funding_txid": "cd" * 32,
+            "release_txid": None,
             "status": "funded",
             "expires_at": funded_escrow["expires_at"].isoformat().replace("+00:00", "Z"),
         }
@@ -930,6 +952,7 @@ def test_settle_trade_synchronizes_wallet_and_token_balances(marketplace_setting
         sell_order_id=sell_order["id"],
         quantity=10,
         price_sat=100_000,
+        fee_sat=5_000,
     )
     fake_conn = AsyncMock()
     fake_conn.execute = AsyncMock(return_value=_FetchOneResult(trade_row))
@@ -942,6 +965,7 @@ def test_settle_trade_synchronizes_wallet_and_token_balances(marketplace_setting
         patch.object(marketplace_db, "decrement_token_balance", AsyncMock()) as decrement_balance_mock,
         patch.object(marketplace_db, "increment_token_balance", AsyncMock()) as increment_balance_mock,
         patch.object(marketplace_db, "apply_order_fill", AsyncMock()) as apply_fill_mock,
+        patch.object(marketplace_db, "record_trade_fee_income", AsyncMock()) as record_fee_mock,
     ):
         result = asyncio.run(
             marketplace_db.settle_trade(
@@ -950,6 +974,7 @@ def test_settle_trade_synchronizes_wallet_and_token_balances(marketplace_setting
                 sell_order=sell_order,
                 quantity=10,
                 price_sat=100_000,
+                fee_sat=5_000,
             )
         )
 
@@ -957,7 +982,7 @@ def test_settle_trade_synchronizes_wallet_and_token_balances(marketplace_setting
     debit_wallet_mock.assert_awaited_once_with(
         fake_conn,
         wallet_row=buyer_wallet,
-        amount_sat=1_000_000,
+        amount_sat=1_005_000,
     )
     credit_wallet_mock.assert_awaited_once_with(
         fake_conn,
@@ -977,7 +1002,151 @@ def test_settle_trade_synchronizes_wallet_and_token_balances(marketplace_setting
         quantity=10,
     )
     assert apply_fill_mock.await_count == 2
+    record_fee_mock.assert_awaited_once_with(fake_conn, trade_row=trade_row)
     fake_conn.commit.assert_awaited_once()
+
+
+def test_record_trade_fee_income_creates_traceable_running_ledger_entry(marketplace_settings):
+    with patch.dict(os.environ, marketplace_settings, clear=False):
+        for module_name in (
+            "services.marketplace.db",
+            "common",
+            "common.config",
+        ):
+            sys.modules.pop(module_name, None)
+
+        import services.marketplace.db as marketplace_db
+
+    trade_row = _make_trade(
+        token_id=uuid.uuid4(),
+        buy_order_id=uuid.uuid4(),
+        sell_order_id=uuid.uuid4(),
+        quantity=4,
+        price_sat=125_000,
+        fee_sat=7_500,
+    )
+    latest_entry = _make_treasury_entry(amount_sat=3_000, balance_after_sat=23_000)
+    inserted_entry = _make_treasury_entry(
+        amount_sat=7_500,
+        balance_after_sat=30_500,
+        source_trade_id=trade_row["id"],
+        description=f"Fee income from trade {trade_row['id']}",
+    )
+    fake_conn = AsyncMock()
+    fake_conn.execute = AsyncMock(
+        side_effect=[
+            _FetchOneResult(None),
+            _FetchOneResult(latest_entry),
+            _FetchOneResult(inserted_entry),
+        ]
+    )
+
+    result = asyncio.run(
+        marketplace_db.record_trade_fee_income(
+            fake_conn,
+            trade_row=trade_row,
+        )
+    )
+
+    assert result == inserted_entry
+    insert_stmt = fake_conn.execute.await_args_list[2].args[0]
+    insert_params = insert_stmt.compile().params
+    assert insert_params["type"] == "fee_income"
+    assert insert_params["amount_sat"] == 7_500
+    assert insert_params["balance_after_sat"] == 30_500
+    assert insert_params["source_trade_id"] == trade_row["id"]
+    assert str(trade_row["id"]) in insert_params["description"]
+
+
+def test_process_escrow_signature_release_extracts_fee_and_records_treasury_income(marketplace_settings):
+    with patch.dict(os.environ, marketplace_settings, clear=False):
+        for module_name in (
+            "services.marketplace.db",
+            "common",
+            "common.config",
+        ):
+            sys.modules.pop(module_name, None)
+
+        import services.marketplace.db as marketplace_db
+
+    buyer_id = uuid.uuid4()
+    seller_id = uuid.uuid4()
+    token_id = uuid.uuid4()
+    trade_id = uuid.uuid4()
+    buy_order = _make_order(user_id=buyer_id, token_id=token_id, side="buy", quantity=3, price_sat=200_000)
+    sell_order = _make_order(user_id=seller_id, token_id=token_id, side="sell", quantity=3, price_sat=200_000)
+    trade_row = {
+        **_make_trade(
+            token_id=token_id,
+            buy_order_id=buy_order["id"],
+            sell_order_id=sell_order["id"],
+            quantity=3,
+            price_sat=200_000,
+            fee_sat=12_000,
+            status="escrowed",
+            settled_at=None,
+        ),
+        "id": trade_id,
+        "status": "escrowed",
+    }
+    escrow_row = _make_escrow(trade_id=trade_id, locked_amount_sat=600_000, funding_txid="ab" * 32, status="funded")
+    settled_at = datetime(2026, 4, 14, 18, 0, tzinfo=timezone.utc)
+    released_escrow = {
+        **escrow_row,
+        "status": "released",
+        "release_txid": "cd" * 32,
+        "collected_signatures": {
+            "buyer": "11" * 32,
+            "platform": "33" * 32,
+        },
+    }
+    settled_trade = {
+        **trade_row,
+        "status": "settled",
+        "settled_at": settled_at,
+    }
+    buyer_wallet = _make_wallet(buyer_id, onchain=1_000_000, lightning=0)
+    seller_wallet = _make_wallet(seller_id, onchain=0, lightning=0)
+
+    fake_conn = AsyncMock()
+    fake_conn.execute = AsyncMock(
+        side_effect=[
+            _FetchOneResult(released_escrow),
+            _FetchOneResult(settled_trade),
+        ]
+    )
+    fake_conn.commit = AsyncMock()
+    fake_conn.rollback = AsyncMock()
+
+    with (
+        patch.object(marketplace_db, "_generate_release_txid", return_value="cd" * 32),
+        patch.object(marketplace_db, "get_wallet_by_user_id", AsyncMock(side_effect=[buyer_wallet, seller_wallet])),
+        patch.object(marketplace_db, "debit_wallet_balance", AsyncMock()) as debit_mock,
+        patch.object(marketplace_db, "credit_wallet_balance", AsyncMock()) as credit_mock,
+        patch.object(marketplace_db, "increment_token_balance", AsyncMock()) as increment_mock,
+        patch.object(marketplace_db, "record_trade_fee_income", AsyncMock()) as record_fee_mock,
+    ):
+        trade_result, escrow_result = asyncio.run(
+            marketplace_db.process_escrow_signature(
+                fake_conn,
+                escrow_row=escrow_row,
+                trade_row=trade_row,
+                buy_order=buy_order,
+                sell_order=sell_order,
+                signer_role="buyer",
+                signature="11" * 32,
+                platform_signature="33" * 32,
+            )
+        )
+
+    assert trade_result == settled_trade
+    assert escrow_result == released_escrow
+    debit_mock.assert_awaited_once_with(fake_conn, wallet_row=buyer_wallet, amount_sat=612_000)
+    credit_mock.assert_awaited_once_with(fake_conn, wallet_row=seller_wallet, amount_sat=600_000)
+    increment_mock.assert_awaited_once_with(fake_conn, user_id=buyer_id, token_id=token_id, quantity=3)
+    record_fee_mock.assert_awaited_once_with(fake_conn, trade_row=settled_trade)
+    fake_conn.commit.assert_awaited_once()
+    fake_conn.rollback.assert_not_awaited()
 
 
 def test_apply_order_fill_caps_filled_quantity_at_total_quantity(marketplace_settings):
@@ -1504,3 +1673,622 @@ def test_notifications_websocket_replays_from_resume_token(client):
             "status": "funded",
         },
     }
+
+# ---------------------------------------------------------------------------
+# Dispute helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_dispute(
+    *,
+    trade_id: uuid.UUID,
+    opened_by: uuid.UUID,
+    reason: str = "Payment not received",
+    status: str = "open",
+    resolution: str | None = None,
+    resolved_by: uuid.UUID | None = None,
+    resolved_at: datetime | None = None,
+) -> dict[str, Any]:
+    now = datetime.now(tz=timezone.utc)
+    return {
+        "id": uuid.uuid4(),
+        "trade_id": trade_id,
+        "opened_by": opened_by,
+        "reason": reason,
+        "status": status,
+        "resolution": resolution,
+        "resolved_by": resolved_by,
+        "resolved_at": resolved_at,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Dispute API tests
+# ---------------------------------------------------------------------------
+
+
+def test_open_dispute_allows_trade_participant_to_dispute_escrowed_trade(client):
+    app_client, _, settings = client
+    fake_buyer = _make_fake_user(role="user")
+    access_token = _issue_access_token(fake_buyer, settings.jwt_secret)
+    token_id = uuid.uuid4()
+    buy_order = _make_order(
+        user_id=fake_buyer.id,
+        token_id=token_id,
+        side="buy",
+        quantity=5,
+        price_sat=100_000,
+    )
+    sell_order = _make_order(
+        user_id=uuid.uuid4(),
+        token_id=token_id,
+        side="sell",
+        quantity=5,
+        price_sat=100_000,
+    )
+    trade_row = _make_trade(
+        token_id=token_id,
+        buy_order_id=buy_order["id"],
+        sell_order_id=sell_order["id"],
+        quantity=5,
+        price_sat=100_000,
+        status="escrowed",
+        settled_at=None,
+    )
+    dispute_row = _make_dispute(trade_id=trade_row["id"], opened_by=fake_buyer.id)
+
+    with (
+        patch("services.marketplace.main.get_user_by_id", AsyncMock(return_value=fake_buyer)),
+        patch("services.marketplace.main.get_trade_by_id", AsyncMock(return_value=trade_row)),
+        patch(
+            "services.marketplace.main.get_order_by_id",
+            AsyncMock(side_effect=[buy_order, sell_order]),
+        ),
+        patch("services.marketplace.main.get_dispute_by_trade_id", AsyncMock(return_value=None)),
+        patch("services.marketplace.main.open_dispute", AsyncMock(return_value=dispute_row)) as open_dispute_mock,
+    ):
+        response = app_client.post(
+            f"/trades/{trade_row['id']}/dispute",
+            headers=_auth_headers(access_token),
+            json={"reason": "Payment not received"},
+        )
+
+    assert response.status_code == 201
+    body = response.json()["dispute"]
+    assert body["trade_id"] == str(trade_row["id"])
+    assert body["opened_by"] == str(fake_buyer.id)
+    assert body["reason"] == "Payment not received"
+    assert body["status"] == "open"
+    assert body["resolution"] is None
+    open_dispute_mock.assert_awaited_once_with(
+        ANY,
+        trade_id=trade_row["id"],
+        opened_by=str(fake_buyer.id),
+        reason="Payment not received",
+    )
+
+
+def test_open_dispute_rejects_non_participant(client):
+    app_client, _, settings = client
+    outsider = _make_fake_user(role="user")
+    access_token = _issue_access_token(outsider, settings.jwt_secret)
+    token_id = uuid.uuid4()
+    buy_order = _make_order(
+        user_id=uuid.uuid4(),
+        token_id=token_id,
+        side="buy",
+        quantity=5,
+        price_sat=100_000,
+    )
+    sell_order = _make_order(
+        user_id=uuid.uuid4(),
+        token_id=token_id,
+        side="sell",
+        quantity=5,
+        price_sat=100_000,
+    )
+    trade_row = _make_trade(
+        token_id=token_id,
+        buy_order_id=buy_order["id"],
+        sell_order_id=sell_order["id"],
+        quantity=5,
+        price_sat=100_000,
+        status="escrowed",
+        settled_at=None,
+    )
+
+    with (
+        patch("services.marketplace.main.get_user_by_id", AsyncMock(return_value=outsider)),
+        patch("services.marketplace.main.get_trade_by_id", AsyncMock(return_value=trade_row)),
+        patch(
+            "services.marketplace.main.get_order_by_id",
+            AsyncMock(side_effect=[buy_order, sell_order]),
+        ),
+    ):
+        response = app_client.post(
+            f"/trades/{trade_row['id']}/dispute",
+            headers=_auth_headers(access_token),
+            json={"reason": "Trying to dispute someone else's trade"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+def test_open_dispute_rejects_trade_not_in_escrowed_state(client):
+    app_client, _, settings = client
+    fake_buyer = _make_fake_user(role="user")
+    access_token = _issue_access_token(fake_buyer, settings.jwt_secret)
+    token_id = uuid.uuid4()
+    buy_order = _make_order(
+        user_id=fake_buyer.id,
+        token_id=token_id,
+        side="buy",
+        quantity=5,
+        price_sat=100_000,
+    )
+    sell_order = _make_order(
+        user_id=uuid.uuid4(),
+        token_id=token_id,
+        side="sell",
+        quantity=5,
+        price_sat=100_000,
+    )
+    pending_trade = _make_trade(
+        token_id=token_id,
+        buy_order_id=buy_order["id"],
+        sell_order_id=sell_order["id"],
+        quantity=5,
+        price_sat=100_000,
+        status="pending",
+        settled_at=None,
+    )
+
+    with (
+        patch("services.marketplace.main.get_user_by_id", AsyncMock(return_value=fake_buyer)),
+        patch("services.marketplace.main.get_trade_by_id", AsyncMock(return_value=pending_trade)),
+        patch(
+            "services.marketplace.main.get_order_by_id",
+            AsyncMock(side_effect=[buy_order, sell_order]),
+        ),
+    ):
+        response = app_client.post(
+            f"/trades/{pending_trade['id']}/dispute",
+            headers=_auth_headers(access_token),
+            json={"reason": "Should not work"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "trade_state_conflict"
+
+
+def test_open_dispute_rejects_duplicate_dispute(client):
+    app_client, _, settings = client
+    fake_buyer = _make_fake_user(role="user")
+    access_token = _issue_access_token(fake_buyer, settings.jwt_secret)
+    token_id = uuid.uuid4()
+    buy_order = _make_order(
+        user_id=fake_buyer.id,
+        token_id=token_id,
+        side="buy",
+        quantity=5,
+        price_sat=100_000,
+    )
+    sell_order = _make_order(
+        user_id=uuid.uuid4(),
+        token_id=token_id,
+        side="sell",
+        quantity=5,
+        price_sat=100_000,
+    )
+    trade_row = _make_trade(
+        token_id=token_id,
+        buy_order_id=buy_order["id"],
+        sell_order_id=sell_order["id"],
+        quantity=5,
+        price_sat=100_000,
+        status="escrowed",
+        settled_at=None,
+    )
+    existing_dispute = _make_dispute(trade_id=trade_row["id"], opened_by=fake_buyer.id)
+
+    with (
+        patch("services.marketplace.main.get_user_by_id", AsyncMock(return_value=fake_buyer)),
+        patch("services.marketplace.main.get_trade_by_id", AsyncMock(return_value=trade_row)),
+        patch(
+            "services.marketplace.main.get_order_by_id",
+            AsyncMock(side_effect=[buy_order, sell_order]),
+        ),
+        patch("services.marketplace.main.get_dispute_by_trade_id", AsyncMock(return_value=existing_dispute)),
+    ):
+        response = app_client.post(
+            f"/trades/{trade_row['id']}/dispute",
+            headers=_auth_headers(access_token),
+            json={"reason": "Duplicate attempt"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "dispute_already_exists"
+
+
+def test_resolve_dispute_release_settles_trade_and_transfers_value(client):
+    app_client, _, settings = client
+    admin_user = _make_fake_user(role="admin")
+    access_token = _issue_access_token(admin_user, settings.jwt_secret)
+    token_id = uuid.uuid4()
+    trade_id = uuid.uuid4()
+    disputed_trade = {
+        **_make_trade(
+            token_id=token_id,
+            buy_order_id=uuid.uuid4(),
+            sell_order_id=uuid.uuid4(),
+            quantity=5,
+            price_sat=100_000,
+            status="disputed",
+            settled_at=None,
+        ),
+        "id": trade_id,
+        "status": "disputed",
+    }
+    open_dispute_row = _make_dispute(trade_id=trade_id, opened_by=uuid.uuid4())
+    resolved_trade = {**disputed_trade, "status": "settled"}
+    resolved_escrow = _make_escrow(trade_id=trade_id, locked_amount_sat=500_000, status="released")
+    resolved_dispute = {
+        **open_dispute_row,
+        "status": "resolved",
+        "resolution": "release",
+        "resolved_by": admin_user.id,
+        "resolved_at": datetime.now(tz=timezone.utc),
+    }
+
+    with (
+        patch("services.marketplace.main.get_user_by_id", AsyncMock(return_value=admin_user)),
+        patch("services.marketplace.main.get_trade_by_id", AsyncMock(return_value=disputed_trade)),
+        patch("services.marketplace.main.get_dispute_by_trade_id", AsyncMock(return_value=open_dispute_row)),
+        patch(
+            "services.marketplace.main.resolve_dispute",
+            AsyncMock(return_value=(resolved_dispute, resolved_trade, resolved_escrow)),
+        ) as resolve_dispute_mock,
+    ):
+        response = app_client.post(
+            f"/trades/{trade_id}/dispute/resolve",
+            headers=_auth_headers(access_token),
+            json={"resolution": "release"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()["dispute"]
+    assert body["status"] == "resolved"
+    assert body["resolution"] == "release"
+    assert body["resolved_by"] == str(admin_user.id)
+    resolve_dispute_mock.assert_awaited_once_with(
+        ANY,
+        trade_id=trade_id,
+        resolved_by=str(admin_user.id),
+        resolution="release",
+    )
+
+
+def test_resolve_dispute_refund_sets_escrow_to_refunded(client):
+    app_client, _, settings = client
+    admin_user = _make_fake_user(role="admin")
+    access_token = _issue_access_token(admin_user, settings.jwt_secret)
+    token_id = uuid.uuid4()
+    trade_id = uuid.uuid4()
+    disputed_trade = {
+        **_make_trade(
+            token_id=token_id,
+            buy_order_id=uuid.uuid4(),
+            sell_order_id=uuid.uuid4(),
+            quantity=5,
+            price_sat=100_000,
+            status="disputed",
+            settled_at=None,
+        ),
+        "id": trade_id,
+        "status": "disputed",
+    }
+    open_dispute_row = _make_dispute(trade_id=trade_id, opened_by=uuid.uuid4())
+    resolved_trade = {**disputed_trade, "status": "settled"}
+    refunded_escrow = _make_escrow(trade_id=trade_id, locked_amount_sat=500_000, status="refunded")
+    resolved_dispute = {
+        **open_dispute_row,
+        "status": "resolved",
+        "resolution": "refund",
+        "resolved_by": admin_user.id,
+        "resolved_at": datetime.now(tz=timezone.utc),
+    }
+
+    with (
+        patch("services.marketplace.main.get_user_by_id", AsyncMock(return_value=admin_user)),
+        patch("services.marketplace.main.get_trade_by_id", AsyncMock(return_value=disputed_trade)),
+        patch("services.marketplace.main.get_dispute_by_trade_id", AsyncMock(return_value=open_dispute_row)),
+        patch(
+            "services.marketplace.main.resolve_dispute",
+            AsyncMock(return_value=(resolved_dispute, resolved_trade, refunded_escrow)),
+        ) as resolve_dispute_mock,
+    ):
+        response = app_client.post(
+            f"/trades/{trade_id}/dispute/resolve",
+            headers=_auth_headers(access_token),
+            json={"resolution": "refund"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()["dispute"]
+    assert body["status"] == "resolved"
+    assert body["resolution"] == "refund"
+    resolve_dispute_mock.assert_awaited_once_with(
+        ANY,
+        trade_id=trade_id,
+        resolved_by=str(admin_user.id),
+        resolution="refund",
+    )
+
+
+def test_resolve_dispute_rejects_non_admin(client):
+    app_client, _, settings = client
+    regular_user = _make_fake_user(role="user")
+    access_token = _issue_access_token(regular_user, settings.jwt_secret)
+    trade_id = uuid.uuid4()
+
+    with patch("services.marketplace.main.get_user_by_id", AsyncMock(return_value=regular_user)):
+        response = app_client.post(
+            f"/trades/{trade_id}/dispute/resolve",
+            headers=_auth_headers(access_token),
+            json={"resolution": "release"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+def test_resolve_dispute_rejects_non_disputed_trade(client):
+    app_client, _, settings = client
+    admin_user = _make_fake_user(role="admin")
+    access_token = _issue_access_token(admin_user, settings.jwt_secret)
+    token_id = uuid.uuid4()
+    trade_id = uuid.uuid4()
+    escrowed_trade = {
+        **_make_trade(
+            token_id=token_id,
+            buy_order_id=uuid.uuid4(),
+            sell_order_id=uuid.uuid4(),
+            quantity=5,
+            price_sat=100_000,
+            status="escrowed",
+            settled_at=None,
+        ),
+        "id": trade_id,
+        "status": "escrowed",
+    }
+
+    with (
+        patch("services.marketplace.main.get_user_by_id", AsyncMock(return_value=admin_user)),
+        patch("services.marketplace.main.get_trade_by_id", AsyncMock(return_value=escrowed_trade)),
+    ):
+        response = app_client.post(
+            f"/trades/{trade_id}/dispute/resolve",
+            headers=_auth_headers(access_token),
+            json={"resolution": "release"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "trade_state_conflict"
+
+
+# ---------------------------------------------------------------------------
+# Dispute DB unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_open_dispute_db_updates_trade_and_escrow_status(marketplace_settings):
+    with patch.dict(os.environ, marketplace_settings, clear=False):
+        for module_name in ("services.marketplace.db", "common", "common.config"):
+            sys.modules.pop(module_name, None)
+
+        import services.marketplace.db as marketplace_db
+
+    trade_id = uuid.uuid4()
+    token_id = uuid.uuid4()
+    opener_id = uuid.uuid4()
+    trade_row = {
+        **_make_trade(
+            token_id=token_id,
+            buy_order_id=uuid.uuid4(),
+            sell_order_id=uuid.uuid4(),
+            quantity=5,
+            price_sat=100_000,
+            status="disputed",
+            settled_at=None,
+        ),
+        "id": trade_id,
+    }
+    escrow_row = _make_escrow(trade_id=trade_id, locked_amount_sat=500_000, status="disputed")
+    dispute_row = _make_dispute(trade_id=trade_id, opened_by=opener_id)
+
+    fake_conn = AsyncMock()
+    fake_conn.execute = AsyncMock(
+        side_effect=[
+            _FetchOneResult(trade_row),   # UPDATE trades SET status='disputed'
+            _FetchOneResult(escrow_row),  # UPDATE escrows SET status='disputed'
+            _FetchOneResult(dispute_row), # INSERT INTO disputes
+        ]
+    )
+    fake_conn.commit = AsyncMock()
+    fake_conn.rollback = AsyncMock()
+
+    result = asyncio.run(
+        marketplace_db.open_dispute(
+            fake_conn,
+            trade_id=trade_id,
+            opened_by=opener_id,
+            reason="Documentation incomplete",
+        )
+    )
+
+    assert result == dispute_row
+    assert fake_conn.execute.await_count == 3
+    fake_conn.commit.assert_awaited_once()
+    fake_conn.rollback.assert_not_awaited()
+
+
+def test_resolve_dispute_db_release_debits_buyer_and_transfers_tokens(marketplace_settings):
+    with patch.dict(os.environ, marketplace_settings, clear=False):
+        for module_name in ("services.marketplace.db", "common", "common.config"):
+            sys.modules.pop(module_name, None)
+
+        import services.marketplace.db as marketplace_db
+
+    trade_id = uuid.uuid4()
+    token_id = uuid.uuid4()
+    buyer_id = uuid.uuid4()
+    seller_id = uuid.uuid4()
+    buy_order = _make_order(user_id=buyer_id, token_id=token_id, side="buy", quantity=5, price_sat=100_000)
+    sell_order = _make_order(user_id=seller_id, token_id=token_id, side="sell", quantity=5, price_sat=100_000)
+    trade_row = {
+        **_make_trade(
+            token_id=token_id,
+            buy_order_id=buy_order["id"],
+            sell_order_id=sell_order["id"],
+            quantity=5,
+            price_sat=100_000,
+            fee_sat=10_000,
+            status="disputed",
+            settled_at=None,
+        ),
+        "id": trade_id,
+        "status": "disputed",
+    }
+    escrow_row = _make_escrow(trade_id=trade_id, locked_amount_sat=500_000, status="disputed")
+    settled_trade = {**trade_row, "status": "settled"}
+    released_escrow = {**escrow_row, "status": "released"}
+    resolved_dispute = _make_dispute(
+        trade_id=trade_id,
+        opened_by=buyer_id,
+        status="resolved",
+        resolution="release",
+    )
+    admin_id = uuid.uuid4()
+    buyer_wallet = _make_wallet(buyer_id, onchain=2_000_000, lightning=0)
+    seller_wallet = _make_wallet(seller_id, onchain=0, lightning=0)
+
+    fake_conn = AsyncMock()
+    fake_conn.execute = AsyncMock(
+        side_effect=[
+            _FetchOneResult(trade_row),       # SELECT trade
+            _FetchOneResult(escrow_row),      # SELECT escrow
+            _FetchOneResult(buy_order),       # SELECT buy order
+            _FetchOneResult(sell_order),      # SELECT sell order
+            _FetchOneResult(released_escrow), # UPDATE escrow status
+            _FetchOneResult(settled_trade),   # UPDATE trade status
+            _FetchOneResult(resolved_dispute),# UPDATE dispute status
+        ]
+    )
+    fake_conn.commit = AsyncMock()
+    fake_conn.rollback = AsyncMock()
+
+    with (
+        patch.object(marketplace_db, "get_wallet_by_user_id", AsyncMock(side_effect=[buyer_wallet, seller_wallet])),
+        patch.object(marketplace_db, "debit_wallet_balance", AsyncMock()) as debit_mock,
+        patch.object(marketplace_db, "credit_wallet_balance", AsyncMock()) as credit_mock,
+        patch.object(marketplace_db, "increment_token_balance", AsyncMock()) as increment_mock,
+        patch.object(marketplace_db, "record_trade_fee_income", AsyncMock()) as record_fee_mock,
+    ):
+        dispute_result, trade_result, escrow_result = asyncio.run(
+            marketplace_db.resolve_dispute(
+                fake_conn,
+                trade_id=trade_id,
+                resolved_by=admin_id,
+                resolution="release",
+            )
+        )
+
+    assert dispute_result == resolved_dispute
+    assert trade_result == settled_trade
+    assert escrow_result == released_escrow
+    debit_mock.assert_awaited_once_with(fake_conn, wallet_row=buyer_wallet, amount_sat=510_000)
+    credit_mock.assert_awaited_once_with(fake_conn, wallet_row=seller_wallet, amount_sat=500_000)
+    increment_mock.assert_awaited_once_with(fake_conn, user_id=buyer_id, token_id=token_id, quantity=5)
+    record_fee_mock.assert_awaited_once_with(fake_conn, trade_row=settled_trade)
+    fake_conn.commit.assert_awaited_once()
+    fake_conn.rollback.assert_not_awaited()
+
+
+def test_resolve_dispute_db_refund_returns_tokens_to_seller(marketplace_settings):
+    with patch.dict(os.environ, marketplace_settings, clear=False):
+        for module_name in ("services.marketplace.db", "common", "common.config"):
+            sys.modules.pop(module_name, None)
+
+        import services.marketplace.db as marketplace_db
+
+    trade_id = uuid.uuid4()
+    token_id = uuid.uuid4()
+    buyer_id = uuid.uuid4()
+    seller_id = uuid.uuid4()
+    buy_order = _make_order(user_id=buyer_id, token_id=token_id, side="buy", quantity=8, price_sat=50_000)
+    sell_order = _make_order(user_id=seller_id, token_id=token_id, side="sell", quantity=8, price_sat=50_000)
+    trade_row = {
+        **_make_trade(
+            token_id=token_id,
+            buy_order_id=buy_order["id"],
+            sell_order_id=sell_order["id"],
+            quantity=8,
+            price_sat=50_000,
+            status="disputed",
+            settled_at=None,
+        ),
+        "id": trade_id,
+        "status": "disputed",
+    }
+    escrow_row = _make_escrow(trade_id=trade_id, locked_amount_sat=400_000, status="disputed")
+    settled_trade = {**trade_row, "status": "settled"}
+    refunded_escrow = {**escrow_row, "status": "refunded"}
+    resolved_dispute = _make_dispute(
+        trade_id=trade_id,
+        opened_by=buyer_id,
+        status="resolved",
+        resolution="refund",
+    )
+    admin_id = uuid.uuid4()
+
+    fake_conn = AsyncMock()
+    fake_conn.execute = AsyncMock(
+        side_effect=[
+            _FetchOneResult(trade_row),       # SELECT trade
+            _FetchOneResult(escrow_row),      # SELECT escrow
+            _FetchOneResult(buy_order),       # SELECT buy order
+            _FetchOneResult(sell_order),      # SELECT sell order
+            _FetchOneResult(refunded_escrow), # UPDATE escrow status
+            _FetchOneResult(settled_trade),   # UPDATE trade status
+            _FetchOneResult(resolved_dispute),# UPDATE dispute status
+        ]
+    )
+    fake_conn.commit = AsyncMock()
+    fake_conn.rollback = AsyncMock()
+
+    with (
+        patch.object(marketplace_db, "increment_token_balance", AsyncMock()) as increment_mock,
+        patch.object(marketplace_db, "debit_wallet_balance", AsyncMock()) as debit_mock,
+        patch.object(marketplace_db, "credit_wallet_balance", AsyncMock()) as credit_mock,
+    ):
+        dispute_result, trade_result, escrow_result = asyncio.run(
+            marketplace_db.resolve_dispute(
+                fake_conn,
+                trade_id=trade_id,
+                resolved_by=admin_id,
+                resolution="refund",
+            )
+        )
+
+    assert dispute_result == resolved_dispute
+    assert trade_result == settled_trade
+    assert escrow_result == refunded_escrow
+    # Token quantity returned to seller, no wallet debits
+    increment_mock.assert_awaited_once_with(fake_conn, user_id=seller_id, token_id=token_id, quantity=8)
+    debit_mock.assert_not_awaited()
+    credit_mock.assert_not_awaited()
+    fake_conn.commit.assert_awaited_once()
+    fake_conn.rollback.assert_not_awaited()

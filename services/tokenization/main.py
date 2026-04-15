@@ -57,6 +57,7 @@ _engine: AsyncEngine | object | None = None
 logger = logging.getLogger(__name__)
 _background_tasks: set[asyncio.Task[Any]] = set()
 _event_bus = InternalEventBus()
+_event_bus.subscribe("asset.created", RedisStreamMirror(settings.redis_url))
 _event_bus.subscribe("ai.evaluation.complete", RedisStreamMirror(settings.redis_url))
 
 
@@ -466,6 +467,20 @@ async def _publish_asset_evaluation_complete(row: object) -> None:
     await _event_bus.publish("ai.evaluation.complete", payload)
 
 
+async def _publish_asset_created(row: object) -> None:
+    payload = {
+        "event": "asset_created",
+        "asset_id": str(_row_value(row, "id")),
+        "owner_id": str(_row_value(row, "owner_id")),
+        "name": _row_value(row, "name"),
+        "category": _row_value(row, "category"),
+        "valuation_sat": int(_row_value(row, "valuation_sat", 0)),
+        "status": _row_value(row, "status"),
+        "created_at": _isoformat_utc(_row_value(row, "created_at")),
+    }
+    await _event_bus.publish("asset.created", payload)
+
+
 async def _publish_token_minted(row: object) -> None:
     payload = {
         "event": "token_minted",
@@ -667,6 +682,11 @@ async def submit_asset(
             valuation_sat=body.valuation_sat,
             documents_url=str(body.documents_url),
         )
+
+    try:
+        await _publish_asset_created(row)
+    except Exception:
+        logger.exception("Asset created event publish failed for asset %s", _row_value(row, "id"))
 
     return AssetResponse(asset=_asset_out(row)).model_dump(mode="json")
 

@@ -11,6 +11,8 @@ OrderSide = Literal["buy", "sell"]
 OrderStatus = Literal["open", "partially_filled", "filled", "cancelled"]
 TradeStatus = Literal["pending", "escrowed", "settled", "disputed"]
 EscrowStatus = Literal["created", "funded", "released", "refunded", "disputed"]
+DisputeStatus = Literal["open", "resolved"]
+DisputeResolution = Literal["refund", "release"]
 
 
 class OrderCreateRequest(BaseModel):
@@ -85,9 +87,38 @@ class EscrowOut(BaseModel):
     multisig_address: str
     locked_amount_sat: int
     funding_txid: str | None = None
+    release_txid: str | None = None
     status: EscrowStatus
     expires_at: datetime
 
 
 class EscrowResponse(BaseModel):
     escrow: EscrowOut
+
+
+class EscrowSignRequest(BaseModel):
+    partial_signature: str = Field(min_length=1)
+
+
+class DisputeOpenRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class DisputeResolveRequest(BaseModel):
+    resolution: DisputeResolution
+
+
+class DisputeOut(BaseModel):
+    id: UUID
+    trade_id: UUID
+    opened_by: UUID
+    reason: str
+    status: DisputeStatus
+    resolution: DisputeResolution | None = None
+    resolved_by: UUID | None = None
+    resolved_at: datetime | None = None
+    created_at: datetime
+
+
+class DisputeResponse(BaseModel):
+    dispute: DisputeOut

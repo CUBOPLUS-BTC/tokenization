@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import hmac
 import logging
 from pathlib import Path
 import sys
+import time
 from typing import Any
 import uuid
 
 from fastapi import Depends, FastAPI, Query, Request, Security, WebSocket, WebSocketDisconnect, status
+from fastapi import Header
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -37,6 +42,7 @@ from marketplace.db import (
     create_order,
     create_trade_escrow,
     find_best_match,
+    get_dispute_by_trade_id,
     get_escrow_by_trade_id,
     get_last_trade_price_for_token,
     get_order_by_id,
@@ -51,12 +57,20 @@ from marketplace.db import (
     list_orders,
     list_trades,
     mark_escrow_funded,
+    open_dispute,
+    process_escrow_signature,
+    resolve_dispute,
 )
 from marketplace.schemas import (
     CancelOrderResponse,
     CancelledOrderOut,
+    DisputeOpenRequest,
+    DisputeOut,
+    DisputeResolveRequest,
+    DisputeResponse,
     EscrowOut,
     EscrowResponse,
+    EscrowSignRequest,
     OrderBookLevel,
     OrderBookResponse,
     OrderCreateRequest,
@@ -76,6 +90,7 @@ _event_bus = InternalEventBus()
 _event_bus.subscribe("trade.matched", RedisStreamMirror(settings.redis_url))
 _event_bus.subscribe("escrow.funded", RedisStreamMirror(settings.redis_url))
 _realtime_feed = RedisStreamFeed(settings.redis_url)
+_event_bus.subscribe("escrow.released", RedisStreamMirror(settings.redis_url))
 _bitcoin_rpc_client = (
     BitcoinRPCClient(
         host=settings.bitcoin_rpc_host,
@@ -195,8 +210,23 @@ def _escrow_out(row: object) -> EscrowOut:
         multisig_address=_row_value(row, "multisig_address"),
         locked_amount_sat=int(_row_value(row, "locked_amount_sat", 0)),
         funding_txid=_row_value(row, "funding_txid"),
+        release_txid=_row_value(row, "release_txid"),
         status=_row_value(row, "status"),
         expires_at=_row_value(row, "expires_at"),
+    )
+
+
+def _dispute_out(row: object) -> DisputeOut:
+    return DisputeOut(
+        id=_row_value(row, "id"),
+        trade_id=_row_value(row, "trade_id"),
+        opened_by=_row_value(row, "opened_by"),
+        reason=_row_value(row, "reason"),
+        status=_row_value(row, "status"),
+        resolution=_row_value(row, "resolution"),
+        resolved_by=_row_value(row, "resolved_by"),
+        resolved_at=_row_value(row, "resolved_at"),
+        created_at=_row_value(row, "created_at"),
     )
 
 
@@ -357,6 +387,98 @@ def _escrow_not_found_error() -> ContractError:
         message="Escrow not found for this trade.",
         status_code=status.HTTP_404_NOT_FOUND,
     )
+
+
+# ---------------------------------------------------------------------------
+# 2FA helpers (TOTP) used by the sign endpoint
+# ---------------------------------------------------------------------------
+
+_TOTP_DIGITS = 6
+_TOTP_PERIOD_SECONDS = 30
+
+
+def _generate_totp(secret: str, counter: int) -> str:
+    normalized = secret.strip().replace(" ", "").upper()
+    key = base64.b32decode(normalized, casefold=True)
+    digest = hmac.new(key, counter.to_bytes(8, "big"), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    binary = int.from_bytes(digest[offset : offset + 4], "big") & 0x7FFFFFFF
+    return str(binary % (10**_TOTP_DIGITS)).zfill(_TOTP_DIGITS)
+
+
+def _verify_totp_code(secret: str, code: str) -> bool:
+    normalized = code.strip()
+    if not normalized.isdigit() or len(normalized) != _TOTP_DIGITS:
+        return False
+    counter = int(time.time() // _TOTP_PERIOD_SECONDS)
+    try:
+        return any(
+            hmac.compare_digest(_generate_totp(secret, counter + offset), normalized)
+            for offset in (-1, 0, 1)
+        )
+    except (ValueError, Exception):
+        return False
+
+
+async def _check_2fa(conn: object, user_id: str, code: str | None) -> None:
+    """Verify 2FA code when the user has TOTP configured."""
+    user_row = await get_user_by_id(conn, user_id)
+    totp_secret = _row_value(user_row, "totp_secret") if user_row is not None else None
+    if not totp_secret:
+        return
+    if code is None:
+        raise ContractError(
+            code="2fa_required",
+            message="Two-factor authentication code is required.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    if not _verify_totp_code(str(totp_secret), code):
+        raise ContractError(
+            code="2fa_invalid",
+            message="Invalid two-factor authentication code.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+
+def _validate_hex_signature(value: str) -> None:
+    """Ensure partial_signature is a non-empty hex string."""
+    try:
+        if not value or bytes.fromhex(value) == b"":
+            raise ValueError
+    except ValueError:
+        raise ContractError(
+            code="invalid_signature",
+            message="partial_signature must be a non-empty hex string.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
+
+def _derive_platform_release_signature(escrow_id: uuid.UUID, trade_id: uuid.UUID) -> str:
+    """Derive a deterministic platform counter-signature for escrow release."""
+    secret = (settings.wallet_encryption_key or settings.jwt_secret or settings.service_name).encode()
+    msg = f"escrow-release:{escrow_id}:{trade_id}".encode()
+    return hmac.new(secret, msg, hashlib.sha256).hexdigest()
+
+
+async def _publish_escrow_released(
+    trade_row: object,
+    *,
+    escrow_row: object,
+    buy_order: object,
+    sell_order: object,
+) -> None:
+    payload = {
+        "event": "escrow_released",
+        "trade_id": str(_row_value(trade_row, "id")),
+        "escrow_id": str(_row_value(escrow_row, "id")),
+        "buyer_id": str(_row_value(buy_order, "user_id")),
+        "seller_id": str(_row_value(sell_order, "user_id")),
+        "release_txid": _row_value(escrow_row, "release_txid"),
+        "status": _row_value(escrow_row, "status"),
+        "trade_status": _row_value(trade_row, "status"),
+        "settled_at": _isoformat(_row_value(trade_row, "settled_at")),
+    }
+    await _event_bus.publish("escrow.released", payload)
 
 
 async def _scan_escrow_funding(escrow_row: object) -> FundingObservation | None:
@@ -545,6 +667,23 @@ def _notification_message(principal_id: str, *, topic: str, payload: dict[str, A
                 "escrow_id": payload.get("escrow_id"),
                 "txid": payload.get("funding_txid"),
                 "status": payload.get("status"),
+            },
+        }
+
+    if topic == "escrow.released":
+        participant_ids = {payload.get("buyer_id"), payload.get("seller_id")}
+        if principal_id not in participant_ids:
+            return None
+
+        return {
+            "event": "escrow_released",
+            "data": {
+                "trade_id": payload.get("trade_id"),
+                "escrow_id": payload.get("escrow_id"),
+                "txid": payload.get("release_txid"),
+                "status": payload.get("status"),
+                "trade_status": payload.get("trade_status"),
+                "settled_at": payload.get("settled_at"),
             },
         }
 
@@ -884,6 +1023,82 @@ async def get_escrow_details(
     return EscrowResponse(escrow=_escrow_out(escrow_row)).model_dump(mode="json")
 
 
+@app.post("/escrows/{trade_id}/sign", response_model=EscrowResponse)
+async def sign_escrow_release(
+    trade_id: uuid.UUID,
+    body: EscrowSignRequest,
+    x_2fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    _validate_hex_signature(body.partial_signature)
+
+    async with _runtime_engine().connect() as conn:
+        trade_row = await get_trade_by_id(conn, trade_id)
+        if trade_row is None:
+            raise _trade_not_found_error()
+
+        buy_order = await get_order_by_id(conn, _row_value(trade_row, "buy_order_id"))
+        sell_order = await get_order_by_id(conn, _row_value(trade_row, "sell_order_id"))
+        if buy_order is None or sell_order is None:
+            raise _trade_not_found_error()
+
+        buyer_id = str(_row_value(buy_order, "user_id"))
+        seller_id = str(_row_value(sell_order, "user_id"))
+
+        if principal.id == buyer_id:
+            signer_role = "buyer"
+        elif principal.id == seller_id:
+            signer_role = "seller"
+        else:
+            raise ContractError(
+                code="forbidden",
+                message="You are not a participant in this trade.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        escrow_row = await get_escrow_by_trade_id(conn, trade_id)
+        if escrow_row is None:
+            raise _escrow_not_found_error()
+
+        if _row_value(escrow_row, "status") != "funded":
+            raise ContractError(
+                code="escrow_state_conflict",
+                message="Escrow must be in funded status before signatures can be submitted.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        await _check_2fa(conn, principal.id, x_2fa_code)
+
+        platform_sig = _derive_platform_release_signature(
+            _row_value(escrow_row, "id"),
+            trade_id,
+        )
+
+        trade_row, escrow_row = await process_escrow_signature(
+            conn,
+            escrow_row=escrow_row,
+            trade_row=trade_row,
+            buy_order=buy_order,
+            sell_order=sell_order,
+            signer_role=signer_role,
+            signature=body.partial_signature,
+            platform_signature=platform_sig,
+        )
+
+    if _row_value(escrow_row, "status") == "released":
+        try:
+            await _publish_escrow_released(
+                trade_row,
+                escrow_row=escrow_row,
+                buy_order=buy_order,
+                sell_order=sell_order,
+            )
+        except Exception:
+            logger.exception("Escrow released event publish failed for trade %s", trade_id)
+
+    return EscrowResponse(escrow=_escrow_out(escrow_row)).model_dump(mode="json")
+
+
 @app.get("/trades", response_model=TradeListResponse)
 async def get_trade_history(
     token_id: uuid.UUID | None = Query(default=None),
@@ -962,7 +1177,7 @@ async def notification_stream(websocket: WebSocket):
         try:
             resume_from = decode_resume_token(
                 auth_payload.get("resume_token"),
-                allowed_topics={"trade.matched", "escrow.funded", "ai.evaluation.complete"},
+                allowed_topics={"trade.matched", "escrow.funded", "escrow.released", "ai.evaluation.complete"},
             )
         except ValueError as exc:
             raise _invalid_resume_token_error() from exc
@@ -972,7 +1187,7 @@ async def notification_stream(websocket: WebSocket):
 
     try:
         async for stream_event in _realtime_feed.listen(
-            ["trade.matched", "escrow.funded", "ai.evaluation.complete"],
+            ["trade.matched", "escrow.funded", "escrow.released", "ai.evaluation.complete"],
             resume_from=resume_from or None,
         ):
             message = _notification_message(
@@ -988,6 +1203,129 @@ async def notification_stream(websocket: WebSocket):
             await websocket.send_json(message)
     except WebSocketDisconnect:
         return
+
+
+@app.post(
+    "/trades/{trade_id}/dispute",
+    status_code=status.HTTP_201_CREATED,
+    response_model=DisputeResponse,
+)
+async def create_dispute(
+    trade_id: uuid.UUID,
+    body: DisputeOpenRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    async with _runtime_engine().connect() as conn:
+        trade_row = await get_trade_by_id(conn, trade_id)
+        if trade_row is None:
+            raise _trade_not_found_error()
+
+        buy_order = await get_order_by_id(conn, _row_value(trade_row, "buy_order_id"))
+        sell_order = await get_order_by_id(conn, _row_value(trade_row, "sell_order_id"))
+        if buy_order is None or sell_order is None:
+            raise _trade_not_found_error()
+
+        participant_ids = {
+            str(_row_value(buy_order, "user_id")),
+            str(_row_value(sell_order, "user_id")),
+        }
+        if principal.id not in participant_ids:
+            raise ContractError(
+                code="forbidden",
+                message="You are not a participant in this trade.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        if _row_value(trade_row, "status") != "escrowed":
+            raise ContractError(
+                code="trade_state_conflict",
+                message="Only escrowed trades can be disputed.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        existing_dispute = await get_dispute_by_trade_id(conn, trade_id)
+        if existing_dispute is not None:
+            raise ContractError(
+                code="dispute_already_exists",
+                message="A dispute has already been opened for this trade.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            dispute_row = await open_dispute(
+                conn,
+                trade_id=trade_id,
+                opened_by=principal.id,
+                reason=body.reason,
+            )
+        except LookupError as exc:
+            raise ContractError(
+                code="trade_state_conflict",
+                message="Trade or escrow is not in a disputable state.",
+                status_code=status.HTTP_409_CONFLICT,
+            ) from exc
+
+    return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
+
+
+@app.post(
+    "/trades/{trade_id}/dispute/resolve",
+    response_model=DisputeResponse,
+)
+async def resolve_trade_dispute(
+    trade_id: uuid.UUID,
+    body: DisputeResolveRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    if principal.role != "admin":
+        raise ContractError(
+            code="forbidden",
+            message="Only admins can resolve disputes.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    async with _runtime_engine().connect() as conn:
+        trade_row = await get_trade_by_id(conn, trade_id)
+        if trade_row is None:
+            raise _trade_not_found_error()
+
+        if _row_value(trade_row, "status") != "disputed":
+            raise ContractError(
+                code="trade_state_conflict",
+                message="Trade is not in a disputed state.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        existing_dispute = await get_dispute_by_trade_id(conn, trade_id)
+        if existing_dispute is None:
+            raise ContractError(
+                code="dispute_not_found",
+                message="No open dispute found for this trade.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
+        if _row_value(existing_dispute, "status") != "open":
+            raise ContractError(
+                code="dispute_already_resolved",
+                message="This dispute has already been resolved.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            dispute_row, _trade_row, _escrow_row = await resolve_dispute(
+                conn,
+                trade_id=trade_id,
+                resolved_by=principal.id,
+                resolution=body.resolution,
+            )
+        except LookupError as exc:
+            raise ContractError(
+                code="resolution_conflict",
+                message="Could not apply resolution due to a state conflict.",
+                status_code=status.HTTP_409_CONFLICT,
+            ) from exc
+
+    return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
 
 
 if __name__ == "__main__":

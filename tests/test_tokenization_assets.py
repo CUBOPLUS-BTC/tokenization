@@ -206,6 +206,13 @@ def _auth_headers(access_token: str) -> dict[str, str]:
 
 
 class TestSubmitAsset:
+    def test_asset_created_topic_is_mirrored_to_redis_stream(self, client):
+        _, _ = client
+        import services.tokenization.main as tokenization_main
+
+        handlers = tokenization_main._event_bus._handlers.get("asset.created", [])
+        assert handlers, "asset.created should be subscribed to at least one stream mirror handler"
+
     def test_seller_can_create_asset_with_pending_initial_status(self, client):
         app_client, settings = client
         fake_user = _make_fake_user(role="seller")
@@ -249,6 +256,47 @@ class TestSubmitAsset:
             "valuation_sat": fake_asset.valuation_sat,
             "documents_url": fake_asset.documents_url,
         }
+
+    def test_submit_asset_emits_asset_created_event(self, client):
+        app_client, settings = client
+        import services.tokenization.main as tokenization_main
+
+        fake_user = _make_fake_user(role="seller")
+        fake_asset = _make_fake_asset(fake_user.id, status="pending")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        publish_mock = AsyncMock(return_value=None)
+
+        with (
+            patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.tokenization.main.create_asset", AsyncMock(return_value=fake_asset)),
+            patch.object(tokenization_main._event_bus, "publish", publish_mock),
+        ):
+            response = app_client.post(
+                "/assets",
+                headers=_auth_headers(access_token),
+                json={
+                    "name": fake_asset.name,
+                    "description": fake_asset.description,
+                    "category": fake_asset.category,
+                    "valuation_sat": fake_asset.valuation_sat,
+                    "documents_url": fake_asset.documents_url,
+                },
+            )
+
+        assert response.status_code == 201
+        publish_mock.assert_awaited_once_with(
+            "asset.created",
+            {
+                "event": "asset_created",
+                "asset_id": str(fake_asset.id),
+                "owner_id": str(fake_user.id),
+                "name": fake_asset.name,
+                "category": fake_asset.category,
+                "valuation_sat": fake_asset.valuation_sat,
+                "status": "pending",
+                "created_at": fake_asset.created_at.isoformat().replace("+00:00", "Z"),
+            },
+        )
 
     def test_missing_documents_url_returns_clear_validation_error(self, client):
         app_client, settings = client
