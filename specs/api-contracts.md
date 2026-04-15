@@ -354,14 +354,10 @@ Authorization: Bearer <token>
   ],
   "next_cursor": "uuid_or_null"
 }
-    "order_type": "stop_limit",
 ```
-    "price_sat": 10000,
-    "trigger_price_sat": 10500
+
 ### 3.3 Get Custody Status
 
-
-  `limit` orders are immediately eligible for matching. `stop_limit` orders are accepted onto the user's order list but stay hidden from the match engine and order book until the reference price crosses the configured trigger.
 ```
 GET /wallet/custody
 Authorization: Bearer <token>

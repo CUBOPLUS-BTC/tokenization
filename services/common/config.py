@@ -134,9 +134,7 @@ class Settings(BaseSettings):
                 raise ValueError("JWT secret is required for staging/beta/production")
             if self.custody_backend == "software":
                 if not self.wallet_encryption_key:
-                    raise ValueError("wallet_encryption_key is required for software custody in staging/beta/production")
-                if not self.wallet_encryption_key_file:
-                    raise ValueError("wallet_encryption_key_file is required for software custody in staging/beta/production")
+                    raise ValueError("wallet_encryption_key or wallet_encryption_key_file is required for software custody in staging/beta/production")
             else:
                 if not self.custody_hsm_key_label:
                     raise ValueError("custody_hsm_key_label is required for HSM custody in staging/beta/production")

@@ -16,7 +16,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-from services.common import metadata  # noqa: E402
+from services.common.db import metadata  # noqa: E402
 
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
