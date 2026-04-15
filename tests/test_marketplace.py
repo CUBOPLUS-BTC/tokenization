@@ -88,6 +88,7 @@ def _make_trade(
     sell_order_id: uuid.UUID,
     quantity: int,
     price_sat: int,
+    fee_sat: int = 0,
     status: str = "settled",
     created_at: datetime | None = None,
     settled_at: datetime | None = None,
@@ -101,7 +102,7 @@ def _make_trade(
         "quantity": quantity,
         "price_sat": price_sat,
         "total_sat": quantity * price_sat,
-        "fee_sat": 0,
+        "fee_sat": fee_sat,
         "status": status,
         "created_at": now,
         "settled_at": settled_at if settled_at is not None or status != "settled" else now,
@@ -135,6 +136,26 @@ def _make_escrow(
         "expires_at": expires_at or now,
         "created_at": now,
         "updated_at": now,
+    }
+
+
+def _make_treasury_entry(
+    *,
+    amount_sat: int,
+    balance_after_sat: int,
+    source_trade_id: uuid.UUID | None = None,
+    entry_type: str = "fee_income",
+    description: str | None = None,
+) -> dict[str, Any]:
+    now = datetime.now(tz=timezone.utc)
+    return {
+        "id": uuid.uuid4(),
+        "source_trade_id": source_trade_id,
+        "type": entry_type,
+        "amount_sat": amount_sat,
+        "balance_after_sat": balance_after_sat,
+        "description": description,
+        "created_at": now,
     }
 
 
@@ -867,6 +888,7 @@ def test_get_escrow_details_refreshes_funding_status_and_emits_event(client):
             "multisig_address": funded_escrow["multisig_address"],
             "locked_amount_sat": 1_000_000,
             "funding_txid": "cd" * 32,
+            "release_txid": None,
             "status": "funded",
             "expires_at": funded_escrow["expires_at"].isoformat().replace("+00:00", "Z"),
         }
@@ -924,6 +946,7 @@ def test_settle_trade_synchronizes_wallet_and_token_balances(marketplace_setting
         sell_order_id=sell_order["id"],
         quantity=10,
         price_sat=100_000,
+        fee_sat=5_000,
     )
     fake_conn = AsyncMock()
     fake_conn.execute = AsyncMock(return_value=_FetchOneResult(trade_row))
@@ -936,6 +959,7 @@ def test_settle_trade_synchronizes_wallet_and_token_balances(marketplace_setting
         patch.object(marketplace_db, "decrement_token_balance", AsyncMock()) as decrement_balance_mock,
         patch.object(marketplace_db, "increment_token_balance", AsyncMock()) as increment_balance_mock,
         patch.object(marketplace_db, "apply_order_fill", AsyncMock()) as apply_fill_mock,
+        patch.object(marketplace_db, "record_trade_fee_income", AsyncMock()) as record_fee_mock,
     ):
         result = asyncio.run(
             marketplace_db.settle_trade(
@@ -944,6 +968,7 @@ def test_settle_trade_synchronizes_wallet_and_token_balances(marketplace_setting
                 sell_order=sell_order,
                 quantity=10,
                 price_sat=100_000,
+                fee_sat=5_000,
             )
         )
 
@@ -951,7 +976,7 @@ def test_settle_trade_synchronizes_wallet_and_token_balances(marketplace_setting
     debit_wallet_mock.assert_awaited_once_with(
         fake_conn,
         wallet_row=buyer_wallet,
-        amount_sat=1_000_000,
+        amount_sat=1_005_000,
     )
     credit_wallet_mock.assert_awaited_once_with(
         fake_conn,
@@ -971,7 +996,151 @@ def test_settle_trade_synchronizes_wallet_and_token_balances(marketplace_setting
         quantity=10,
     )
     assert apply_fill_mock.await_count == 2
+    record_fee_mock.assert_awaited_once_with(fake_conn, trade_row=trade_row)
     fake_conn.commit.assert_awaited_once()
+
+
+def test_record_trade_fee_income_creates_traceable_running_ledger_entry(marketplace_settings):
+    with patch.dict(os.environ, marketplace_settings, clear=False):
+        for module_name in (
+            "services.marketplace.db",
+            "common",
+            "common.config",
+        ):
+            sys.modules.pop(module_name, None)
+
+        import services.marketplace.db as marketplace_db
+
+    trade_row = _make_trade(
+        token_id=uuid.uuid4(),
+        buy_order_id=uuid.uuid4(),
+        sell_order_id=uuid.uuid4(),
+        quantity=4,
+        price_sat=125_000,
+        fee_sat=7_500,
+    )
+    latest_entry = _make_treasury_entry(amount_sat=3_000, balance_after_sat=23_000)
+    inserted_entry = _make_treasury_entry(
+        amount_sat=7_500,
+        balance_after_sat=30_500,
+        source_trade_id=trade_row["id"],
+        description=f"Fee income from trade {trade_row['id']}",
+    )
+    fake_conn = AsyncMock()
+    fake_conn.execute = AsyncMock(
+        side_effect=[
+            _FetchOneResult(None),
+            _FetchOneResult(latest_entry),
+            _FetchOneResult(inserted_entry),
+        ]
+    )
+
+    result = asyncio.run(
+        marketplace_db.record_trade_fee_income(
+            fake_conn,
+            trade_row=trade_row,
+        )
+    )
+
+    assert result == inserted_entry
+    insert_stmt = fake_conn.execute.await_args_list[2].args[0]
+    insert_params = insert_stmt.compile().params
+    assert insert_params["type"] == "fee_income"
+    assert insert_params["amount_sat"] == 7_500
+    assert insert_params["balance_after_sat"] == 30_500
+    assert insert_params["source_trade_id"] == trade_row["id"]
+    assert str(trade_row["id"]) in insert_params["description"]
+
+
+def test_process_escrow_signature_release_extracts_fee_and_records_treasury_income(marketplace_settings):
+    with patch.dict(os.environ, marketplace_settings, clear=False):
+        for module_name in (
+            "services.marketplace.db",
+            "common",
+            "common.config",
+        ):
+            sys.modules.pop(module_name, None)
+
+        import services.marketplace.db as marketplace_db
+
+    buyer_id = uuid.uuid4()
+    seller_id = uuid.uuid4()
+    token_id = uuid.uuid4()
+    trade_id = uuid.uuid4()
+    buy_order = _make_order(user_id=buyer_id, token_id=token_id, side="buy", quantity=3, price_sat=200_000)
+    sell_order = _make_order(user_id=seller_id, token_id=token_id, side="sell", quantity=3, price_sat=200_000)
+    trade_row = {
+        **_make_trade(
+            token_id=token_id,
+            buy_order_id=buy_order["id"],
+            sell_order_id=sell_order["id"],
+            quantity=3,
+            price_sat=200_000,
+            fee_sat=12_000,
+            status="escrowed",
+            settled_at=None,
+        ),
+        "id": trade_id,
+        "status": "escrowed",
+    }
+    escrow_row = _make_escrow(trade_id=trade_id, locked_amount_sat=600_000, funding_txid="ab" * 32, status="funded")
+    settled_at = datetime(2026, 4, 14, 18, 0, tzinfo=timezone.utc)
+    released_escrow = {
+        **escrow_row,
+        "status": "released",
+        "release_txid": "cd" * 32,
+        "collected_signatures": {
+            "buyer": "11" * 32,
+            "platform": "33" * 32,
+        },
+    }
+    settled_trade = {
+        **trade_row,
+        "status": "settled",
+        "settled_at": settled_at,
+    }
+    buyer_wallet = _make_wallet(buyer_id, onchain=1_000_000, lightning=0)
+    seller_wallet = _make_wallet(seller_id, onchain=0, lightning=0)
+
+    fake_conn = AsyncMock()
+    fake_conn.execute = AsyncMock(
+        side_effect=[
+            _FetchOneResult(released_escrow),
+            _FetchOneResult(settled_trade),
+        ]
+    )
+    fake_conn.commit = AsyncMock()
+    fake_conn.rollback = AsyncMock()
+
+    with (
+        patch.object(marketplace_db, "_generate_release_txid", return_value="cd" * 32),
+        patch.object(marketplace_db, "get_wallet_by_user_id", AsyncMock(side_effect=[buyer_wallet, seller_wallet])),
+        patch.object(marketplace_db, "debit_wallet_balance", AsyncMock()) as debit_mock,
+        patch.object(marketplace_db, "credit_wallet_balance", AsyncMock()) as credit_mock,
+        patch.object(marketplace_db, "increment_token_balance", AsyncMock()) as increment_mock,
+        patch.object(marketplace_db, "record_trade_fee_income", AsyncMock()) as record_fee_mock,
+    ):
+        trade_result, escrow_result = asyncio.run(
+            marketplace_db.process_escrow_signature(
+                fake_conn,
+                escrow_row=escrow_row,
+                trade_row=trade_row,
+                buy_order=buy_order,
+                sell_order=sell_order,
+                signer_role="buyer",
+                signature="11" * 32,
+                platform_signature="33" * 32,
+            )
+        )
+
+    assert trade_result == settled_trade
+    assert escrow_result == released_escrow
+    debit_mock.assert_awaited_once_with(fake_conn, wallet_row=buyer_wallet, amount_sat=612_000)
+    credit_mock.assert_awaited_once_with(fake_conn, wallet_row=seller_wallet, amount_sat=600_000)
+    increment_mock.assert_awaited_once_with(fake_conn, user_id=buyer_id, token_id=token_id, quantity=3)
+    record_fee_mock.assert_awaited_once_with(fake_conn, trade_row=settled_trade)
+    fake_conn.commit.assert_awaited_once()
+    fake_conn.rollback.assert_not_awaited()
 
 
 def test_apply_order_fill_caps_filled_quantity_at_total_quantity(marketplace_settings):
@@ -1755,6 +1924,7 @@ def test_resolve_dispute_db_release_debits_buyer_and_transfers_tokens(marketplac
             sell_order_id=sell_order["id"],
             quantity=5,
             price_sat=100_000,
+            fee_sat=10_000,
             status="disputed",
             settled_at=None,
         ),
@@ -1794,6 +1964,7 @@ def test_resolve_dispute_db_release_debits_buyer_and_transfers_tokens(marketplac
         patch.object(marketplace_db, "debit_wallet_balance", AsyncMock()) as debit_mock,
         patch.object(marketplace_db, "credit_wallet_balance", AsyncMock()) as credit_mock,
         patch.object(marketplace_db, "increment_token_balance", AsyncMock()) as increment_mock,
+        patch.object(marketplace_db, "record_trade_fee_income", AsyncMock()) as record_fee_mock,
     ):
         dispute_result, trade_result, escrow_result = asyncio.run(
             marketplace_db.resolve_dispute(
@@ -1807,9 +1978,10 @@ def test_resolve_dispute_db_release_debits_buyer_and_transfers_tokens(marketplac
     assert dispute_result == resolved_dispute
     assert trade_result == settled_trade
     assert escrow_result == released_escrow
-    debit_mock.assert_awaited_once_with(fake_conn, wallet_row=buyer_wallet, amount_sat=500_000)
+    debit_mock.assert_awaited_once_with(fake_conn, wallet_row=buyer_wallet, amount_sat=510_000)
     credit_mock.assert_awaited_once_with(fake_conn, wallet_row=seller_wallet, amount_sat=500_000)
     increment_mock.assert_awaited_once_with(fake_conn, user_id=buyer_id, token_id=token_id, quantity=5)
+    record_fee_mock.assert_awaited_once_with(fake_conn, trade_row=settled_trade)
     fake_conn.commit.assert_awaited_once()
     fake_conn.rollback.assert_not_awaited()
 

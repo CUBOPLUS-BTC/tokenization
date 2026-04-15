@@ -18,6 +18,7 @@ from common.db.metadata import nostr_identities as nostr_identities_table
 from common.db.metadata import orders as orders_table
 from common.db.metadata import token_balances as token_balances_table
 from common.db.metadata import tokens as tokens_table
+from common.db.metadata import treasury as treasury_table
 from common.db.metadata import trades as trades_table
 from common.db.metadata import users as users_table
 from common.db.metadata import wallets as wallets_table
@@ -240,6 +241,94 @@ async def list_trades(
     stmt = stmt.order_by(order_column.desc(), trades_table.c.id.desc())
     result = await conn.execute(stmt)
     return result.fetchall()
+
+
+async def get_latest_treasury_entry(conn: AsyncConnection) -> sa.engine.Row | None:
+    result = await conn.execute(
+        sa.select(treasury_table)
+        .order_by(treasury_table.c.created_at.desc(), treasury_table.c.id.desc())
+        .limit(1)
+    )
+    return result.fetchone()
+
+
+def _treasury_balance_delta(*, entry_type: str, amount_sat: int) -> int:
+    if amount_sat <= 0:
+        raise ValueError("treasury_amount_must_be_positive")
+
+    if entry_type == "fee_income":
+        return amount_sat
+    if entry_type == "disbursement":
+        return -amount_sat
+    if entry_type == "adjustment":
+        return amount_sat
+    raise ValueError("invalid_treasury_entry_type")
+
+
+async def create_treasury_entry(
+    conn: AsyncConnection,
+    *,
+    entry_type: str,
+    amount_sat: int,
+    description: str | None = None,
+    source_trade_id: str | uuid.UUID | None = None,
+    created_at: datetime | None = None,
+) -> sa.engine.Row:
+    latest_entry = await get_latest_treasury_entry(conn)
+    current_balance = int(_row_value(latest_entry, "balance_after_sat", 0))
+    balance_after_sat = current_balance + _treasury_balance_delta(
+        entry_type=entry_type,
+        amount_sat=amount_sat,
+    )
+    timestamp = created_at or _utc_now()
+
+    result = await conn.execute(
+        sa.insert(treasury_table)
+        .values(
+            id=uuid.uuid4(),
+            source_trade_id=None if source_trade_id is None else _as_uuid(source_trade_id),
+            type=entry_type,
+            amount_sat=amount_sat,
+            balance_after_sat=balance_after_sat,
+            description=description,
+            created_at=timestamp,
+        )
+        .returning(treasury_table)
+    )
+    row = result.fetchone()
+    assert row is not None
+    return row
+
+
+async def record_trade_fee_income(
+    conn: AsyncConnection,
+    *,
+    trade_row: object,
+) -> sa.engine.Row | None:
+    fee_sat = int(_row_value(trade_row, "fee_sat", 0))
+    if fee_sat <= 0:
+        return None
+
+    trade_id = _as_uuid(_row_value(trade_row, "id"))
+    existing_result = await conn.execute(
+        sa.select(treasury_table)
+        .where(treasury_table.c.type == "fee_income")
+        .where(treasury_table.c.source_trade_id == trade_id)
+        .limit(1)
+    )
+    existing_entry = existing_result.fetchone()
+    if existing_entry is not None:
+        return existing_entry
+
+    settled_at = _row_value(trade_row, "settled_at")
+    return await create_treasury_entry(
+        conn,
+        entry_type="fee_income",
+        amount_sat=fee_sat,
+        source_trade_id=trade_id,
+        description=f"Fee income from trade {trade_id}",
+        created_at=settled_at if isinstance(settled_at, datetime) else None,
+    )
 
 
 async def get_trade_by_id(
@@ -643,6 +732,7 @@ async def settle_trade(
         )
         trade_row = result.fetchone()
         assert trade_row is not None
+        await record_trade_fee_income(conn, trade_row=trade_row)
         await conn.commit()
     except Exception:
         await conn.rollback()
@@ -761,15 +851,17 @@ async def process_escrow_signature(
             token_id = _row_value(trade_row, "token_id")
             quantity = int(_row_value(trade_row, "quantity", 0))
             total_sat = int(_row_value(trade_row, "total_sat", 0))
+            fee_sat = int(_row_value(trade_row, "fee_sat", 0))
 
             buyer_wallet = await get_wallet_by_user_id(conn, buyer_id)
             seller_wallet = await get_wallet_by_user_id(conn, seller_id)
             if buyer_wallet is None or seller_wallet is None:
                 raise LookupError("wallet_not_found")
 
-            await debit_wallet_balance(conn, wallet_row=buyer_wallet, amount_sat=total_sat)
+            await debit_wallet_balance(conn, wallet_row=buyer_wallet, amount_sat=total_sat + fee_sat)
             await credit_wallet_balance(conn, wallet_row=seller_wallet, amount_sat=total_sat)
             await increment_token_balance(conn, user_id=buyer_id, token_id=token_id, quantity=quantity)
+            await record_trade_fee_income(conn, trade_row=trade_row)
         else:
             escrow_result = await conn.execute(
                 sa.update(escrows_table)
@@ -936,6 +1028,7 @@ async def resolve_dispute(
         token_id = _row_value(trade_row, "token_id")
         quantity = int(_row_value(trade_row, "quantity", 0))
         total_sat = int(_row_value(trade_row, "total_sat", 0))
+        fee_sat = int(_row_value(trade_row, "fee_sat", 0))
 
         if resolution == "release":
             # Transfer value: buyer pays sats, seller delivers tokens to buyer
@@ -944,7 +1037,7 @@ async def resolve_dispute(
             if buyer_wallet is None or seller_wallet is None:
                 raise LookupError("wallet_not_found")
 
-            await debit_wallet_balance(conn, wallet_row=buyer_wallet, amount_sat=total_sat)
+            await debit_wallet_balance(conn, wallet_row=buyer_wallet, amount_sat=total_sat + fee_sat)
             await credit_wallet_balance(conn, wallet_row=seller_wallet, amount_sat=total_sat)
             await increment_token_balance(conn, user_id=buyer_id, token_id=token_id, quantity=quantity)
 
@@ -976,6 +1069,8 @@ async def resolve_dispute(
         trade_row = trade_update_result.fetchone()
         if trade_row is None:
             raise LookupError("trade_update_failed")
+        if resolution == "release":
+            await record_trade_fee_income(conn, trade_row=trade_row)
 
         # Resolve the dispute record
         dispute_update_result = await conn.execute(
