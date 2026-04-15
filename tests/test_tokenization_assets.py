@@ -542,6 +542,7 @@ class TestTokenizeAsset:
         )
         tapd_meta = _make_taproot_meta()
         create_asset_token_mock = AsyncMock(return_value=tokenized_asset)
+        audit_mock = AsyncMock()
 
         with (
             patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
@@ -549,6 +550,7 @@ class TestTokenizeAsset:
             patch("services.tokenization.main.create_asset_token", create_asset_token_mock),
             patch("services.tokenization.main.tapd_client.fetch_asset", return_value=tapd_asset),
             patch("services.tokenization.main.tapd_client.fetch_asset_meta", return_value=tapd_meta),
+            patch("services.tokenization.main.record_audit_event", audit_mock),
         ):
             resp = app_client.post(
                 f"/assets/{approved_asset.id}/tokenize",
@@ -586,6 +588,22 @@ class TestTokenizeAsset:
         assert issuance_metadata["group_key"] == "33" * 32
         assert issuance_metadata["anchor_outpoint"] == "e" * 64 + ":1"
         assert issuance_metadata["meta_reveal"]["data"] == '{"issuer":"tapd"}'
+        audit_mock.assert_awaited_once_with(
+            ANY,
+            settings=settings,
+            request=ANY,
+            action="tokenization.asset.tokenize",
+            actor_id=str(fake_user.id),
+            actor_role="seller",
+            target_type="token",
+            target_id=tokenized_asset.token_id,
+            metadata={
+                "asset_id": str(approved_asset.id),
+                "taproot_asset_id": taproot_asset_id,
+                "total_supply": 1_000,
+                "unit_price_sat": 100_000,
+            },
+        )
 
     def test_tokenization_emits_token_minted_event(self, client):
         app_client, settings = client

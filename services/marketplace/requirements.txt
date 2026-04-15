@@ -2,3 +2,4 @@ fastapi
 uvicorn
 pydantic-settings
 cryptography>=44.0.0
+redis

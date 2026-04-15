@@ -41,10 +41,30 @@ from jose import JWTError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common import get_settings
+from common import (
+    create_referral_signup_reward,
+    default_onramp_notices,
+    describe_custody_settings,
+    generate_referral_code,
+    get_user_by_referral_code,
+    list_onramp_provider_views,
+    list_referral_rewards_for_user,
+    list_referred_users,
+    summarize_referrals_for_user,
+)
+from common.security import install_http_security
 from common.readiness import get_readiness_payload
+from common.logging import configure_structured_logging
+from common.metrics import metrics, mount_metrics_endpoint, record_business_event
+from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
 
 from .schemas import (
     AuthResponse,
+    KycAdminUpdateRequest,
+    KycListResponse,
+    KycStatusOut,
+    KycStatusResponse,
+    KycSubmitRequest,
     LoginRequest,
     LogoutRequest,
     MessageResponse,
@@ -56,6 +76,12 @@ from .schemas import (
     TwoFactorEnableResponse,
     TwoFactorVerifyRequest,
     UserOut,
+    OnboardingCustodyOut,
+    OnboardingFiatProviderOut,
+    OnboardingSummaryResponse,
+    ReferralRewardOut,
+    ReferralSummaryResponse,
+    ReferredUserOut,
 )
 from .jwt_utils import decode_token, issue_token_pair
 from .nostr_utils import validate_nostr_event, NostrValidationError
@@ -72,6 +98,13 @@ from .db import (
     revoke_refresh_session,
     rotate_refresh_session,
 )
+from .kyc_db import (
+    create_kyc_record,
+    get_kyc_status,
+    is_kyc_verified,
+    list_kyc_records,
+    update_kyc_status,
+)
 
 import bcrypt
 
@@ -86,6 +119,8 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncConnection
 # -------------------------------------------------------------------------------
 
 settings = get_settings(service_name="auth", default_port=8000)
+configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
+configure_alerting(settings)
 
 # bcrypt hashing config (using default rounds)
 
@@ -116,6 +151,19 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Auth Service", lifespan=_lifespan)
+install_http_security(
+    app,
+    settings,
+    sensitive_paths=(
+        "/auth/login",
+        "/auth/register",
+        "/auth/refresh",
+        "/auth/logout",
+        "/auth/nostr",
+        "/auth/2fa",
+    ),
+)
+mount_metrics_endpoint(app, settings)
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -164,7 +212,32 @@ def _user_out(row) -> UserOut:
         email=row.email,
         display_name=row.display_name,
         role=row.role,
+        referral_code=getattr(row, "referral_code", None),
         created_at=row.created_at,
+    )
+
+
+def _referred_user_out(row) -> ReferredUserOut:
+    return ReferredUserOut(
+        id=str(row.id),
+        email=row.email,
+        display_name=row.display_name,
+        created_at=row.created_at,
+    )
+
+
+def _referral_reward_out(row) -> ReferralRewardOut:
+    return ReferralRewardOut(
+        id=str(getattr(row, "id")),
+        referred_user_id=str(getattr(row, "referred_user_id")),
+        referred_display_name=getattr(getattr(row, "_mapping", {}), "get", lambda *_: None)("referred_display_name") or getattr(row, "referred_display_name"),
+        referred_email=getattr(getattr(row, "_mapping", {}), "get", lambda *_: None)("referred_email") or getattr(row, "referred_email", None),
+        reward_type=getattr(row, "reward_type"),
+        amount_sat=int(getattr(row, "amount_sat", 0)),
+        status=getattr(row, "status"),
+        eligibility_event=getattr(row, "eligibility_event"),
+        credited_at=getattr(row, "credited_at"),
+        created_at=getattr(row, "created_at"),
     )
 
 
@@ -352,13 +425,33 @@ async def register(body: RegisterRequest):
                 status.HTTP_409_CONFLICT,
             )
 
+        referrer_id: str | None = None
+        if body.referrer_code:
+            referrer_row = await get_user_by_referral_code(conn, body.referrer_code)
+            if referrer_row is None:
+                return _error(
+                    "referrer_not_found",
+                    "Referral code is invalid.",
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                )
+            if getattr(referrer_row, "email", None) == body.email:
+                return _error(
+                    "self_referral_not_allowed",
+                    "You cannot register using your own referral code.",
+                    status.HTTP_409_CONFLICT,
+                )
+            referrer_id = str(referrer_row.id)
+
         password_hash = bcrypt.hashpw(body.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
         try:
+            referral_code = await generate_referral_code(conn)
             row = await create_user(
                 conn,
                 email=body.email,
                 password_hash=password_hash,
                 display_name=body.display_name,
+                referral_code=referral_code,
+                referrer_id=referrer_id,
             )
         except IntegrityError:
             return _error(
@@ -367,11 +460,13 @@ async def register(body: RegisterRequest):
                 status.HTTP_409_CONFLICT,
             )
 
-        return await _issue_auth_response(
+        response = await _issue_auth_response(
             row,
             conn=conn,
             status_code=status.HTTP_201_CREATED,
         )
+    record_business_event("auth_register")
+    return response
 
 
 @app.post(
@@ -412,6 +507,7 @@ async def enable_2fa_endpoint(
         issuer_name=settings.totp_issuer,
     )
 
+    record_business_event("auth_2fa_enable")
     return TwoFactorEnableResponse(
         totp_uri=totp_uri,
         backup_codes=backup_codes,
@@ -445,6 +541,7 @@ async def verify_2fa_endpoint(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
+    record_business_event("auth_2fa_verify")
     return {"message": "2FA verification successful."}
 
 
@@ -475,6 +572,7 @@ async def login(body: LoginRequest):
         is_valid = False
 
     if not is_valid or row is None:
+        record_business_event("auth_login", outcome="failure")
         return _error(
             "invalid_credentials",
             "Invalid email or password.",
@@ -482,11 +580,13 @@ async def login(body: LoginRequest):
         )
 
     async with _engine.connect() as conn:  # type: AsyncConnection
-        return await _issue_auth_response(
+        response = await _issue_auth_response(
             row,
             conn=conn,
             status_code=status.HTTP_200_OK,
         )
+    record_business_event("auth_login")
+    return response
 
 
 @app.post(
@@ -500,6 +600,7 @@ async def nostr_login(body: NostrLoginRequest):
     try:
         validate_nostr_event(body.pubkey, body.signed_event)
     except NostrValidationError as e:
+        record_business_event("auth_nostr_login", outcome="failure")
         return _error(
             "invalid_credentials",
             str(e),
@@ -519,9 +620,11 @@ async def nostr_login(body: NostrLoginRequest):
                 )
         else:
             display_name = f"nostr:{body.pubkey[:8]}"
+            referral_code = await generate_referral_code(conn)
             user_row = await create_nostr_user(
                 conn,
                 display_name=display_name,
+                referral_code=referral_code,
             )
             await create_nostr_identity(
                 conn,
@@ -530,11 +633,13 @@ async def nostr_login(body: NostrLoginRequest):
                 relay_urls=None,
             )
 
-        return await _issue_auth_response(
+        response = await _issue_auth_response(
             user_row,
             conn=conn,
             status_code=status.HTTP_200_OK,
         )
+    record_business_event("auth_nostr_login")
+    return response
 
 
 @app.post(
@@ -574,8 +679,10 @@ async def refresh(body: RefreshRequest):
         )
 
     if not rotated:
+        record_business_event("auth_refresh", outcome="failure")
         return _invalid_refresh_token_response()
 
+    record_business_event("auth_refresh")
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content=_auth_response_payload(row, tokens),
@@ -607,8 +714,10 @@ async def logout(body: LogoutRequest):
         )
 
     if not revoked:
+        record_business_event("auth_logout", outcome="failure")
         return _invalid_refresh_token_response()
 
+    record_business_event("auth_logout")
     return MessageResponse(message="Session revoked.").model_dump()
 
 
@@ -628,6 +737,32 @@ async def get_current_user(
         role=principal.role,
         created_at=principal.created_at,
     )
+
+
+@app.get(
+    "/auth/referrals/summary",
+    status_code=status.HTTP_200_OK,
+    response_model=ReferralSummaryResponse,
+    summary="Return referral relationships and earned rewards for the authenticated user",
+)
+async def get_referral_summary(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    async with _engine.connect() as conn:
+        user_row = await get_user_by_id(conn, principal.id)
+        if user_row is None:
+            raise _invalid_access_token_error()
+        counts = await summarize_referrals_for_user(conn, principal.id)
+        referred_rows = await list_referred_users(conn, principal.id)
+        reward_rows = await list_referral_rewards_for_user(conn, principal.id)
+
+    return ReferralSummaryResponse(
+        referral_code=getattr(user_row, "referral_code"),
+        referrals_count=counts["referrals_count"],
+        total_reward_sat=counts["total_reward_sat"],
+        referred_users=[_referred_user_out(row) for row in referred_rows],
+        rewards=[_referral_reward_out(row) for row in reward_rows],
+    ).model_dump(mode="json")
 
 
 def _role_response(principal: AuthenticatedPrincipal, *required_roles: str) -> RoleCheckResponse:
@@ -684,6 +819,215 @@ async def auditor_role_check(
     principal: AuthenticatedPrincipal = Depends(_require_roles("auditor", "admin")),
 ):
     return _role_response(principal, "auditor", "admin")
+
+
+# ---------------------------------------------------------------------------
+# KYC Verification Endpoints
+# ---------------------------------------------------------------------------
+
+
+def _kyc_out(row) -> KycStatusOut:
+    mapping = getattr(row, "_mapping", None)
+    def _val(key: str, default=None):
+        if mapping is not None:
+            return mapping.get(key, default)
+        return getattr(row, key, default)
+    return KycStatusOut(
+        id=str(_val("id")),
+        user_id=str(_val("user_id")),
+        status=_val("status"),
+        reviewed_by=str(_val("reviewed_by")) if _val("reviewed_by") else None,
+        reviewed_at=_val("reviewed_at"),
+        rejection_reason=_val("rejection_reason"),
+        notes=_val("notes"),
+        created_at=_val("created_at"),
+        updated_at=_val("updated_at"),
+    )
+
+
+def _kyc_state_label(row) -> str:
+    if row is None:
+        return "not_started"
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return str(mapping.get("status", "not_started"))
+    return str(getattr(row, "status", "not_started"))
+
+
+@app.get(
+    "/auth/onboarding/summary",
+    status_code=status.HTTP_200_OK,
+    response_model=OnboardingSummaryResponse,
+    summary="Return onboarding custody and fiat handoff requirements",
+)
+async def onboarding_summary(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    async with _engine.connect() as conn:
+        user_row = await get_user_by_id(conn, principal.id)
+        kyc_row = await get_kyc_status(conn, principal.id)
+
+    if user_row is None:
+        raise _invalid_access_token_error()
+
+    custody = describe_custody_settings(settings)
+    providers = list_onramp_provider_views(kyc_verified=is_kyc_verified(kyc_row))
+    record_business_event("auth_onboarding_summary")
+    return OnboardingSummaryResponse(
+        user=_user_out(user_row),
+        kyc_status=_kyc_state_label(kyc_row),
+        custody=OnboardingCustodyOut(
+            configured_backend=custody.backend,
+            signer_backend=custody.signer_backend,
+            state=custody.state,
+            key_reference=custody.key_reference,
+            signer_key_reference=custody.signer_key_reference,
+            seed_exportable=custody.seed_exportable,
+            server_compromise_impact=custody.server_compromise_impact,
+            disclaimers=list(custody.disclaimers),
+        ),
+        fiat_onramp_providers=[
+            OnboardingFiatProviderOut(
+                provider_id=provider.provider_id,
+                display_name=provider.display_name,
+                state=provider.state,
+                supported_fiat_currencies=list(provider.supported_fiat_currencies),
+                supported_countries=list(provider.supported_countries),
+                payment_methods=list(provider.payment_methods),
+                requires_kyc=provider.requires_kyc,
+                disclaimer=provider.disclaimer,
+                external_handoff_url=provider.external_handoff_url,
+            )
+            for provider in providers
+        ],
+        compliance_notices=default_onramp_notices(),
+    )
+
+
+@app.post(
+    "/auth/kyc/submit",
+    status_code=status.HTTP_201_CREATED,
+    response_model=KycStatusResponse,
+    summary="Submit KYC verification request",
+)
+async def submit_kyc(
+    body: KycSubmitRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    """Submit a KYC verification request.
+
+    Creates or returns the existing record.  Once submitted the platform
+    operator reviews and approves/rejects via the admin endpoint.
+    """
+    async with _engine.connect() as conn:
+        existing = await get_kyc_status(conn, principal.id)
+        if existing is not None:
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content=KycStatusResponse(kyc=_kyc_out(existing)).model_dump(mode="json"),
+            )
+
+        row = await create_kyc_record(
+            conn,
+            user_id=principal.id,
+            document_url=body.document_url,
+            notes=body.notes,
+        )
+
+    record_business_event("kyc_submit")
+    return KycStatusResponse(kyc=_kyc_out(row)).model_dump(mode="json")
+
+
+@app.get(
+    "/auth/kyc/status",
+    response_model=KycStatusResponse,
+    summary="Get the current user's KYC verification status",
+)
+async def get_my_kyc_status(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    """Return the verification status of the authenticated user.
+
+    Returns 404 if the user has not submitted a KYC request.
+    """
+    async with _engine.connect() as conn:
+        row = await get_kyc_status(conn, principal.id)
+
+    if row is None:
+        return _error(
+            "kyc_not_found",
+            "No KYC verification record found. Please submit a KYC request first.",
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    return KycStatusResponse(kyc=_kyc_out(row)).model_dump(mode="json")
+
+
+@app.get(
+    "/auth/kyc/admin",
+    response_model=KycListResponse,
+    summary="List all KYC verification records (admin only)",
+)
+async def list_kyc_admin(
+    status_filter: str | None = None,
+    principal: AuthenticatedPrincipal = Depends(_require_roles("admin")),
+):
+    """Return all KYC records.  Admins can filter by status."""
+    async with _engine.connect() as conn:
+        rows = await list_kyc_records(conn, status_filter=status_filter)
+
+    return KycListResponse(
+        records=[_kyc_out(r) for r in rows],
+    ).model_dump(mode="json")
+
+
+@app.put(
+    "/auth/kyc/admin/{user_id}",
+    response_model=KycStatusResponse,
+    summary="Update a user's KYC verification status (admin only)",
+)
+async def update_kyc_admin(
+    request: Request,
+    user_id: str,
+    body: KycAdminUpdateRequest,
+    principal: AuthenticatedPrincipal = Depends(_require_roles("admin")),
+):
+    """Admin-only endpoint to approve, reject, or expire a user's KYC status."""
+    async with _engine.connect() as conn:
+        existing = await get_kyc_status(conn, user_id)
+        if existing is None:
+            return _error(
+                "kyc_not_found",
+                "No KYC verification record found for this user.",
+                status.HTTP_404_NOT_FOUND,
+            )
+
+        existing_status = getattr(existing, "status", None)
+        mapping = getattr(existing, "_mapping", None)
+        if mapping is not None:
+            existing_status = mapping.get("status", existing_status)
+
+        row = await update_kyc_status(
+            conn,
+            user_id=user_id,
+            new_status=body.status,
+            reviewed_by=principal.id,
+            rejection_reason=body.rejection_reason,
+            notes=body.notes,
+        )
+        if body.status == "verified" and existing_status != "verified":
+            await create_referral_signup_reward(conn, referred_user_id=user_id)
+            await conn.commit()
+
+    if row is None:
+        return _error(
+            "kyc_update_failed",
+            "Failed to update KYC status.",
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    record_business_event("kyc_admin_update")
+    return KycStatusResponse(kyc=_kyc_out(row)).model_dump(mode="json")
 
 
 # ---------------------------------------------------------------------------

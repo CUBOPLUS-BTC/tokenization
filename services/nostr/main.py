@@ -13,12 +13,15 @@ import uvicorn
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from common import get_readiness_payload, get_settings
+from common.metrics import mount_metrics_endpoint, record_business_event
+from common.alerting import configure_alerting
 from nostr.events import map_and_sign_internal_event
 from nostr.relay_client import NostrRelayConnector
 
 settings = get_settings(service_name="nostr", default_port=8005)
 logger = logging.getLogger(__name__)
 TOPICS = ("asset.created", "ai.evaluation.complete", "trade.matched")
+configure_alerting(settings)
 
 
 def _decode_stream_value(value: object) -> str:
@@ -65,7 +68,9 @@ async def _pump_events_to_relays(stop_event: asyncio.Event, connector: NostrRela
                     )
                     try:
                         await connector.publish(nostr_event, topic=topic)
+                        record_business_event("nostr_publish")
                     except Exception:
+                        record_business_event("nostr_publish", outcome="failure")
                         logger.exception(
                             "Failed to publish mapped event to Nostr relay connector",
                             extra={"topic": topic, "record_id": record_id},
@@ -109,6 +114,7 @@ def _nostr_private_key() -> str:
     return hashlib.sha256(seed).hexdigest()
 
 app = FastAPI(title="Nostr Service", lifespan=_lifespan)
+mount_metrics_endpoint(app, settings)
 
 @app.get("/health")
 async def health():

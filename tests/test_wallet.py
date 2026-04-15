@@ -10,7 +10,7 @@ import uuid
 from collections import namedtuple
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 import pytest
@@ -123,6 +123,12 @@ def _make_fake_transaction(
     )
 
 
+def _make_kyc_row(status: str):
+    row = MagicMock()
+    row._mapping = {"status": status}
+    return row
+
+
 @pytest.fixture()
 def fake_settings():
     return {
@@ -229,6 +235,7 @@ class TestOnchainWithdrawal:
         access_token = _issue_access_token(fake_user, settings.jwt_secret)
         now = 1_700_000_000.0
         valid_code = _totp(secret, now)
+        audit_mock = AsyncMock()
         created_row = FakeTransaction(
             id=uuid.uuid4(),
             wallet_id=fake_wallet.id,
@@ -248,6 +255,7 @@ class TestOnchainWithdrawal:
             patch("services.wallet.main.get_user_by_id", AsyncMock(return_value=fake_user)),
             patch("services.wallet.main.get_or_create_wallet", AsyncMock(return_value=fake_wallet)),
             patch("services.wallet.main.create_onchain_withdrawal", AsyncMock(return_value=created_row)),
+            patch("services.wallet.main.record_audit_event", audit_mock),
         ):
             resp = app_client.post(
                 "/wallet/onchain/withdraw",
@@ -266,6 +274,17 @@ class TestOnchainWithdrawal:
             "fee_sat": 705,
             "status": "pending",
         }
+        audit_mock.assert_awaited_once_with(
+            ANY,
+            settings=settings,
+            request=ANY,
+            action="wallet.onchain_withdraw",
+            actor_id=str(fake_user.id),
+            actor_role="user",
+            target_type="transaction",
+            target_id=created_row.id,
+            metadata={"amount_sat": 100_000, "fee_sat": 705, "address_tail": "fjhx0wlh"},
+        )
 
     def test_withdrawal_rejects_invalid_2fa_code(self, client):
         app_client, _, settings = client
@@ -387,3 +406,109 @@ class TestTransactionHistory:
         second_body = second_page.json()
         assert [item["id"] for item in second_body["transactions"]] == [str(oldest.id)]
         assert second_body["next_cursor"] is None
+
+
+class TestCustodyAndOnRamp:
+    def test_wallet_custody_status_surfaces_backend_metadata(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user()
+        fake_wallet = _make_fake_wallet(fake_user.id)
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+
+        with (
+            patch("services.wallet.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.wallet.main.get_or_create_wallet", AsyncMock(return_value=fake_wallet)),
+        ):
+            resp = app_client.get(
+                "/wallet/custody",
+                headers=_auth_headers(access_token),
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["configured_backend"] == "software"
+        assert body["wallet_backend"] == "software"
+        assert body["signer_backend"] == "software"
+        assert body["withdraw_requires_2fa"] is True
+        assert body["derivation_path"] == "m/86'/0'/0'"
+
+    def test_wallet_lists_fiat_onramp_providers_with_compliance_notices(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user()
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+
+        with (
+            patch("services.wallet.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.wallet.main.get_kyc_status", AsyncMock(return_value=_make_kyc_row("verified"))),
+        ):
+            resp = app_client.get(
+                "/wallet/fiat/onramp/providers",
+                headers=_auth_headers(access_token),
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["providers"]) == 2
+        assert any(provider["provider_id"] == "bank-bridge" for provider in body["providers"])
+        assert any("provider-hosted checkout" in notice.lower() for notice in body["compliance_notices"])
+
+    def test_verified_user_can_create_fiat_onramp_session(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user()
+        fake_wallet = _make_fake_wallet(fake_user.id)
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        audit_mock = AsyncMock()
+
+        with (
+            patch("services.wallet.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.wallet.main.get_or_create_wallet", AsyncMock(return_value=fake_wallet)),
+            patch("services.wallet.main.get_kyc_status", AsyncMock(return_value=_make_kyc_row("verified"))),
+            patch("services.wallet.main.record_audit_event", audit_mock),
+        ):
+            resp = app_client.post(
+                "/wallet/fiat/onramp/session",
+                headers=_auth_headers(access_token),
+                json={
+                    "provider_id": "bank-bridge",
+                    "fiat_currency": "USD",
+                    "fiat_amount": "150.00",
+                    "country_code": "US",
+                    "return_url": "https://app.example.com/wallet/fiat/complete",
+                    "cancel_url": "https://app.example.com/wallet/fiat/cancel",
+                },
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["provider_id"] == "bank-bridge"
+        assert body["state"] == "pending_redirect"
+        assert body["handoff_url"].startswith("https://bank-bridge.partner.example/checkout")
+        assert body["deposit_address"].startswith("bcrt1p")
+        audit_mock.assert_awaited_once()
+
+    def test_unverified_user_receives_provider_specific_kyc_error(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user()
+        fake_wallet = _make_fake_wallet(fake_user.id)
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+
+        with (
+            patch("services.wallet.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.wallet.main.get_or_create_wallet", AsyncMock(return_value=fake_wallet)),
+            patch("services.wallet.main.get_kyc_status", AsyncMock(return_value=_make_kyc_row("pending"))),
+        ):
+            resp = app_client.post(
+                "/wallet/fiat/onramp/session",
+                headers=_auth_headers(access_token),
+                json={
+                    "provider_id": "card-bridge",
+                    "fiat_currency": "USD",
+                    "fiat_amount": "50.00",
+                    "country_code": "US",
+                    "return_url": "https://app.example.com/wallet/fiat/complete",
+                    "cancel_url": "https://app.example.com/wallet/fiat/cancel",
+                },
+            )
+
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "provider_kyc_required"

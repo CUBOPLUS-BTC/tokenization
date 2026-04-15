@@ -45,6 +45,7 @@ Mobile-first design. The app functions as a PWA on mobile devices.
 /                           → Landing / Marketing page (public)
 /auth/login                 → Login form
 /auth/register              → Registration form
+/onboarding                 → Custody + KYC + fiat funding readiness (requires auth)
 /dashboard                  → User dashboard (requires auth)
 /wallet                     → Wallet overview
 /wallet/deposit             → Deposit (Lightning invoice / on-chain address)
@@ -99,11 +100,28 @@ Primary hub after login. Displays portfolio summary and recent activity.
 
 **Sections:**
 1. **Balance Overview** — sats (on-chain + Lightning) with fiat estimate
-2. **Quick Actions** — Deposit, Withdraw, Send payment buttons
-3. **Token Balances** — List of owned token types and quantities
-4. **Transaction History** — Filterable, paginated list with type icons
+2. **Quick Actions** — Deposit, Withdraw, Send payment, and Buy BTC buttons
+3. **Custody Posture** — Current custody backend, signer backend, withdrawal safeguards, and migration disclaimer
+4. **Token Balances** — List of owned token types and quantities
+5. **Transaction History** — Filterable, paginated list with type icons
 
-**Components**: `BalanceDisplay`, `QuickActionBar`, `TokenBalanceList`, `TransactionTable`, `TransactionFilter`
+**Components**: `BalanceDisplay`, `QuickActionBar`, `CustodyStatusCard`, `TokenBalanceList`, `TransactionTable`, `TransactionFilter`
+
+### 4.2.1 Onboarding (`/onboarding`)
+
+Authenticated onboarding flow shown after registration and available from settings.
+
+**Sections:**
+1. **Account Safety** — Explain custody backend, signer backend, and why withdrawals require 2FA
+2. **Verification Status** — Current KYC state and provider gating messages
+3. **Buy BTC with Fiat** — Provider cards sourced from `GET /auth/onboarding/summary` and `GET /wallet/fiat/onramp/providers`
+4. **External Handoff Notice** — Explicit disclosure that the provider checkout is external and governed by provider terms, pricing, and compliance policy
+
+**Flow Notes:**
+- The frontend must fetch onboarding summary before rendering provider CTAs.
+- The frontend must display compliance notices before calling `POST /wallet/fiat/onramp/session`.
+- Provider launch buttons remain disabled when the API returns `provider_kyc_required`, `unsupported_country`, or `unsupported_fiat_currency`.
+- Successful fiat launches redirect the user to the provider `handoff_url` and preserve a return URL back to the wallet screen.
 
 ### 4.3 Asset Detail (`/assets/:id`)
 

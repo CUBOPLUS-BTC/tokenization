@@ -23,7 +23,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from auth.jwt_utils import decode_token
 from google.protobuf.json_format import MessageToDict
-from common import InternalEventBus, RedisStreamMirror, get_readiness_payload, get_settings
+from common import (
+    InternalEventBus,
+    RedisStreamMirror,
+    get_readiness_payload,
+    get_settings,
+    install_http_security,
+    record_audit_event,
+)
+from common.logging import configure_structured_logging
+from common.metrics import metrics, mount_metrics_endpoint, record_business_event
+from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
 from tokenization.tapd_client import TapdClient
 from tokenization.tapd_grpc import taprootassets as taproot_rpc
 from tokenization.db import (
@@ -54,11 +64,13 @@ from tokenization.schemas import (
 settings = get_settings(service_name="tokenization", default_port=8002)
 _bearer_scheme = HTTPBearer(auto_error=False)
 _engine: AsyncEngine | object | None = None
+configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
 logger = logging.getLogger(__name__)
 _background_tasks: set[asyncio.Task[Any]] = set()
 _event_bus = InternalEventBus()
 _event_bus.subscribe("asset.created", RedisStreamMirror(settings.redis_url))
 _event_bus.subscribe("ai.evaluation.complete", RedisStreamMirror(settings.redis_url))
+configure_alerting(settings)
 
 
 class ContractError(Exception):
@@ -529,10 +541,22 @@ async def _run_asset_evaluation(
             await _publish_asset_evaluation_complete(completed_row)
         except Exception:
             logger.exception("Asset evaluation event publish failed for %s", asset_id)
+        record_business_event(
+            "asset_evaluation_complete",
+            outcome=str(_row_value(completed_row, "status", "success")),
+        )
     except asyncio.CancelledError:
         raise
     except Exception:
         logger.exception("Asset evaluation failed for %s", asset_id)
+        record_business_event("asset_evaluation_complete", outcome="failure")
+        await alert_dispatcher.fire(
+            severity=AlertSeverity.CRITICAL,
+            title="Asset evaluation failed",
+            detail=f"Background evaluation failed for asset {asset_id}.",
+            source=settings.service_name,
+            tags={"asset_id": str(asset_id)},
+        )
         async with _runtime_engine().connect() as conn:
             await reset_asset_evaluation(
                 conn,
@@ -600,6 +624,15 @@ def _require_roles(*allowed_roles: str):
     return dependency
 
 app = FastAPI(title="Tokenization Service", lifespan=_lifespan)
+install_http_security(
+    app,
+    settings,
+    sensitive_paths=(
+        "/assets",
+        "/assets/",
+    ),
+)
+mount_metrics_endpoint(app, settings)
 tapd_client = TapdClient(settings)
 
 
@@ -669,6 +702,7 @@ async def tapd_assets():
     summary="Submit an asset for review",
 )
 async def submit_asset(
+    request: Request,
     body: AssetCreateRequest,
     principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin")),
 ):
@@ -682,12 +716,24 @@ async def submit_asset(
             valuation_sat=body.valuation_sat,
             documents_url=str(body.documents_url),
         )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="tokenization.asset.submit",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="asset",
+            target_id=_row_value(row, "id"),
+            metadata={"category": body.category, "valuation_sat": body.valuation_sat},
+        )
 
     try:
         await _publish_asset_created(row)
     except Exception:
         logger.exception("Asset created event publish failed for asset %s", _row_value(row, "id"))
 
+    record_business_event("asset_submit")
     return AssetResponse(asset=_asset_out(row)).model_dump(mode="json")
 
 
@@ -725,6 +771,7 @@ async def get_assets(
     summary="Request AI evaluation for an owned asset",
 )
 async def request_asset_evaluation(
+    request: Request,
     asset_id: uuid.UUID,
     principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin")),
 ):
@@ -746,6 +793,18 @@ async def request_asset_evaluation(
             asset_id=asset_id,
             owner_id=principal.id,
         )
+        if queued_row is not None:
+            await record_audit_event(
+                conn,
+                settings=settings,
+                request=request,
+                action="tokenization.asset.evaluate",
+                actor_id=principal.id,
+                actor_role=principal.role,
+                target_type="asset",
+                target_id=asset_id,
+                metadata={"previous_status": previous_status},
+            )
 
     if queued_row is None:
         raise _asset_evaluation_conflict_error(
@@ -756,6 +815,7 @@ async def request_asset_evaluation(
         _dispatch_asset_evaluation(asset_id, fallback_status=previous_status)
     except RuntimeError as exc:
         logger.exception("Failed to dispatch evaluation for asset %s", asset_id)
+        record_business_event("asset_evaluation_request", outcome="failure")
         async with _runtime_engine().connect() as conn:
             await reset_asset_evaluation(
                 conn,
@@ -768,6 +828,7 @@ async def request_asset_evaluation(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         ) from exc
 
+    record_business_event("asset_evaluation_request")
     return AssetEvaluationRequestResponse(
         message="Evaluation started",
         estimated_completion=datetime.now(tz=timezone.utc) + timedelta(minutes=5),
@@ -781,6 +842,7 @@ async def request_asset_evaluation(
     summary="Tokenize an approved asset into tradable fractions",
 )
 async def tokenize_asset(
+    request: Request,
     asset_id: uuid.UUID,
     body: AssetTokenizationRequest,
     principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin")),
@@ -831,6 +893,23 @@ async def tokenize_asset(
                 unit_price_sat=body.unit_price_sat,
                 issuance_metadata=issuance_metadata,
             )
+            if tokenized_row is not None:
+                await record_audit_event(
+                    conn,
+                    settings=settings,
+                    request=request,
+                    action="tokenization.asset.tokenize",
+                    actor_id=principal.id,
+                    actor_role=principal.role,
+                    target_type="token",
+                    target_id=_row_value(tokenized_row, "token_id"),
+                    metadata={
+                        "asset_id": str(asset_id),
+                        "taproot_asset_id": body.taproot_asset_id,
+                        "total_supply": issued_supply,
+                        "unit_price_sat": body.unit_price_sat,
+                    },
+                )
     except IntegrityError as exc:
         raise _asset_tokenization_conflict_error(
             "Token issuance conflicts with an existing token record."
@@ -846,6 +925,7 @@ async def tokenize_asset(
     except Exception:
         logger.exception("Token mint event publish failed for asset %s", asset_id)
 
+    record_business_event("asset_tokenize")
     return AssetDetailResponse(asset=_asset_detail_out(tokenized_row)).model_dump(
         mode="json",
         exclude_none=True,

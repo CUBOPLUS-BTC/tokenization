@@ -7,6 +7,8 @@ import re
 from logging.config import fileConfig
 from pathlib import Path
 
+import importlib.util as _ilu
+
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
@@ -16,7 +18,14 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-from services.common import metadata  # noqa: E402
+# Import metadata.py directly to avoid initialising services/common/__init__.py,
+# which would pull in fastapi, redis, and other runtime deps not installed in the
+# migration environment.
+_metadata_path = Path(__file__).resolve().parents[1] / "services" / "common" / "db" / "metadata.py"
+_spec = _ilu.spec_from_file_location("_alembic_db_metadata", _metadata_path)
+_meta_mod = _ilu.module_from_spec(_spec)  # type: ignore[arg-type]
+_spec.loader.exec_module(_meta_mod)  # type: ignore[union-attr]
+metadata = _meta_mod.metadata
 
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")

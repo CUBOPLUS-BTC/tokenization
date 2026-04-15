@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file_encoding="utf-8",
@@ -15,7 +16,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    env_profile: Literal["local", "staging", "production"] = "local"
+    env_profile: Literal["local", "staging", "beta", "production"] = "local"
 
     service_name: str
     service_host: str = "0.0.0.0"
@@ -66,10 +67,25 @@ class Settings(BaseSettings):
 
     openai_api_key: str | None = None
     openai_api_key_file: str | None = None
+    custody_backend: Literal["software", "hsm"] = "software"
     wallet_encryption_key: str | None = None
     wallet_encryption_key_file: str | None = None
+    custody_hsm_key_label: str | None = None
+    custody_hsm_wrapping_key: str | None = None
+    custody_hsm_wrapping_key_file: str | None = None
+    custody_hsm_signing_key: str | None = None
+    custody_hsm_signing_key_file: str | None = None
+    alert_webhook_url: str | None = None
+    alert_webhook_url_file: str | None = None
 
     log_level: str
+    rate_limit_window_seconds: int = 60
+    rate_limit_write_requests: int = 60
+    rate_limit_sensitive_requests: int = 10
+
+    # KYC: trade value threshold (sats) above which KYC verification is required.
+    # Set to 0 to disable enforcement.  Default 10 000 000 sats (~0.1 BTC).
+    kyc_trade_threshold_sat: int = 10_000_000
 
     @property
     def nostr_relay_list(self) -> list[str]:
@@ -102,24 +118,47 @@ class Settings(BaseSettings):
         self.jwt_secret = self._resolve_secret(self.jwt_secret, self.jwt_secret_file)
         self.openai_api_key = self._resolve_secret(self.openai_api_key, self.openai_api_key_file)
         self.wallet_encryption_key = self._resolve_secret(self.wallet_encryption_key, self.wallet_encryption_key_file)
+        self.custody_hsm_wrapping_key = self._resolve_secret(
+            self.custody_hsm_wrapping_key,
+            self.custody_hsm_wrapping_key_file,
+        )
+        self.custody_hsm_signing_key = self._resolve_secret(
+            self.custody_hsm_signing_key,
+            self.custody_hsm_signing_key_file,
+        )
         self.nostr_private_key = self._resolve_secret(self.nostr_private_key, self.nostr_private_key_file)
+        self.alert_webhook_url = self._resolve_secret(self.alert_webhook_url, self.alert_webhook_url_file)
 
-        if self.env_profile in {"staging", "production"}:
+        if self.env_profile in {"staging", "beta", "production"}:
             if not self.jwt_secret:
-                raise ValueError("JWT secret is required for staging/production")
-            if not self.wallet_encryption_key:
-                raise ValueError("wallet_encryption_key is required for staging/production")
+                raise ValueError("JWT secret is required for staging/beta/production")
+            if self.custody_backend == "software":
+                if not self.wallet_encryption_key:
+                    raise ValueError("wallet_encryption_key or wallet_encryption_key_file is required for software custody in staging/beta/production")
+            else:
+                if not self.custody_hsm_key_label:
+                    raise ValueError("custody_hsm_key_label is required for HSM custody in staging/beta/production")
+                if not self.custody_hsm_wrapping_key or not self.custody_hsm_signing_key:
+                    raise ValueError("HSM custody requires wrapping and signing keys in staging/beta/production")
+                if not self.custody_hsm_wrapping_key_file or not self.custody_hsm_signing_key_file:
+                    raise ValueError("HSM custody requires file-backed wrapping and signing keys in staging/beta/production")
             if "user:pass@localhost" in self.database_url:
-                raise ValueError("database_url must be overridden for staging/production")
+                raise ValueError("database_url must be overridden for staging/beta/production")
+
+        if self.bitcoin_network.lower() not in {"mainnet", "testnet", "signet", "regtest"}:
+            raise ValueError("bitcoin_network must be one of: mainnet, testnet, signet, regtest")
 
         return self
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
+
 def _infer_env_profile() -> str:
     profile = os.getenv("ENV_PROFILE", "local").strip().lower()
-    return profile if profile in {"local", "staging", "production"} else "local"
+    return profile if profile in {"local", "staging", "beta", "production"} else "local"
+
 
 def _env_files_for_profile(profile: str) -> list[Path]:
     infra_dir = _repo_root() / "infra"
@@ -128,6 +167,7 @@ def _env_files_for_profile(profile: str) -> list[Path]:
         infra_dir / ".env",
         infra_dir / f".env.{profile}",
     ]
+
 
 @lru_cache(maxsize=16)
 def get_settings(service_name: str, default_port: int) -> Settings:

@@ -1,0 +1,201 @@
+name: tokenization-public-beta
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    env_file:
+      - ./.env.beta
+    volumes:
+      - beta_postgres_data:/var/lib/postgresql/data
+    networks:
+      - beta
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - beta_redis_data:/data
+    networks:
+      - beta
+
+  auth:
+    image: python:3.11-slim
+    restart: unless-stopped
+    working_dir: /app/services/auth
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8000"
+    env_file:
+      - ./.env.beta
+    volumes:
+      - ../:/app
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - beta
+
+  wallet:
+    image: python:3.11-slim
+    restart: unless-stopped
+    working_dir: /app/services/wallet
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8001"
+    env_file:
+      - ./.env.beta
+    volumes:
+      - ../:/app
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - beta
+
+  tokenization:
+    image: python:3.11-slim
+    restart: unless-stopped
+    working_dir: /app/services/tokenization
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8002"
+    env_file:
+      - ./.env.beta
+    volumes:
+      - ../:/app
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - beta
+
+  marketplace:
+    image: python:3.11-slim
+    restart: unless-stopped
+    working_dir: /app/services/marketplace
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8003"
+    env_file:
+      - ./.env.beta
+    volumes:
+      - ../:/app
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - beta
+
+  education:
+    image: python:3.11-slim
+    restart: unless-stopped
+    working_dir: /app/services/education
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8004"
+    env_file:
+      - ./.env.beta
+    volumes:
+      - ../:/app
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - beta
+
+  nostr:
+    image: python:3.11-slim
+    restart: unless-stopped
+    working_dir: /app/services/nostr
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8005"
+    env_file:
+      - ./.env.beta
+    volumes:
+      - ../:/app
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - beta
+
+  admin:
+    image: python:3.11-slim
+    restart: unless-stopped
+    working_dir: /app/services/admin
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8006"
+    env_file:
+      - ./.env.beta
+    volumes:
+      - ../:/app
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - beta
+
+  gateway:
+    build:
+      context: ../services/gateway
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - auth
+      - wallet
+      - tokenization
+      - marketplace
+      - education
+      - nostr
+      - admin
+    ports:
+      - "8000:8000"
+    networks:
+      - beta
+
+  prometheus:
+    extends:
+      file: ./docker-compose.observability.yml
+      service: prometheus
+    networks:
+      - beta
+
+  alertmanager:
+    extends:
+      file: ./docker-compose.observability.yml
+      service: alertmanager
+    networks:
+      - beta
+
+  grafana:
+    extends:
+      file: ./docker-compose.observability.yml
+      service: grafana
+    networks:
+      - beta
+
+  blackbox:
+    extends:
+      file: ./docker-compose.observability.yml
+      service: blackbox
+    networks:
+      - beta
+
+  cadvisor:
+    extends:
+      file: ./docker-compose.observability.yml
+      service: cadvisor
+    networks:
+      - beta
+
+volumes:
+  beta_postgres_data:
+  beta_redis_data:
+
+networks:
+  beta:
+    driver: bridge

@@ -21,6 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from auth.jwt_utils import decode_token
 from common import get_readiness_payload, get_settings
+from common.metrics import mount_metrics_endpoint, record_business_event
+from common.alerting import configure_alerting
 from education.db import (
     create_enrollment,
     get_course_by_id,
@@ -44,6 +46,7 @@ from education.schemas import (
 settings = get_settings(service_name="education", default_port=8004)
 _bearer_scheme = HTTPBearer(auto_error=False)
 _engine: AsyncEngine | object | None = None
+configure_alerting(settings)
 
 
 class ContractError(Exception):
@@ -213,6 +216,7 @@ def _invalid_access_token_error() -> ContractError:
 
 
 app = FastAPI(title="Education Service", lifespan=_lifespan)
+mount_metrics_endpoint(app, settings)
 
 
 @app.exception_handler(RequestValidationError)
@@ -333,6 +337,7 @@ async def enroll_in_course(
                 status_code=status.HTTP_409_CONFLICT,
             ) from exc
 
+    record_business_event("education_enrollment")
     return EnrollmentResponse(enrollment=_enrollment_out(enrollment_row)).model_dump(mode="json")
 
 
@@ -364,6 +369,7 @@ async def patch_enrollment(
     if updated_row is None:
         raise _enrollment_not_found_error()
 
+    record_business_event("education_progress_update")
     return EnrollmentResponse(enrollment=_enrollment_out(updated_row)).model_dump(mode="json")
 
 

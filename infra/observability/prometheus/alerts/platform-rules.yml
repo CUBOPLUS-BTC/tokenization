@@ -1,0 +1,66 @@
+groups:
+  - name: platform-health
+    rules:
+      - alert: PlatformServiceUnavailable
+        expr: probe_success{job="gateway_http_probe", probe="health"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          route: outage
+        annotations:
+          summary: "{{ $labels.environment }} {{ $labels.service }} health probe failed"
+          description: "Gateway health checks for {{ $labels.environment }} have been failing for more than 2 minutes."
+
+      - alert: PlatformServiceNotReady
+        expr: service_ready == 0
+        for: 5m
+        labels:
+          severity: critical
+          route: outage
+        annotations:
+          summary: "{{ $labels.environment }} {{ $labels.service }} is not ready"
+          description: "One or more critical dependencies are failing readiness checks."
+
+      - alert: PlatformDependencyUnavailable
+        expr: probe_success{job="infra_tcp_probe"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          route: outage
+        annotations:
+          summary: "{{ $labels.environment }} {{ $labels.service }} TCP probe failed"
+          description: "Prometheus could not establish a TCP connection to {{ $labels.instance }}."
+
+  - name: platform-performance
+    rules:
+      - alert: PlatformHighLatencyP95
+        expr: histogram_quantile(0.95, sum by (le, environment, service) (rate(http_request_duration_seconds_bucket[5m]))) > 1
+        for: 10m
+        labels:
+          severity: warning
+          route: latency
+        annotations:
+          summary: "{{ $labels.environment }} {{ $labels.service }} p95 latency is high"
+          description: "p95 request latency has remained above 1 second for 10 minutes."
+
+      - alert: PlatformHighErrorRate
+        expr: sum by (environment, service) (rate(http_request_errors_total[5m])) / clamp_min(sum by (environment, service) (rate(http_requests_total[5m])), 0.001) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          route: error-rate
+        annotations:
+          summary: "{{ $labels.environment }} {{ $labels.service }} error rate is elevated"
+          description: "More than 5% of requests have been failing for the last 10 minutes."
+
+  - name: platform-business
+    rules:
+      - alert: SettlementFailureDetected
+        expr: increase(marketplace_settlement_failures_total[10m]) > 0 or increase(business_events_total{event="settlement_failure", outcome="failure"}[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          route: settlement
+        annotations:
+          summary: "{{ $labels.environment }} marketplace settlement failure"
+          description: "At least one settlement failure was recorded in the last 10 minutes."

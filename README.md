@@ -10,6 +10,8 @@ This repository contains the specification base and development framework for a 
 - Buying and selling fractions on a marketplace with 2-of-3 multisig escrow.
 - Integrating a self-custodial wallet with Bitcoin on-chain and Lightning.
 - Allocating platform fees to an auditable educational treasury.
+- Capturing referral relationships with auditable onboarding rewards.
+- Supporting advanced stop-triggered orders and yield accrual reporting for token holders.
 
 The complete design is documented in [specs/](specs), including architecture, API contracts, database schema, and frontend.
 
@@ -53,8 +55,8 @@ docker compose -f infra/docker-compose.local.yml down
 
 Python services share a centralized settings module at `services/common/config.py`.
 
-- Supported profiles: `local`, `staging`, `production` (`ENV_PROFILE`)
-- Profile templates: `infra/.env.local.example`, `infra/.env.staging.example`, `infra/.env.production.example`
+- Supported profiles: `local`, `staging`, `beta`, `production` (`ENV_PROFILE`)
+- Profile templates: `infra/.env.local.example`, `infra/.env.staging.example`, `infra/.env.beta.example`, `infra/.env.production.example`
 - Secret convention: use either `VAR` or `VAR_FILE` (file path), with `VAR_FILE` taking precedence
 
 Create a runtime local profile before running Docker Compose:
@@ -66,6 +68,13 @@ cp infra/.env.local.example infra/.env.local
 For local Docker Compose, defaults in `infra/.env.local` target internal service names (`postgres`, `redis`, and service hostnames) so all services can connect through shared configuration.
 
 Do not commit real `.env` files or plaintext secrets.
+
+## Monitoring and Public Beta
+
+- Observability stack: `docker compose -f infra/docker-compose.observability.yml up -d`
+- Public beta stack: `docker compose -f infra/docker-compose.public-beta.yml up -d`
+- Beta runbook: [deploy/public-beta/README.md](deploy/public-beta/README.md)
+- Monitoring assets: [infra/observability/README.md](infra/observability/README.md)
 
 ## Repository Structure
 

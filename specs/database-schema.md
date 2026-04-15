@@ -68,11 +68,15 @@ Core user accounts.
 | `role`            | `VARCHAR(20)`  | NOT NULL, DEFAULT 'user'       | One of: user, seller, admin, auditor |
 | `totp_secret`     | `VARCHAR(255)` | nullable                       | Encrypted TOTP secret for 2FA       |
 | `is_verified`     | `BOOLEAN`      | DEFAULT false                  | Email/identity verification status   |
+| `referrer_id`     | `UUID`         | FK → users.id, nullable        | Immutable user that referred this account |
+| `referral_code`   | `VARCHAR(12)`  | UNIQUE, NOT NULL               | Shareable code used during signup    |
 | `created_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 | `updated_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 | `deleted_at`      | `TIMESTAMPTZ`  | nullable                       | Soft delete                          |
 
-**Indexes**: `uq_users_email` (UNIQUE via UniqueConstraint), `ix_users_role`
+**Indexes**: `uq_users_email` (UNIQUE via UniqueConstraint), `uq_users_referral_code` (UNIQUE via UniqueConstraint), `ix_users_role`, `ix_users_referrer_id`
+
+**Referral rule**: a user can have at most one `referrer_id`, self-referrals are rejected, and the relation is captured only at account creation.
 
 ---
 
@@ -210,12 +214,17 @@ Buy and sell orders on the marketplace.
 | `side`            | `VARCHAR(4)`   | NOT NULL                       | `buy` or `sell`                      |
 | `quantity`        | `BIGINT`       | NOT NULL, CHECK > 0            | Number of fractional units           |
 | `price_sat`       | `BIGINT`       | NOT NULL, CHECK > 0            | Price per unit in satoshis           |
+| `order_type`      | `VARCHAR(20)`  | NOT NULL, DEFAULT 'limit'      | `limit` or `stop_limit`              |
+| `trigger_price_sat` | `BIGINT`     | nullable, CHECK > 0            | Trigger threshold for `stop_limit` orders |
+| `triggered_at`    | `TIMESTAMPTZ`  | nullable                       | When the stop trigger activated      |
 | `filled_quantity` | `BIGINT`       | DEFAULT 0                      | Units already filled                 |
 | `status`          | `VARCHAR(20)`  | NOT NULL, DEFAULT 'open'       | `open`, `partially_filled`, `filled`, `cancelled` |
 | `created_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 | `updated_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 
-**Indexes**: `ix_orders_token_id`, `ix_orders_user_id`
+**Indexes**: `ix_orders_token_id`, `ix_orders_user_id`, `ix_orders_order_type`
+
+**Trigger rule**: `stop_limit` orders remain non-matchable until the current reference price crosses the trigger. Buy stops activate when the reference price is greater than or equal to the trigger. Sell stops activate when the reference price is less than or equal to the trigger.
 
 ---
 
@@ -258,6 +267,48 @@ Multisig 2-of-3 escrow for each trade.
 | `release_txid`      | `VARCHAR(64)`  | nullable                       | On-chain release transaction       |
 | `status`            | `VARCHAR(20)`  | NOT NULL, DEFAULT 'created'    | `created`, `funded`, `released`, `refunded`, `disputed` |
 | `expires_at`        | `TIMESTAMPTZ`  | NOT NULL                       | Escrow expiration (auto-refund)    |
+
+---
+
+### 3.11 `referral_rewards`
+
+Auditable credits generated when a referred user completes onboarding.
+
+| Column            | Type           | Constraints                    | Description                          |
+| :---------------- | :------------- | :----------------------------- | :----------------------------------- |
+| `id`              | `UUID`         | PK                             |                                      |
+| `referrer_id`     | `UUID`         | FK → users.id, NOT NULL        | User that receives the reward        |
+| `referred_user_id`| `UUID`         | FK → users.id, NOT NULL        | User that completed onboarding       |
+| `reward_type`     | `VARCHAR(20)`  | DEFAULT `signup_bonus`         | Reward rule identifier               |
+| `amount_sat`      | `BIGINT`       | NOT NULL                       | Reward amount in satoshis            |
+| `status`          | `VARCHAR(20)`  | DEFAULT `credited`             | `credited` or `reversed`             |
+| `eligibility_event` | `VARCHAR(30)`| DEFAULT `kyc_verified`         | Event that unlocked the reward       |
+| `metadata`        | `JSONB`        | nullable                       | Rule traceability payload            |
+| `credited_at`     | `TIMESTAMPTZ`  | DEFAULT NOW()                  | When the reward was credited         |
+| `created_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
+
+**Eligibility rule**: signup bonus is credited once, only after the referred account reaches KYC status `verified`.
+
+---
+
+### 3.12 `yield_accruals`
+
+Daily yield ledger derived from token holdings and asset projected ROI.
+
+| Column            | Type           | Constraints                    | Description                          |
+| :---------------- | :------------- | :----------------------------- | :----------------------------------- |
+| `id`              | `UUID`         | PK                             |                                      |
+| `user_id`         | `UUID`         | FK → users.id, NOT NULL        | Beneficiary user                     |
+| `token_id`        | `UUID`         | FK → tokens.id, NOT NULL       | Token generating the yield           |
+| `annual_rate_pct` | `DECIMAL(5,2)` | NOT NULL                       | Annualized projected rate used       |
+| `quantity_held`   | `BIGINT`       | NOT NULL                       | Token balance used for the accrual   |
+| `reference_price_sat` | `BIGINT`   | NOT NULL                       | Latest market price or issue price fallback |
+| `amount_sat`      | `BIGINT`       | NOT NULL                       | Yield amount accrued                 |
+| `accrued_from`    | `TIMESTAMPTZ`  | NOT NULL                       | Beginning of the accrual window      |
+| `accrued_to`      | `TIMESTAMPTZ`  | NOT NULL                       | End of the accrual window            |
+| `created_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
+
+**Yield rule**: the platform accrues full-day yield only, using `floor(balance × reference_price × projected_roi × days / 36500)`.
 | `created_at`        | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                    |
 | `updated_at`        | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                    |
 
@@ -334,6 +385,28 @@ Persists refresh-token JTIs so rotation and revocation can invalidate reused ses
 | `updated_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 
 **Indexes**: `ix_refresh_token_sessions_user_id`, `ix_refresh_token_sessions_expires_at`, `uq_refresh_token_sessions_token_jti` (UNIQUE via UniqueConstraint)
+
+---
+
+### 3.15 `kyc_verifications`
+
+Per-user identity verification state used to enforce KYC rules for high-value trades.
+
+| Column             | Type           | Constraints                    | Description                          |
+| :----------------- | :------------- | :----------------------------- | :----------------------------------- |
+| `id`               | `UUID`         | PK                             |                                      |
+| `user_id`          | `UUID`         | FK → users.id, UNIQUE, NOT NULL| One record per user                  |
+| `status`           | `VARCHAR(20)`  | NOT NULL, DEFAULT 'pending'    | `pending`, `verified`, `rejected`, `expired` |
+| `reviewed_by`      | `UUID`         | FK → users.id, nullable        | Admin who reviewed the submission    |
+| `reviewed_at`      | `TIMESTAMPTZ`  | nullable                       | When the review was completed        |
+| `rejection_reason` | `TEXT`         | nullable                       | Reason for rejection (if applicable) |
+| `notes`            | `TEXT`         | nullable                       | Additional notes from user or admin  |
+| `document_url`     | `TEXT`         | nullable                       | Link to uploaded KYC documents       |
+| `metadata`         | `JSONB`        | nullable                       | Additional verification metadata     |
+| `created_at`       | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
+| `updated_at`       | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
+
+**Indexes**: `ix_kyc_verifications_status`, `ix_kyc_verifications_user_id`, `uq_kyc_verifications_user_id` (UNIQUE via UniqueConstraint)
 
 ---
 

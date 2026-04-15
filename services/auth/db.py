@@ -82,6 +82,8 @@ async def create_user(
     email: str,
     password_hash: str,
     display_name: str,
+    referral_code: str,
+    referrer_id: str | uuid.UUID | None = None,
 ) -> sa.engine.Row:
     """Insert a new user and return the full row."""
     new_id = uuid.uuid4()
@@ -93,6 +95,8 @@ async def create_user(
             password_hash=password_hash,
             display_name=display_name,
             role="user",
+            referral_code=referral_code,
+            referrer_id=None if referrer_id is None else _as_uuid(referrer_id),
             created_at=now,
             updated_at=now,
         )
@@ -207,6 +211,7 @@ async def create_nostr_user(
     conn: AsyncConnection,
     *,
     display_name: str,
+    referral_code: str,
 ) -> sa.engine.Row:
     """Insert a new user initialized via Nostr (no email/password)."""
     new_id = uuid.uuid4()
@@ -216,6 +221,7 @@ async def create_nostr_user(
             id=new_id,
             display_name=display_name,
             role="user",
+            referral_code=referral_code,
             created_at=now,
             updated_at=now,
         )

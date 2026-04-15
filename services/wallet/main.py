@@ -27,7 +27,22 @@ import uvicorn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from common import get_readiness_payload, get_settings
+from common import get_readiness_payload, get_settings, install_http_security, record_audit_event
+from common import (
+    OnRampError,
+    accrue_pending_yield_for_user,
+    create_onramp_session,
+    default_onramp_notices,
+    describe_custody_record,
+    describe_custody_settings,
+    get_user_yield_accruals,
+    list_onramp_provider_views,
+    summarize_yield_for_user,
+)
+from common.logging import configure_structured_logging
+from common.metrics import metrics, mount_metrics_endpoint, record_business_event
+from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
+from auth.kyc_db import get_kyc_status, is_kyc_verified
 
 from .auth import get_current_user_id, require_2fa
 from .db import (
@@ -42,8 +57,12 @@ from .db import (
     list_wallet_transactions,
 )
 from .lnd_client import LNDClient
-from .log_filter import SensitiveDataFilter
 from .schemas import (
+    CustodyStatusResponse,
+    FiatOnRampProviderStatus,
+    FiatOnRampProvidersResponse,
+    FiatOnRampSessionRequest,
+    FiatOnRampSessionResponse,
     OnchainAddressResponse,
     OnchainWithdrawalRequest,
     OnchainWithdrawalResponse,
@@ -59,17 +78,24 @@ from .schemas_lnd import (
     PaymentCreate,
     PaymentStatus,
 )
-from .schemas_wallet import TokenBalance, WalletResponse, WalletSummary
+from .schemas_wallet import (
+    TokenBalance,
+    WalletResponse,
+    WalletSummary,
+    YieldAccrualOut,
+    YieldSummary,
+    YieldSummaryResponse,
+    YieldTokenSummary,
+)
 
-
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.addFilter(SensitiveDataFilter())
 
 os.environ.setdefault("TAPD_MACAROON_PATH", "")
 os.environ.setdefault("TAPD_TLS_CERT_PATH", "")
 
 settings = get_settings(service_name="wallet", default_port=8001)
+configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
+configure_alerting(settings)
 lnd_client = LNDClient(settings)
 
 _ALGORITHM = "HS256"
@@ -143,6 +169,16 @@ async def _noop_lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Wallet Service", lifespan=_lifespan)
+install_http_security(
+    app,
+    settings,
+    sensitive_paths=(
+        "/lightning/payments",
+        "/wallet/onchain/withdraw",
+        "/onchain/withdraw",
+    ),
+)
+mount_metrics_endpoint(app, settings)
 _original_router_lifespan = app.router.lifespan
 
 
@@ -362,7 +398,15 @@ async def get_wallet_summary(user_id: str = Depends(get_current_user_id)):
                 detail="Wallet not found for user",
             )
 
+        await accrue_pending_yield_for_user(conn, user_id)
+        await conn.commit()
         token_rows = await get_token_balances_for_user(conn, user_id)
+        total_yield_earned_sat, yield_rows = await summarize_yield_for_user(conn, user_id)
+
+    yield_by_token = {
+        str(_row_value(row, "token_id")): int(_row_value(row, "total_yield_sat", 0))
+        for row in yield_rows
+    }
 
     token_balances = [
         TokenBalance(
@@ -371,6 +415,7 @@ async def get_wallet_summary(user_id: str = Depends(get_current_user_id)):
             symbol=None,
             balance=row["balance"],
             unit_price_sat=row["unit_price_sat"],
+            accrued_yield_sat=yield_by_token.get(str(row["token_id"]), 0),
         )
         for row in token_rows
     ]
@@ -385,9 +430,197 @@ async def get_wallet_summary(user_id: str = Depends(get_current_user_id)):
             onchain_balance_sat=onchain,
             lightning_balance_sat=lightning,
             token_balances=token_balances,
-            total_value_sat=onchain + lightning + tokens_valuation,
+            total_yield_earned_sat=total_yield_earned_sat,
+            total_value_sat=onchain + lightning + tokens_valuation + total_yield_earned_sat,
         )
     )
+
+
+@app.get(
+    "/wallet/yield/summary",
+    response_model=YieldSummaryResponse,
+    tags=["Wallet"],
+)
+async def get_wallet_yield_summary(user_id: str = Depends(get_current_user_id)):
+    async with _runtime_engine().connect() as conn:
+        wallet_row = await get_wallet_by_user_id(conn, user_id)
+        if not wallet_row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Wallet not found for user",
+            )
+
+        await accrue_pending_yield_for_user(conn, user_id)
+        await conn.commit()
+        total_yield_earned_sat, by_token_rows = await summarize_yield_for_user(conn, user_id)
+        accrual_rows = await get_user_yield_accruals(conn, user_id)
+
+    return YieldSummaryResponse(
+        yield_summary=YieldSummary(
+            total_yield_earned_sat=total_yield_earned_sat,
+            by_token=[
+                YieldTokenSummary(
+                    token_id=_row_value(row, "token_id"),
+                    asset_name=_row_value(row, "asset_name"),
+                    total_yield_sat=int(_row_value(row, "total_yield_sat", 0)),
+                )
+                for row in by_token_rows
+            ],
+            accruals=[
+                YieldAccrualOut(
+                    id=_row_value(row, "id"),
+                    token_id=_row_value(row, "token_id"),
+                    asset_name=_row_value(row, "asset_name"),
+                    amount_sat=int(_row_value(row, "amount_sat", 0)),
+                    quantity_held=int(_row_value(row, "quantity_held", 0)),
+                    reference_price_sat=int(_row_value(row, "reference_price_sat", 0)),
+                    annual_rate_pct=float(_row_value(row, "annual_rate_pct", 0)),
+                    accrued_from=_row_value(row, "accrued_from"),
+                    accrued_to=_row_value(row, "accrued_to"),
+                    created_at=_row_value(row, "created_at"),
+                )
+                for row in accrual_rows
+            ],
+        )
+    )
+
+
+@app.get(
+    "/wallet/custody",
+    status_code=status.HTTP_200_OK,
+    response_model=CustodyStatusResponse,
+    summary="Return custody posture for the authenticated wallet",
+)
+async def get_wallet_custody_status(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    async with _runtime_engine().connect() as conn:
+        wallet = await get_or_create_wallet(conn, principal.id)
+
+    encrypted_seed = bytes(_row_value(wallet, "encrypted_seed", b""))
+    descriptor = describe_custody_record(encrypted_seed)
+    custody = describe_custody_settings(settings)
+    record_business_event("wallet_custody_status")
+    return CustodyStatusResponse(
+        configured_backend=custody.backend,
+        wallet_backend=descriptor.backend,
+        signer_backend=custody.signer_backend,
+        state=custody.state,
+        key_reference=descriptor.key_reference or custody.key_reference,
+        signer_key_reference=custody.signer_key_reference,
+        derivation_path=str(_row_value(wallet, "derivation_path", "")),
+        seed_exportable=descriptor.exportable_seed,
+        withdraw_requires_2fa=True,
+        server_compromise_impact=custody.server_compromise_impact,
+        disclaimers=list(custody.disclaimers),
+    ).model_dump(mode="json")
+
+
+@app.get(
+    "/wallet/fiat/onramp/providers",
+    status_code=status.HTTP_200_OK,
+    response_model=FiatOnRampProvidersResponse,
+    summary="List supported fiat-to-BTC on-ramp providers",
+)
+async def list_fiat_onramp_providers(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    async with _runtime_engine().connect() as conn:
+        kyc_row = await get_kyc_status(conn, principal.id)
+
+    providers = list_onramp_provider_views(kyc_verified=is_kyc_verified(kyc_row))
+    record_business_event("wallet_fiat_onramp_providers")
+    return FiatOnRampProvidersResponse(
+        providers=[
+            FiatOnRampProviderStatus(
+                provider_id=provider.provider_id,
+                display_name=provider.display_name,
+                state=provider.state,
+                supported_fiat_currencies=list(provider.supported_fiat_currencies),
+                supported_countries=list(provider.supported_countries),
+                payment_methods=list(provider.payment_methods),
+                min_fiat_amount=provider.min_fiat_amount,
+                max_fiat_amount=provider.max_fiat_amount,
+                requires_kyc=provider.requires_kyc,
+                disclaimer=provider.disclaimer,
+                external_handoff_url=provider.external_handoff_url,
+            )
+            for provider in providers
+        ],
+        compliance_notices=default_onramp_notices(),
+    ).model_dump(mode="json")
+
+
+@app.post(
+    "/wallet/fiat/onramp/session",
+    status_code=status.HTTP_201_CREATED,
+    response_model=FiatOnRampSessionResponse,
+    summary="Initiate an external fiat-to-BTC on-ramp handoff",
+)
+async def create_fiat_onramp_session(
+    request: Request,
+    body: FiatOnRampSessionRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    async with _runtime_engine().connect() as conn:
+        user = await get_user_by_id(conn, principal.id)
+        if user is None or _row_value(user, "deleted_at") is not None:
+            raise _invalid_access_token_error()
+
+        wallet = await get_or_create_wallet(conn, principal.id)
+        kyc_row = await get_kyc_status(conn, principal.id)
+
+        try:
+            session = create_onramp_session(
+                provider_id=body.provider_id,
+                user_id=principal.id,
+                wallet_id=str(_row_value(wallet, "id")),
+                deposit_address=_generate_onchain_address(),
+                fiat_currency=body.fiat_currency,
+                fiat_amount=body.fiat_amount,
+                country_code=body.country_code,
+                return_url=body.return_url,
+                cancel_url=body.cancel_url,
+                kyc_verified=is_kyc_verified(kyc_row),
+                signing_secret=settings.jwt_secret,
+            )
+        except OnRampError as exc:
+            raise ContractError(
+                code=exc.code,
+                message=exc.message,
+                status_code=exc.status_code,
+            ) from exc
+
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="wallet.fiat_onramp_session",
+            actor_id=principal.id,
+            actor_role=_row_value(user, "role"),
+            target_type="wallet",
+            target_id=_row_value(wallet, "id"),
+            metadata={
+                "provider_id": body.provider_id,
+                "fiat_currency": body.fiat_currency,
+                "fiat_amount": str(body.fiat_amount),
+                "country_code": body.country_code,
+                "deposit_address_tail": session.deposit_address[-8:],
+            },
+        )
+
+    record_business_event("wallet_fiat_onramp_session")
+    return FiatOnRampSessionResponse(
+        session_id=session.session_id,
+        provider_id=session.provider_id,
+        state=session.state,
+        handoff_url=session.handoff_url,
+        deposit_address=session.deposit_address,
+        destination_wallet_id=session.destination_wallet_id,
+        expires_at=session.expires_at,
+        disclaimer=session.disclaimer,
+        compliance_action=session.compliance_action,
+    ).model_dump(mode="json")
 
 
 @app.post("/lightning/invoices", response_model=Invoice, tags=["Lightning"])
@@ -412,6 +645,7 @@ async def create_invoice(
                 description=req.memo,
             )
 
+        record_business_event("wallet_invoice_create")
         return Invoice(
             payment_request=resp.payment_request,
             payment_hash=resp.r_hash.hex(),
@@ -423,14 +657,17 @@ async def create_invoice(
         )
     except grpc.RpcError as exc:
         logger.error("gRPC error creating invoice: %s", exc)
+        record_business_event("wallet_invoice_create", outcome="failure")
         raise HTTPException(status_code=503, detail="Lightning service unavailable") from exc
     except Exception as exc:
         logger.error("Unexpected error creating invoice: %s", exc)
+        record_business_event("wallet_invoice_create", outcome="failure")
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
 @app.post("/lightning/payments", response_model=Payment, tags=["Lightning"])
 async def pay_invoice(
+    request: Request,
     req: PaymentCreate,
     user_id: str = Depends(get_current_user_id),
     _: None = Depends(require_2fa),
@@ -450,6 +687,14 @@ async def pay_invoice(
             payment_status = PaymentStatus.FAILED
             db_status = "failed"
             failure_reason = resp.payment_error
+            record_business_event("wallet_payment", outcome="failure")
+            await alert_dispatcher.fire(
+                severity=AlertSeverity.CRITICAL,
+                title="Lightning payment failed",
+                detail=resp.payment_error,
+                source=settings.service_name,
+                tags={"user_id": user_id},
+            )
 
         amount_sat = resp.payment_route.total_amt if resp.payment_route else 0
 
@@ -463,7 +708,23 @@ async def pay_invoice(
             ln_payment_hash=resp.payment_hash.hex(),
             description=f"Payment to {req.payment_request[:20]}...",
         )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="wallet.lightning.pay",
+            actor_id=user_id,
+            target_type="wallet",
+            target_id=_row_value(wallet, "id"),
+            metadata={
+                "amount_sat": amount_sat,
+                "status": db_status,
+                "payment_hash": resp.payment_hash.hex(),
+            },
+        )
 
+        if not resp.payment_error:
+            record_business_event("wallet_payment")
         return Payment(
             payment_hash=resp.payment_hash.hex(),
             payment_preimage=resp.payment_preimage.hex() if not resp.payment_error else None,
@@ -474,11 +735,13 @@ async def pay_invoice(
         )
     except grpc.RpcError as exc:
         logger.error("gRPC error paying invoice: %s", exc)
+        record_business_event("wallet_payment", outcome="failure")
         raise HTTPException(status_code=503, detail="Lightning service unavailable") from exc
     except HTTPException:
         raise
     except Exception as exc:
         logger.error("Unexpected error paying invoice: %s", exc)
+        record_business_event("wallet_payment", outcome="failure")
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
@@ -535,6 +798,7 @@ async def create_onchain_address(
     async with _runtime_engine().connect() as conn:
         await get_or_create_wallet(conn, principal.id)
 
+    record_business_event("wallet_onchain_address_create")
     return OnchainAddressResponse(address=_generate_onchain_address(), type="taproot").model_dump()
 
 
@@ -551,6 +815,7 @@ async def create_onchain_address(
     include_in_schema=False,
 )
 async def withdraw_onchain(
+    request: Request,
     body: OnchainWithdrawalRequest,
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
     two_fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
@@ -594,14 +859,32 @@ async def withdraw_onchain(
             ),
             description=f"On-chain withdrawal to {body.address}",
         )
+        if row is not None:
+            await record_audit_event(
+                conn,
+                settings=settings,
+                request=request,
+                action="wallet.onchain_withdraw",
+                actor_id=principal.id,
+                actor_role=_row_value(user, "role"),
+                target_type="transaction",
+                target_id=_row_value(row, "id"),
+                metadata={
+                    "amount_sat": body.amount_sat,
+                    "fee_sat": fee_sat,
+                    "address_tail": body.address[-8:],
+                },
+            )
 
     if row is None:
+        record_business_event("wallet_onchain_withdrawal", outcome="failure")
         raise ContractError(
             code="insufficient_funds",
             message="Wallet balance is insufficient for this withdrawal and fee.",
             status_code=status.HTTP_409_CONFLICT,
         )
 
+    record_business_event("wallet_onchain_withdrawal")
     return OnchainWithdrawalResponse(
         txid=_row_value(row, "txid"),
         amount_sat=_row_value(row, "amount_sat"),

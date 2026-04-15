@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -58,3 +59,72 @@ class TransactionHistoryItem(BaseModel):
 class TransactionHistoryResponse(BaseModel):
     transactions: list[TransactionHistoryItem]
     next_cursor: str | None
+
+
+class CustodyStatusResponse(BaseModel):
+    configured_backend: Literal["software", "hsm"]
+    wallet_backend: Literal["software", "hsm"]
+    signer_backend: Literal["software", "hsm"]
+    state: Literal["ready", "degraded"]
+    key_reference: str | None = None
+    signer_key_reference: str | None = None
+    derivation_path: str
+    seed_exportable: bool
+    withdraw_requires_2fa: bool
+    server_compromise_impact: str
+    disclaimers: list[str]
+
+
+class FiatOnRampProviderStatus(BaseModel):
+    provider_id: str
+    display_name: str
+    state: Literal["ready", "pending_redirect", "kyc_required", "limited", "unavailable"]
+    supported_fiat_currencies: list[str]
+    supported_countries: list[str]
+    payment_methods: list[str]
+    min_fiat_amount: Decimal
+    max_fiat_amount: Decimal
+    requires_kyc: bool
+    disclaimer: str
+    external_handoff_url: str
+
+
+class FiatOnRampProvidersResponse(BaseModel):
+    providers: list[FiatOnRampProviderStatus]
+    compliance_notices: list[str]
+
+
+class FiatOnRampSessionRequest(BaseModel):
+    provider_id: str = Field(min_length=2, max_length=40)
+    fiat_currency: str = Field(min_length=3, max_length=3)
+    fiat_amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    country_code: str = Field(min_length=2, max_length=2)
+    return_url: str = Field(min_length=1, max_length=2048)
+    cancel_url: str = Field(min_length=1, max_length=2048)
+
+    @field_validator("provider_id")
+    @classmethod
+    def _normalize_provider_id(cls, value: str) -> str:
+        return value.strip().lower()
+
+    @field_validator("fiat_currency")
+    @classmethod
+    def _normalize_currency(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("country_code")
+    @classmethod
+    def _normalize_country(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class FiatOnRampSessionResponse(BaseModel):
+    session_id: str
+    provider_id: str
+    state: Literal["ready", "pending_redirect", "kyc_required", "limited", "unavailable"]
+    handoff_url: str
+    deposit_address: str
+    destination_wallet_id: str
+    expires_at: datetime
+    disclaimer: str
+    compliance_action: Literal["review_terms", "complete_kyc"]

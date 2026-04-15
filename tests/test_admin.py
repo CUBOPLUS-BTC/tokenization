@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import os
 import sys
 from typing import NamedTuple
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import uuid
 
 import pytest
@@ -24,6 +24,7 @@ class FakeUser(NamedTuple):
     email: str
     display_name: str
     role: str
+    referral_code: str | None
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None
@@ -77,6 +78,7 @@ def _make_user(*, role: str = "user", totp_secret: str | None = None) -> FakeUse
         email="user@example.com",
         display_name="Test User",
         role=role,
+        referral_code="REF1234567",
         created_at=now,
         updated_at=now,
         deleted_at=None,
@@ -279,10 +281,12 @@ def test_admin_can_update_user_role(client):
     target = _make_user(role="user")
     updated = target._replace(role="seller")
     token = _issue_token(admin, settings.jwt_secret)
+    audit_mock = AsyncMock()
 
     with (
         patch("services.admin.main.get_user_by_id", AsyncMock(return_value=admin)),
         patch("services.admin.main.update_user_role", AsyncMock(return_value=updated)),
+        patch("services.admin.main.record_audit_event", audit_mock),
     ):
         response = app_client.patch(
             f"/users/{target.id}",
@@ -292,6 +296,17 @@ def test_admin_can_update_user_role(client):
 
     assert response.status_code == 200
     assert response.json()["role"] == "seller"
+    audit_mock.assert_awaited_once_with(
+        ANY,
+        settings=settings,
+        request=ANY,
+        action="admin.user_role.update",
+        actor_id=str(admin.id),
+        actor_role="admin",
+        target_type="user",
+        target_id=target.id,
+        metadata={"new_role": "seller"},
+    )
 
 
 def test_admin_cannot_update_role_to_invalid_value(client):
@@ -388,10 +403,12 @@ def test_admin_can_disburse_treasury_funds(client):
     admin = _make_user(role="admin")
     entry = _make_treasury_entry(entry_type="disbursement", amount=500000, balance=14500000)
     token = _issue_token(admin, settings.jwt_secret)
+    audit_mock = AsyncMock()
 
     with (
         patch("services.admin.main.get_user_by_id", AsyncMock(return_value=admin)),
         patch("services.admin.main.disburse_treasury", AsyncMock(return_value=entry)),
+        patch("services.admin.main.record_audit_event", audit_mock),
     ):
         response = app_client.post(
             "/treasury/disburse",
@@ -403,6 +420,17 @@ def test_admin_can_disburse_treasury_funds(client):
     data = response.json()
     assert data["entry"]["type"] == "disbursement"
     assert data["entry"]["amount_sat"] == 500000
+    audit_mock.assert_awaited_once_with(
+        ANY,
+        settings=settings,
+        request=ANY,
+        action="admin.treasury.disburse",
+        actor_id=str(admin.id),
+        actor_role="admin",
+        target_type="treasury_entry",
+        target_id=entry.id,
+        metadata={"amount_sat": 500000, "balance_after_sat": 14500000},
+    )
 
 
 def test_treasury_disburse_requires_2fa_when_enabled(client):
@@ -436,6 +464,116 @@ def test_non_admin_cannot_disburse_treasury(client):
         )
 
     assert response.status_code == 403
+
+
+def test_admin_can_view_referral_platform_summary(client):
+    app_client, settings = client
+    admin = _make_user(role="admin")
+    token = _issue_token(admin, settings.jwt_secret)
+
+    with (
+        patch("services.admin.main.get_user_by_id", AsyncMock(return_value=admin)),
+        patch(
+            "services.admin.main.summarize_referrals_platform",
+            AsyncMock(return_value={"referred_users": 3, "active_referrers": 2, "total_reward_sat": 150000}),
+        ),
+    ):
+        response = app_client.get("/referrals/summary", headers=_auth(token))
+
+    assert response.status_code == 200
+    assert response.json()["total_reward_sat"] == 150000
+
+
+def test_admin_can_view_referral_user_summary(client):
+    app_client, settings = client
+    admin = _make_user(role="admin")
+    referred_user = _make_user(role="user")
+    reward_row = {
+        "id": uuid.uuid4(),
+        "referred_user_id": referred_user.id,
+        "referred_display_name": referred_user.display_name,
+        "referred_email": referred_user.email,
+        "reward_type": "signup_bonus",
+        "amount_sat": 50000,
+        "status": "credited",
+        "eligibility_event": "kyc_verified",
+        "credited_at": datetime.now(tz=timezone.utc),
+        "created_at": datetime.now(tz=timezone.utc),
+    }
+    token = _issue_token(admin, settings.jwt_secret)
+
+    with (
+        patch("services.admin.main.get_user_by_id", AsyncMock(side_effect=[admin, admin])),
+        patch(
+            "services.admin.main.summarize_referrals_for_user",
+            AsyncMock(return_value={"referrals_count": 1, "total_reward_sat": 50000}),
+        ),
+        patch("services.admin.main.list_referral_rewards_for_user", AsyncMock(return_value=[reward_row])),
+    ):
+        response = app_client.get(f"/referrals/{admin.id}", headers=_auth(token))
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["referral_code"] == admin.referral_code
+    assert data["rewards"][0]["amount_sat"] == 50000
+
+
+def test_admin_can_view_yield_platform_summary(client):
+    app_client, settings = client
+    admin = _make_user(role="admin")
+    token = _issue_token(admin, settings.jwt_secret)
+
+    with (
+        patch("services.admin.main.get_user_by_id", AsyncMock(return_value=admin)),
+        patch(
+            "services.admin.main.summarize_yield_platform",
+            AsyncMock(return_value={"users_with_yield": 2, "yield_tokens": 1, "total_yield_sat": 9000}),
+        ),
+    ):
+        response = app_client.get("/yield/summary", headers=_auth(token))
+
+    assert response.status_code == 200
+    assert response.json()["users_with_yield"] == 2
+
+
+def test_admin_can_view_yield_user_summary(client):
+    app_client, settings = client
+    admin = _make_user(role="admin")
+    token = _issue_token(admin, settings.jwt_secret)
+    token_id = uuid.uuid4()
+
+    with (
+        patch("services.admin.main.get_user_by_id", AsyncMock(side_effect=[admin, admin])),
+        patch(
+            "services.admin.main.summarize_yield_for_user",
+            AsyncMock(return_value=(7000, [{"token_id": token_id, "asset_name": "Deep Ocean Blue", "total_yield_sat": 7000}])),
+        ),
+        patch(
+            "services.admin.main.get_user_yield_accruals",
+            AsyncMock(
+                return_value=[
+                    {
+                        "id": uuid.uuid4(),
+                        "token_id": token_id,
+                        "asset_name": "Deep Ocean Blue",
+                        "amount_sat": 7000,
+                        "quantity_held": 100,
+                        "reference_price_sat": 2500,
+                        "annual_rate_pct": 8.5,
+                        "accrued_from": datetime.now(tz=timezone.utc),
+                        "accrued_to": datetime.now(tz=timezone.utc),
+                        "created_at": datetime.now(tz=timezone.utc),
+                    }
+                ]
+            ),
+        ),
+    ):
+        response = app_client.get(f"/yield/{admin.id}", headers=_auth(token))
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_yield_sat"] == 7000
+    assert data["by_token"][0]["asset_name"] == "Deep Ocean Blue"
 
 
 # ---------------------------------------------------------------------------

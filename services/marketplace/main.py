@@ -5,9 +5,7 @@ import base64
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
-import hashlib
-import hmac
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import sys
@@ -15,7 +13,8 @@ import time
 from typing import Any
 import uuid
 
-from fastapi import Depends, FastAPI, Header, Query, Request, Security, status
+from fastapi import Depends, FastAPI, Query, Request, Security, WebSocket, WebSocketDisconnect, status
+from fastapi import Header
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -26,13 +25,29 @@ import uvicorn
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from auth.jwt_utils import decode_token
-from common import InternalEventBus, RedisStreamMirror, get_readiness_payload, get_settings
+from common import (
+    InternalEventBus,
+    RedisStreamFeed,
+    RedisStreamMirror,
+    decode_resume_token,
+    encode_resume_token,
+    get_readiness_payload,
+    get_settings,
+    install_http_security,
+    record_audit_event,
+    build_platform_signer,
+)
+from common.logging import configure_structured_logging
+from common.metrics import metrics, mount_metrics_endpoint, record_business_event
+from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
 from marketplace.bitcoin_rpc import BitcoinRPCClient, BitcoinRPCError, FundingObservation
 from marketplace.db import (
+    activate_triggered_orders,
     cancel_order,
     create_order,
     create_trade_escrow,
     find_best_match,
+    get_reference_price_for_token,
     get_dispute_by_trade_id,
     get_escrow_by_trade_id,
     get_last_trade_price_for_token,
@@ -52,6 +67,7 @@ from marketplace.db import (
     process_escrow_signature,
     resolve_dispute,
 )
+from auth.kyc_db import get_kyc_status, is_kyc_verified
 from marketplace.schemas import (
     CancelOrderResponse,
     CancelledOrderOut,
@@ -76,11 +92,14 @@ from marketplace.schemas import (
 settings = get_settings(service_name="marketplace", default_port=8003)
 _bearer_scheme = HTTPBearer(auto_error=False)
 _engine: AsyncEngine | object | None = None
+configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
 logger = logging.getLogger(__name__)
 _event_bus = InternalEventBus()
 _event_bus.subscribe("trade.matched", RedisStreamMirror(settings.redis_url))
 _event_bus.subscribe("escrow.funded", RedisStreamMirror(settings.redis_url))
+_realtime_feed = RedisStreamFeed(settings.redis_url)
 _event_bus.subscribe("escrow.released", RedisStreamMirror(settings.redis_url))
+configure_alerting(settings)
 _bitcoin_rpc_client = (
     BitcoinRPCClient(
         host=settings.bitcoin_rpc_host,
@@ -167,12 +186,18 @@ def _row_value(row: object, key: str, default: Any = None) -> Any:
 
 
 def _order_out(row: object) -> OrderOut:
+    triggered_at = _row_value(row, "triggered_at")
+    order_type = _row_value(row, "order_type", "limit")
     return OrderOut(
         id=_row_value(row, "id"),
         token_id=_row_value(row, "token_id"),
         side=_row_value(row, "side"),
+        order_type=order_type,
         quantity=int(_row_value(row, "quantity", 0)),
         price_sat=int(_row_value(row, "price_sat", 0)),
+        trigger_price_sat=_row_value(row, "trigger_price_sat"),
+        triggered_at=triggered_at,
+        is_triggered=order_type == "limit" or triggered_at is not None,
         filled_quantity=int(_row_value(row, "filled_quantity", 0)),
         status=_row_value(row, "status"),
         created_at=_row_value(row, "created_at"),
@@ -226,6 +251,14 @@ def _remaining_quantity(row: object) -> int:
 
 def _wallet_total_balance(row: object) -> int:
     return int(_row_value(row, "onchain_balance_sat", 0)) + int(_row_value(row, "lightning_balance_sat", 0))
+
+
+def _stop_order_triggered(*, side: str, trigger_price_sat: int, reference_price: int | None) -> bool:
+    if reference_price is None:
+        return False
+    if side == "buy":
+        return reference_price >= trigger_price_sat
+    return reference_price <= trigger_price_sat
 
 
 def _isoformat(value: datetime | None) -> str | None:
@@ -290,6 +323,7 @@ async def _publish_trade_matched(
         "escrow_status": _row_value(escrow_row, "status"),
         "escrow_expires_at": _isoformat(_row_value(escrow_row, "expires_at")),
     }
+    record_business_event("trade_match")
     await _event_bus.publish("trade.matched", payload)
 
 
@@ -312,6 +346,7 @@ async def _publish_escrow_funded(
         "funding_txid": _row_value(escrow_row, "funding_txid"),
         "status": _row_value(escrow_row, "status"),
     }
+    record_business_event("escrow_fund")
     await _event_bus.publish("escrow.funded", payload)
 
 
@@ -355,6 +390,14 @@ def _invalid_access_token_error() -> ContractError:
     )
 
 
+def _invalid_resume_token_error() -> ContractError:
+    return ContractError(
+        code="invalid_resume_token",
+        message="Resume token is invalid.",
+        status_code=status.HTTP_400_BAD_REQUEST,
+    )
+
+
 def _trade_not_found_error() -> ContractError:
     return ContractError(
         code="trade_not_found",
@@ -368,6 +411,70 @@ def _escrow_not_found_error() -> ContractError:
         code="escrow_not_found",
         message="Escrow not found for this trade.",
         status_code=status.HTTP_404_NOT_FOUND,
+    )
+
+
+async def _enforce_kyc_threshold(
+    conn: object,
+    user_id: str,
+    total_value_sat: int,
+) -> None:
+    """Block the order if the trade value exceeds the KYC threshold and
+    the user has not completed identity verification.
+
+    Does nothing when ``kyc_trade_threshold_sat`` is 0 (disabled).
+    """
+    threshold = settings.kyc_trade_threshold_sat
+    if threshold <= 0 or total_value_sat < threshold:
+        return
+
+    kyc_row = await get_kyc_status(conn, user_id)
+    if is_kyc_verified(kyc_row):
+        return
+
+    if kyc_row is None:
+        raise ContractError(
+            code="kyc_required",
+            message=(
+                f"Identity verification is required for trades valued at or above "
+                f"{threshold:,} sats. Please submit a KYC request at /auth/kyc/submit."
+            ),
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    kyc_status_value = getattr(kyc_row, "status", None)
+    mapping = getattr(kyc_row, "_mapping", None)
+    if mapping is not None:
+        kyc_status_value = mapping.get("status", kyc_status_value)
+
+    if kyc_status_value == "pending":
+        raise ContractError(
+            code="kyc_pending",
+            message=(
+                "Your identity verification is still pending review. "
+                "High-value trades are blocked until verification is approved."
+            ),
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    if kyc_status_value == "rejected":
+        raise ContractError(
+            code="kyc_rejected",
+            message=(
+                "Your identity verification was rejected. "
+                "Please contact support or resubmit your KYC documents."
+            ),
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    # expired or any other non-verified status
+    raise ContractError(
+        code="kyc_not_verified",
+        message=(
+            "Your identity verification has expired or is incomplete. "
+            "Please resubmit your KYC documents before placing high-value trades."
+        ),
+        status_code=status.HTTP_403_FORBIDDEN,
     )
 
 
@@ -437,9 +544,9 @@ def _validate_hex_signature(value: str) -> None:
 
 def _derive_platform_release_signature(escrow_id: uuid.UUID, trade_id: uuid.UUID) -> str:
     """Derive a deterministic platform counter-signature for escrow release."""
-    secret = (settings.wallet_encryption_key or settings.jwt_secret or settings.service_name).encode()
     msg = f"escrow-release:{escrow_id}:{trade_id}".encode()
-    return hmac.new(secret, msg, hashlib.sha256).hexdigest()
+    signer = build_platform_signer(settings)
+    return signer.sign(purpose="escrow-release", message=msg)
 
 
 async def _publish_escrow_released(
@@ -460,7 +567,32 @@ async def _publish_escrow_released(
         "trade_status": _row_value(trade_row, "status"),
         "settled_at": _isoformat(_row_value(trade_row, "settled_at")),
     }
+    record_business_event("escrow_release")
     await _event_bus.publish("escrow.released", payload)
+
+
+async def _record_settlement_failure(
+    *,
+    stage: str,
+    detail: str,
+    trade_id: str | None = None,
+    escrow_id: str | None = None,
+) -> None:
+    labels = {"stage": stage}
+    if trade_id:
+        labels["trade_id"] = trade_id
+    if escrow_id:
+        labels["escrow_id"] = escrow_id
+
+    record_business_event("settlement_failure", outcome="failure", labels=labels)
+    metrics.inc("marketplace_settlement_failures_total", labels={"stage": stage})
+    await alert_dispatcher.fire(
+        severity=AlertSeverity.CRITICAL,
+        title="Marketplace settlement failure",
+        detail=detail,
+        source=settings.service_name,
+        tags=labels,
+    )
 
 
 async def _scan_escrow_funding(escrow_row: object) -> FundingObservation | None:
@@ -474,6 +606,12 @@ async def _scan_escrow_funding(escrow_row: object) -> FundingObservation | None:
         )
     except BitcoinRPCError:
         logger.exception("Escrow funding check failed for trade %s", _row_value(escrow_row, "trade_id"))
+        await _record_settlement_failure(
+            stage="escrow_funding_scan",
+            detail=f"Escrow funding scan failed for trade {_row_value(escrow_row, 'trade_id')}.",
+            trade_id=str(_row_value(escrow_row, "trade_id")),
+            escrow_id=str(_row_value(escrow_row, "id")),
+        )
         return None
 
 
@@ -492,6 +630,16 @@ async def _refresh_escrow_funding(
 
     locked_amount_sat = int(_row_value(escrow_row, "locked_amount_sat", 0))
     if observation.total_amount_sat < locked_amount_sat:
+        expires_at = _row_value(escrow_row, "expires_at")
+        if isinstance(expires_at, datetime):
+            expiry = expires_at if expires_at.tzinfo is not None else expires_at.replace(tzinfo=timezone.utc)
+            if expiry <= datetime.now(tz=timezone.utc):
+                await _record_settlement_failure(
+                    stage="escrow_funding_timeout",
+                    detail=f"Escrow funding expired for trade {_row_value(trade_row, 'id')}.",
+                    trade_id=str(_row_value(trade_row, "id")),
+                    escrow_id=str(_row_value(escrow_row, "id")),
+                )
         return trade_row, escrow_row, False
 
     updated_trade_row, updated_escrow_row = await mark_escrow_funded(
@@ -503,6 +651,16 @@ async def _refresh_escrow_funding(
 
 
 app = FastAPI(title="Marketplace Service", lifespan=_lifespan)
+install_http_security(
+    app,
+    settings,
+    sensitive_paths=(
+        "/orders",
+        "/escrows/",
+        "/trades/",
+    ),
+)
+mount_metrics_endpoint(app, settings)
 
 
 @app.exception_handler(RequestValidationError)
@@ -529,9 +687,13 @@ async def _get_current_principal(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
+    return await _principal_from_access_token(credentials.credentials)
+
+
+async def _principal_from_access_token(access_token: str) -> AuthenticatedPrincipal:
     try:
         claims = decode_token(
-            credentials.credentials,
+            access_token,
             _jwt_secret(),
             expected_type="access",
         )
@@ -552,6 +714,181 @@ async def _get_current_principal(
     return AuthenticatedPrincipal(id=user_id, role=role)
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _best_prices(rows: list[object]) -> tuple[int | None, int | None]:
+    best_bid: int | None = None
+    best_ask: int | None = None
+
+    for row in rows:
+        status_value = _row_value(row, "status")
+        if status_value not in {"open", "partially_filled"}:
+            continue
+
+        remaining_quantity = _remaining_quantity(row)
+        if remaining_quantity <= 0:
+            continue
+
+        price_sat = int(_row_value(row, "price_sat", 0))
+        if _row_value(row, "side") == "buy":
+            if best_bid is None or price_sat > best_bid:
+                best_bid = price_sat
+        else:
+            if best_ask is None or price_sat < best_ask:
+                best_ask = price_sat
+
+    return best_bid, best_ask
+
+
+async def _price_snapshot(token_id: uuid.UUID) -> dict[str, Any] | None:
+    async with _runtime_engine().connect() as conn:
+        token_row = await get_token_by_id(conn, token_id)
+        if token_row is None:
+            return None
+
+        rows = await list_orders(conn, token_id=token_id)
+        last_trade_price = await get_last_trade_price_for_token(conn, token_id)
+        volume_24h = await get_trade_volume_24h(conn, token_id)
+
+    bid, ask = _best_prices(rows)
+    return {
+        "token_id": str(token_id),
+        "last_price_sat": int(last_trade_price) if last_trade_price is not None else None,
+        "bid": bid,
+        "ask": ask,
+        "volume_24h": int(volume_24h),
+        "timestamp": _utc_now_iso(),
+    }
+
+
+def _price_message(event_id: str | None, snapshot: dict[str, Any]) -> dict[str, Any]:
+    message = {
+        "event": "price_update",
+        "data": snapshot,
+    }
+    if event_id is not None:
+        message["id"] = event_id
+    return message
+
+
+def _notification_message(principal_id: str, *, topic: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    if topic == "trade.matched":
+        if payload.get("buyer_id") == principal_id:
+            order_id = payload.get("buy_order_id")
+        elif payload.get("seller_id") == principal_id:
+            order_id = payload.get("sell_order_id")
+        else:
+            return None
+
+        return {
+            "event": "order_filled",
+            "data": {
+                "order_id": order_id,
+                "trade_id": payload.get("trade_id"),
+                "token_id": payload.get("token_id"),
+                "filled_quantity": payload.get("quantity"),
+                "price_sat": payload.get("price_sat"),
+                "status": payload.get("status"),
+            },
+        }
+
+    if topic == "escrow.funded":
+        participant_ids = {payload.get("buyer_id"), payload.get("seller_id")}
+        if principal_id not in participant_ids:
+            return None
+
+        return {
+            "event": "escrow_funded",
+            "data": {
+                "trade_id": payload.get("trade_id"),
+                "token_id": payload.get("token_id"),
+                "escrow_id": payload.get("escrow_id"),
+                "txid": payload.get("funding_txid"),
+                "status": payload.get("status"),
+            },
+        }
+
+    if topic == "escrow.released":
+        participant_ids = {payload.get("buyer_id"), payload.get("seller_id")}
+        if principal_id not in participant_ids:
+            return None
+
+        return {
+            "event": "escrow_released",
+            "data": {
+                "trade_id": payload.get("trade_id"),
+                "escrow_id": payload.get("escrow_id"),
+                "txid": payload.get("release_txid"),
+                "status": payload.get("status"),
+                "trade_status": payload.get("trade_status"),
+                "settled_at": payload.get("settled_at"),
+            },
+        }
+
+    if topic == "ai.evaluation.complete":
+        if payload.get("owner_id") != principal_id:
+            return None
+
+        return {
+            "event": "ai_evaluation_complete",
+            "data": {
+                "asset_id": payload.get("asset_id"),
+                "ai_score": payload.get("ai_score"),
+                "projected_roi": payload.get("projected_roi"),
+                "status": payload.get("status"),
+                "completed_at": payload.get("completed_at"),
+            },
+        }
+
+    return None
+
+
+async def _websocket_auth_payload(websocket: WebSocket) -> dict[str, Any]:
+    access_token = websocket.query_params.get("access_token")
+    resume_token = websocket.query_params.get("resume_token")
+
+    if access_token:
+        return {
+            "access_token": access_token,
+            "resume_token": resume_token,
+        }
+
+    authorization = websocket.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        return {
+            "access_token": authorization[7:].strip(),
+            "resume_token": resume_token,
+        }
+
+    try:
+        message = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+    except Exception as exc:
+        raise ContractError(
+            code="authentication_required",
+            message="Authentication is required.",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        ) from exc
+
+    if not isinstance(message, dict):
+        raise ContractError(
+            code="authentication_required",
+            message="Authentication is required.",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    return {
+        "access_token": message.get("access_token"),
+        "resume_token": message.get("resume_token", resume_token),
+    }
+
+
+async def _close_websocket_for_contract_error(websocket: WebSocket, exc: ContractError) -> None:
+    await websocket.send_json({"error": {"code": exc.code, "message": exc.message}})
+    await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=exc.message)
+
+
 @app.get("/health")
 async def health():
     return {
@@ -570,6 +907,7 @@ async def ready():
 
 @app.post("/orders", status_code=status.HTTP_201_CREATED, response_model=OrderResponse)
 async def place_order(
+    request: Request,
     body: OrderCreateRequest,
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
@@ -595,22 +933,50 @@ async def place_order(
             if available_balance < body.quantity:
                 raise _insufficient_token_balance_error()
 
+        # Enforce KYC for high-value trades
+        trade_total_sat = body.quantity * body.price_sat
+        await _enforce_kyc_threshold(conn, principal.id, trade_total_sat)
+
+        triggered_at = None
+        if body.order_type == "stop_limit" and body.trigger_price_sat is not None:
+            reference_price = await get_reference_price_for_token(conn, body.token_id)
+            if _stop_order_triggered(
+                side=body.side,
+                trigger_price_sat=body.trigger_price_sat,
+                reference_price=reference_price,
+            ):
+                triggered_at = datetime.now(tz=timezone.utc)
+
         order_row = await create_order(
             conn,
             user_id=principal.id,
             token_id=body.token_id,
             side=body.side,
+            order_type=body.order_type,
             quantity=body.quantity,
             price_sat=body.price_sat,
+            trigger_price_sat=body.trigger_price_sat,
+            triggered_at=triggered_at,
         )
 
         published_trades: list[tuple[object, object, object, object]] = []
 
-        while True:
+        while triggered_at is not None or body.order_type == "limit":
             current_order = await get_order_by_id(conn, _row_value(order_row, "id"))
             if current_order is None or _remaining_quantity(current_order) <= 0:
                 order_row = current_order or order_row
                 break
+
+            if body.order_type == "stop_limit":
+                latest_reference_price = await get_reference_price_for_token(conn, body.token_id)
+            else:
+                latest_reference_price = None
+            if latest_reference_price is not None:
+                await activate_triggered_orders(
+                    conn,
+                    token_id=body.token_id,
+                    reference_price=latest_reference_price,
+                )
 
             matched_order = await find_best_match(
                 conn,
@@ -660,7 +1026,32 @@ async def place_order(
                 raise
 
             published_trades.append((trade_row, escrow_row, buy_order, sell_order))
+            await activate_triggered_orders(
+                conn,
+                token_id=body.token_id,
+                reference_price=trade_price,
+            )
             order_row = await get_order_by_id(conn, _row_value(order_row, "id")) or order_row
+
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="marketplace.order.place",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="order",
+            target_id=_row_value(order_row, "id"),
+            metadata={
+                "token_id": str(body.token_id),
+                "side": body.side,
+                "order_type": body.order_type,
+                "quantity": body.quantity,
+                "price_sat": body.price_sat,
+                "trigger_price_sat": body.trigger_price_sat,
+                "matched_trades": len(published_trades),
+            },
+        )
 
     for trade_row, escrow_row, buy_order, sell_order in published_trades:
         try:
@@ -673,6 +1064,7 @@ async def place_order(
         except Exception:
             logger.exception("Trade event publish failed for trade %s", _row_value(trade_row, "id"))
 
+    record_business_event("order_place")
     return OrderResponse(order=_order_out(order_row)).model_dump(mode="json")
 
 
@@ -725,6 +1117,9 @@ async def get_order_book(
         if remaining_quantity <= 0:
             continue
 
+        if _row_value(row, "order_type", "limit") == "stop_limit" and _row_value(row, "triggered_at") is None:
+            continue
+
         price_sat = int(_row_value(row, "price_sat", 0))
         if _row_value(row, "side") == "buy":
             bids[price_sat] += remaining_quantity
@@ -742,6 +1137,7 @@ async def get_order_book(
 
 @app.delete("/orders/{order_id}", response_model=CancelOrderResponse)
 async def delete_order(
+    request: Request,
     order_id: uuid.UUID,
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
@@ -769,6 +1165,17 @@ async def delete_order(
             )
 
         cancelled_order = await cancel_order(conn, order_id=order_id, user_id=principal.id)
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="marketplace.order.cancel",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="order",
+            target_id=order_id,
+            metadata={"status": "cancelled"},
+        )
 
     assert cancelled_order is not None
     return CancelOrderResponse(
@@ -828,6 +1235,7 @@ async def get_escrow_details(
 
 @app.post("/escrows/{trade_id}/sign", response_model=EscrowResponse)
 async def sign_escrow_release(
+    request: Request,
     trade_id: uuid.UUID,
     body: EscrowSignRequest,
     x_2fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
@@ -887,6 +1295,17 @@ async def sign_escrow_release(
             signature=body.partial_signature,
             platform_signature=platform_sig,
         )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="marketplace.escrow.sign_release",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="escrow",
+            target_id=_row_value(escrow_row, "id"),
+            metadata={"trade_id": str(trade_id), "signer_role": signer_role},
+        )
 
     if _row_value(escrow_row, "status") == "released":
         try:
@@ -922,12 +1341,99 @@ async def get_trade_history(
     ).model_dump(mode="json")
 
 
+@app.websocket("/ws/prices/{token_id}")
+async def price_stream(websocket: WebSocket, token_id: uuid.UUID):
+    last_event_id = websocket.query_params.get("last_event_id")
+
+    await websocket.accept()
+
+    if last_event_id is None:
+        snapshot = await _price_snapshot(token_id)
+        if snapshot is None:
+            await websocket.send_json(
+                {
+                    "error": {
+                        "code": "token_not_found",
+                        "message": "Token not found.",
+                    }
+                }
+            )
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Token not found.")
+            return
+
+        await websocket.send_json(_price_message(None, snapshot))
+
+    try:
+        async for stream_event in _realtime_feed.listen(
+            ["trade.matched"],
+            resume_from={"trade.matched": last_event_id} if last_event_id else None,
+        ):
+            if stream_event.payload.get("token_id") != str(token_id):
+                continue
+
+            snapshot = await _price_snapshot(token_id)
+            if snapshot is None:
+                continue
+
+            await websocket.send_json(_price_message(stream_event.event_id, snapshot))
+    except WebSocketDisconnect:
+        return
+
+
+@app.websocket("/ws/notifications")
+async def notification_stream(websocket: WebSocket):
+    await websocket.accept()
+
+    try:
+        auth_payload = await _websocket_auth_payload(websocket)
+        access_token = auth_payload.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            raise ContractError(
+                code="authentication_required",
+                message="Authentication is required.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        principal = await _principal_from_access_token(access_token)
+
+        try:
+            resume_from = decode_resume_token(
+                auth_payload.get("resume_token"),
+                allowed_topics={"trade.matched", "escrow.funded", "escrow.released", "ai.evaluation.complete"},
+            )
+        except ValueError as exc:
+            raise _invalid_resume_token_error() from exc
+    except ContractError as exc:
+        await _close_websocket_for_contract_error(websocket, exc)
+        return
+
+    try:
+        async for stream_event in _realtime_feed.listen(
+            ["trade.matched", "escrow.funded", "escrow.released", "ai.evaluation.complete"],
+            resume_from=resume_from or None,
+        ):
+            message = _notification_message(
+                principal.id,
+                topic=stream_event.topic,
+                payload=stream_event.payload,
+            )
+            if message is None:
+                continue
+
+            message["id"] = f"{stream_event.topic}:{stream_event.event_id}"
+            message["resume_token"] = encode_resume_token(stream_event.positions)
+            await websocket.send_json(message)
+    except WebSocketDisconnect:
+        return
+
+
 @app.post(
     "/trades/{trade_id}/dispute",
     status_code=status.HTTP_201_CREATED,
     response_model=DisputeResponse,
 )
 async def create_dispute(
+    request: Request,
     trade_id: uuid.UUID,
     body: DisputeOpenRequest,
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
@@ -981,7 +1487,19 @@ async def create_dispute(
                 message="Trade or escrow is not in a disputable state.",
                 status_code=status.HTTP_409_CONFLICT,
             ) from exc
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="marketplace.dispute.open",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="dispute",
+            target_id=_row_value(dispute_row, "id"),
+            metadata={"trade_id": str(trade_id)},
+        )
 
+    record_business_event("dispute_open")
     return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
 
 
@@ -990,6 +1508,7 @@ async def create_dispute(
     response_model=DisputeResponse,
 )
 async def resolve_trade_dispute(
+    request: Request,
     trade_id: uuid.UUID,
     body: DisputeResolveRequest,
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
@@ -1041,7 +1560,19 @@ async def resolve_trade_dispute(
                 message="Could not apply resolution due to a state conflict.",
                 status_code=status.HTTP_409_CONFLICT,
             ) from exc
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="marketplace.dispute.resolve",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="dispute",
+            target_id=_row_value(dispute_row, "id"),
+            metadata={"trade_id": str(trade_id), "resolution": body.resolution},
+        )
 
+    record_business_event("dispute_resolve")
     return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
 
 

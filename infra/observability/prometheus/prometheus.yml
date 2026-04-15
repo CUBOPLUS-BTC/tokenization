@@ -1,0 +1,196 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    platform: rwa-tokenization
+
+rule_files:
+  - /etc/prometheus/alerts/platform-rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+  - job_name: auth
+    metrics_path: /metrics/auth
+    static_configs:
+      - targets: ["prod-gateway.internal:8000"]
+        labels:
+          environment: production
+          service: auth
+      - targets: ["beta-gateway.internal:8000"]
+        labels:
+          environment: beta
+          service: auth
+
+  - job_name: wallet
+    metrics_path: /metrics/wallet
+    static_configs:
+      - targets: ["prod-gateway.internal:8000"]
+        labels:
+          environment: production
+          service: wallet
+      - targets: ["beta-gateway.internal:8000"]
+        labels:
+          environment: beta
+          service: wallet
+
+  - job_name: tokenization
+    metrics_path: /metrics/tokenization
+    static_configs:
+      - targets: ["prod-gateway.internal:8000"]
+        labels:
+          environment: production
+          service: tokenization
+      - targets: ["beta-gateway.internal:8000"]
+        labels:
+          environment: beta
+          service: tokenization
+
+  - job_name: marketplace
+    metrics_path: /metrics/marketplace
+    static_configs:
+      - targets: ["prod-gateway.internal:8000"]
+        labels:
+          environment: production
+          service: marketplace
+      - targets: ["beta-gateway.internal:8000"]
+        labels:
+          environment: beta
+          service: marketplace
+
+  - job_name: education
+    metrics_path: /metrics/education
+    static_configs:
+      - targets: ["prod-gateway.internal:8000"]
+        labels:
+          environment: production
+          service: education
+      - targets: ["beta-gateway.internal:8000"]
+        labels:
+          environment: beta
+          service: education
+
+  - job_name: nostr
+    metrics_path: /metrics/nostr
+    static_configs:
+      - targets: ["prod-gateway.internal:8000"]
+        labels:
+          environment: production
+          service: nostr
+      - targets: ["beta-gateway.internal:8000"]
+        labels:
+          environment: beta
+          service: nostr
+
+  - job_name: admin
+    metrics_path: /metrics/admin
+    static_configs:
+      - targets: ["prod-gateway.internal:8000"]
+        labels:
+          environment: production
+          service: admin
+      - targets: ["beta-gateway.internal:8000"]
+        labels:
+          environment: beta
+          service: admin
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+        labels:
+          environment: observability
+          service: cadvisor
+
+  - job_name: gateway_http_probe
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - http://prod-gateway.internal:8000/health
+        labels:
+          environment: production
+          service: gateway
+          probe: health
+      - targets:
+          - http://prod-gateway.internal:8000/ready/marketplace
+        labels:
+          environment: production
+          service: marketplace
+          probe: readiness
+      - targets:
+          - http://beta-gateway.internal:8000/health
+        labels:
+          environment: beta
+          service: gateway
+          probe: health
+      - targets:
+          - http://beta-gateway.internal:8000/ready/marketplace
+        labels:
+          environment: beta
+          service: marketplace
+          probe: readiness
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115
+
+  - job_name: infra_tcp_probe
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets: ["prod-postgres.internal:5432"]
+        labels:
+          environment: production
+          service: postgres
+      - targets: ["prod-redis.internal:6379"]
+        labels:
+          environment: production
+          service: redis
+      - targets: ["prod-bitcoind.internal:8332"]
+        labels:
+          environment: production
+          service: bitcoind
+      - targets: ["prod-lnd.internal:10009"]
+        labels:
+          environment: production
+          service: lnd
+      - targets: ["prod-tapd.internal:10029"]
+        labels:
+          environment: production
+          service: tapd
+      - targets: ["beta-postgres.internal:5432"]
+        labels:
+          environment: beta
+          service: postgres
+      - targets: ["beta-redis.internal:6379"]
+        labels:
+          environment: beta
+          service: redis
+      - targets: ["beta-bitcoind.internal:38332"]
+        labels:
+          environment: beta
+          service: bitcoind
+      - targets: ["beta-lnd.internal:10009"]
+        labels:
+          environment: beta
+          service: lnd
+      - targets: ["beta-tapd.internal:10029"]
+        labels:
+          environment: beta
+          service: tapd
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox:9115

@@ -23,7 +23,18 @@ import uvicorn
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from auth.jwt_utils import decode_token
-from common import get_readiness_payload, get_settings
+from common import get_readiness_payload, get_settings, install_http_security, record_audit_event
+from common import (
+    get_user_yield_accruals,
+    list_referral_rewards_for_user,
+    summarize_referrals_for_user,
+    summarize_referrals_platform,
+    summarize_yield_for_user,
+    summarize_yield_platform,
+)
+from common.logging import configure_structured_logging
+from common.metrics import metrics, mount_metrics_endpoint, record_business_event
+from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
 from admin.db import (
     create_course,
     disburse_treasury,
@@ -40,17 +51,26 @@ from admin.schemas import (
     CreateCourseRequest,
     DisputeOut,
     DisputeResponse,
+    ReferralPlatformSummaryResponse,
+    ReferralRewardOut,
+    ReferralUserSummaryResponse,
     TreasuryDisburseRequest,
     TreasuryDisburseResponse,
     TreasuryEntryOut,
     UpdateUserRoleRequest,
     UserListResponse,
     UserOut,
+    YieldAccrualOut,
+    YieldPlatformSummaryResponse,
+    YieldTokenSummaryOut,
+    YieldUserSummaryResponse,
 )
 from marketplace.db import resolve_dispute
 
 
 settings = get_settings(service_name="admin", default_port=8006)
+configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
+configure_alerting(settings)
 _bearer_scheme = HTTPBearer(auto_error=False)
 _engine: AsyncEngine | object | None = None
 
@@ -135,6 +155,8 @@ def _error(code: str, message: str, status_code: int) -> JSONResponse:
 
 
 def _row_value(row: object, key: str, default: object | None = None):
+    if isinstance(row, dict):
+        return row.get(key, default)
     mapping = getattr(row, "_mapping", None)
     if mapping is not None and key in mapping:
         return mapping[key]
@@ -303,6 +325,36 @@ def _dispute_out(row: object) -> DisputeOut:
     )
 
 
+def _referral_reward_out(row: object) -> ReferralRewardOut:
+    return ReferralRewardOut(
+        id=str(_row_value(row, "id")),
+        referred_user_id=str(_row_value(row, "referred_user_id")),
+        referred_display_name=_row_value(row, "referred_display_name"),
+        referred_email=_row_value(row, "referred_email"),
+        reward_type=_row_value(row, "reward_type"),
+        amount_sat=int(_row_value(row, "amount_sat", 0)),
+        status=_row_value(row, "status"),
+        eligibility_event=_row_value(row, "eligibility_event"),
+        credited_at=_aware_datetime(_row_value(row, "credited_at")),
+        created_at=_aware_datetime(_row_value(row, "created_at")),
+    )
+
+
+def _yield_accrual_out(row: object) -> YieldAccrualOut:
+    return YieldAccrualOut(
+        id=str(_row_value(row, "id")),
+        token_id=str(_row_value(row, "token_id")),
+        asset_name=_row_value(row, "asset_name"),
+        amount_sat=int(_row_value(row, "amount_sat", 0)),
+        quantity_held=int(_row_value(row, "quantity_held", 0)),
+        reference_price_sat=int(_row_value(row, "reference_price_sat", 0)),
+        annual_rate_pct=float(_row_value(row, "annual_rate_pct", 0)),
+        accrued_from=_aware_datetime(_row_value(row, "accrued_from")),
+        accrued_to=_aware_datetime(_row_value(row, "accrued_to")),
+        created_at=_aware_datetime(_row_value(row, "created_at")),
+    )
+
+
 def _build_user_page(
     rows: list[object],
     *,
@@ -343,6 +395,17 @@ def _build_user_page(
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="Admin Service", lifespan=_lifespan)
+install_http_security(
+    app,
+    settings,
+    sensitive_paths=(
+        "/users/",
+        "/courses",
+        "/treasury/disburse",
+        "/escrows/",
+    ),
+)
+mount_metrics_endpoint(app, settings)
 
 
 @app.exception_handler(ContractError)
@@ -412,16 +475,30 @@ async def list_users_endpoint(
     summary="Update a user's role (admin only)",
 )
 async def update_user_role_endpoint(
+    request: Request,
     user_id: uuid.UUID,
     body: UpdateUserRoleRequest,
     principal: AuthenticatedPrincipal = Depends(_require_admin),
 ):
     async with _runtime_engine().connect() as conn:
         row = await update_user_role(conn, user_id=user_id, new_role=body.role)
+        if row is not None:
+            await record_audit_event(
+                conn,
+                settings=settings,
+                request=request,
+                action="admin.user_role.update",
+                actor_id=principal.id,
+                actor_role=principal.role,
+                target_type="user",
+                target_id=user_id,
+                metadata={"new_role": body.role},
+            )
 
     if row is None:
         return _error("user_not_found", "User not found.", status.HTTP_404_NOT_FOUND)
 
+    record_business_event("admin_user_role_update")
     return _user_out(row)
 
 
@@ -437,6 +514,7 @@ async def update_user_role_endpoint(
     summary="Create a new course (admin only)",
 )
 async def create_course_endpoint(
+    request: Request,
     body: CreateCourseRequest,
     principal: AuthenticatedPrincipal = Depends(_require_admin),
 ):
@@ -449,7 +527,19 @@ async def create_course_endpoint(
             category=body.category,
             difficulty=body.difficulty,
         )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="admin.course.create",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="course",
+            target_id=_row_value(row, "id"),
+            metadata={"category": body.category, "difficulty": body.difficulty},
+        )
 
+    record_business_event("admin_course_create")
     return CourseResponse(course=_course_out(row)).model_dump(mode="json")
 
 
@@ -464,6 +554,7 @@ async def create_course_endpoint(
     summary="Disburse treasury funds (admin only, requires 2FA)",
 )
 async def disburse_treasury_endpoint(
+    request: Request,
     body: TreasuryDisburseRequest,
     x_2fa_code: Annotated[str | None, Header(alias="X-2FA-Code")] = None,
     principal: AuthenticatedPrincipal = Depends(_require_admin),
@@ -484,7 +575,22 @@ async def disburse_treasury_endpoint(
                     status.HTTP_409_CONFLICT,
                 )
             raise
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="admin.treasury.disburse",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="treasury_entry",
+            target_id=_row_value(row, "id"),
+            metadata={
+                "amount_sat": body.amount_sat,
+                "balance_after_sat": int(_row_value(row, "balance_after_sat", 0)),
+            },
+        )
 
+    record_business_event("admin_treasury_disburse")
     return TreasuryDisburseResponse(
         entry=_treasury_entry_out(row)
     ).model_dump(mode="json")
@@ -501,6 +607,7 @@ async def disburse_treasury_endpoint(
     summary="Resolve an escrow dispute (admin only, requires 2FA)",
 )
 async def resolve_escrow_dispute_endpoint(
+    request: Request,
     trade_id: uuid.UUID,
     body: AdminDisputeResolveRequest,
     x_2fa_code: Annotated[str | None, Header(alias="X-2FA-Code")] = None,
@@ -544,8 +651,104 @@ async def resolve_escrow_dispute_endpoint(
                 "Could not apply resolution due to a state conflict.",
                 status.HTTP_409_CONFLICT,
             )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="admin.dispute.resolve",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="dispute",
+            target_id=_row_value(dispute_row, "id"),
+            metadata={"trade_id": str(trade_id), "resolution": db_resolution},
+        )
 
+    record_business_event("admin_dispute_resolve")
     return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
+
+
+@app.get(
+    "/referrals/summary",
+    response_model=ReferralPlatformSummaryResponse,
+    summary="Return platform-level referral reward totals",
+)
+async def get_referral_platform_summary(
+    principal: AuthenticatedPrincipal = Depends(_require_admin),
+):
+    async with _runtime_engine().connect() as conn:
+        summary = await summarize_referrals_platform(conn)
+
+    return ReferralPlatformSummaryResponse(**summary).model_dump(mode="json")
+
+
+@app.get(
+    "/referrals/{user_id}",
+    response_model=ReferralUserSummaryResponse,
+    summary="Return referral relationships and rewards for a specific user",
+)
+async def get_referral_user_summary(
+    user_id: uuid.UUID,
+    principal: AuthenticatedPrincipal = Depends(_require_admin),
+):
+    async with _runtime_engine().connect() as conn:
+        user_row = await get_user_by_id(conn, user_id)
+        if user_row is None:
+            return _error("user_not_found", "User not found.", status.HTTP_404_NOT_FOUND)
+        summary = await summarize_referrals_for_user(conn, user_id)
+        reward_rows = await list_referral_rewards_for_user(conn, user_id)
+
+    return ReferralUserSummaryResponse(
+        user_id=str(user_id),
+        referral_code=_row_value(user_row, "referral_code"),
+        referrals_count=summary["referrals_count"],
+        total_reward_sat=summary["total_reward_sat"],
+        rewards=[_referral_reward_out(row) for row in reward_rows],
+    ).model_dump(mode="json")
+
+
+@app.get(
+    "/yield/summary",
+    response_model=YieldPlatformSummaryResponse,
+    summary="Return platform-level yield totals",
+)
+async def get_yield_platform_summary(
+    principal: AuthenticatedPrincipal = Depends(_require_admin),
+):
+    async with _runtime_engine().connect() as conn:
+        summary = await summarize_yield_platform(conn)
+
+    return YieldPlatformSummaryResponse(**summary).model_dump(mode="json")
+
+
+@app.get(
+    "/yield/{user_id}",
+    response_model=YieldUserSummaryResponse,
+    summary="Return yield accruals for a specific user",
+)
+async def get_yield_user_summary(
+    user_id: uuid.UUID,
+    principal: AuthenticatedPrincipal = Depends(_require_admin),
+):
+    async with _runtime_engine().connect() as conn:
+        user_row = await get_user_by_id(conn, user_id)
+        if user_row is None:
+            return _error("user_not_found", "User not found.", status.HTTP_404_NOT_FOUND)
+        total_yield_sat, by_token_rows = await summarize_yield_for_user(conn, user_id)
+        accrual_rows = await get_user_yield_accruals(conn, user_id)
+
+    return YieldUserSummaryResponse(
+        user_id=str(user_id),
+        total_yield_sat=total_yield_sat,
+        by_token=[
+            YieldTokenSummaryOut(
+                token_id=str(_row_value(row, "token_id")),
+                asset_name=_row_value(row, "asset_name"),
+                total_yield_sat=int(_row_value(row, "total_yield_sat", 0)),
+            )
+            for row in by_token_rows
+        ],
+        accruals=[_yield_accrual_out(row) for row in accrual_rows],
+    ).model_dump(mode="json")
 
 
 if __name__ == "__main__":

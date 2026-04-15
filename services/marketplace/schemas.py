@@ -4,10 +4,11 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 OrderSide = Literal["buy", "sell"]
+OrderType = Literal["limit", "stop_limit"]
 OrderStatus = Literal["open", "partially_filled", "filled", "cancelled"]
 TradeStatus = Literal["pending", "escrowed", "settled", "disputed"]
 EscrowStatus = Literal["created", "funded", "released", "refunded", "disputed"]
@@ -18,16 +19,30 @@ DisputeResolution = Literal["refund", "release"]
 class OrderCreateRequest(BaseModel):
     token_id: UUID
     side: OrderSide
+    order_type: OrderType = "limit"
     quantity: int = Field(gt=0)
     price_sat: int = Field(gt=0)
+    trigger_price_sat: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_trigger_payload(self) -> OrderCreateRequest:
+        if self.order_type == "stop_limit" and self.trigger_price_sat is None:
+            raise ValueError("trigger_price_sat is required for stop_limit orders")
+        if self.order_type == "limit" and self.trigger_price_sat is not None:
+            raise ValueError("trigger_price_sat is only allowed for stop_limit orders")
+        return self
 
 
 class OrderOut(BaseModel):
     id: UUID
     token_id: UUID
     side: OrderSide
+    order_type: OrderType
     quantity: int
     price_sat: int
+    trigger_price_sat: int | None = None
+    triggered_at: datetime | None = None
+    is_triggered: bool = True
     filled_quantity: int
     status: OrderStatus
     created_at: datetime

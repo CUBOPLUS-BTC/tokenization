@@ -1,0 +1,49 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ["alertname", "environment", "service"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 2h
+  receiver: platform-default
+  routes:
+    - matchers:
+        - environment="production"
+        - route="outage"
+      receiver: production-outage
+    - matchers:
+        - environment="production"
+        - route="settlement"
+      receiver: production-settlement
+    - matchers:
+        - environment="beta"
+        - route="outage"
+      receiver: beta-outage
+    - matchers:
+        - environment="beta"
+        - route="settlement"
+      receiver: beta-settlement
+
+receivers:
+  - name: platform-default
+
+  - name: production-outage
+    webhook_configs:
+      - url: http://production-alert-router.internal/hooks/outage
+        send_resolved: true
+
+  - name: production-settlement
+    webhook_configs:
+      - url: http://production-alert-router.internal/hooks/settlement
+        send_resolved: true
+
+  - name: beta-outage
+    webhook_configs:
+      - url: http://beta-alert-router.internal/hooks/outage
+        send_resolved: true
+
+  - name: beta-settlement
+    webhook_configs:
+      - url: http://beta-alert-router.internal/hooks/settlement
+        send_resolved: true

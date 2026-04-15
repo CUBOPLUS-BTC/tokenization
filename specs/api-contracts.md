@@ -42,7 +42,8 @@ POST /auth/register
 {
   "email": "user@example.com",
   "password": "SecureP@ss123",
-  "display_name": "Alice"
+  "display_name": "Alice",
+  "referrer_code": "AB12CD34EF"
 }
 ```
 
@@ -54,6 +55,7 @@ POST /auth/register
     "email": "user@example.com",
     "display_name": "Alice",
     "role": "user",
+    "referral_code": "ZX90LM12NP",
     "created_at": "2026-04-07T12:00:00Z"
   },
   "tokens": {
@@ -166,6 +168,96 @@ POST /auth/logout
 }
 ```
 
+### 2.8 Onboarding Summary
+
+```
+GET /auth/onboarding/summary
+Authorization: Bearer <token>
+```
+
+Returns the authenticated user's KYC status, configured custody posture, and the fiat on-ramp providers that can be launched from the client. The UI should show the response disclaimers before redirecting to any provider-hosted flow.
+
+**Response (200):**
+```json
+{
+  "user": {
+    "id": "uuid",
+    "email": "user@example.com",
+    "display_name": "Alice",
+    "role": "user",
+    "created_at": "2026-04-07T12:00:00Z"
+  },
+  "kyc_status": "verified",
+  "custody": {
+    "configured_backend": "hsm",
+    "signer_backend": "hsm",
+    "state": "ready",
+    "key_reference": "hsm:wallet-root",
+    "signer_key_reference": "hsm:wallet-root",
+    "seed_exportable": false,
+    "server_compromise_impact": "Wallet seeds remain wrapped under the configured HSM-compatible key reference...",
+    "disclaimers": [
+      "HSM mode depends on externally managed key rotation and access policies."
+    ]
+  },
+  "fiat_onramp_providers": [
+    {
+      "provider_id": "bank-bridge",
+      "display_name": "Bank Bridge",
+      "state": "ready",
+      "supported_fiat_currencies": ["USD", "EUR", "GBP"],
+      "supported_countries": ["US", "GB", "DE"],
+      "payment_methods": ["bank_transfer"],
+      "requires_kyc": true,
+      "disclaimer": "Bank Bridge completes cardholder checks...",
+      "external_handoff_url": "https://bank-bridge.partner.example/checkout"
+    }
+  ],
+  "compliance_notices": [
+    "Fiat purchases complete on a provider-hosted checkout outside platform custody."
+  ]
+}
+```
+
+### 2.9 Referral Summary
+
+```
+GET /auth/referrals/summary
+Authorization: Bearer <token>
+```
+
+Returns the authenticated user's immutable referral code, referred accounts, and signup rewards credited after successful onboarding.
+
+**Response (200):**
+```json
+{
+  "referral_code": "ZX90LM12NP",
+  "referrals_count": 2,
+  "total_reward_sat": 100000,
+  "referred_users": [
+    {
+      "id": "uuid",
+      "email": "friend@example.com",
+      "display_name": "Friend",
+      "created_at": "2026-04-10T12:00:00Z"
+    }
+  ],
+  "rewards": [
+    {
+      "id": "uuid",
+      "referred_user_id": "uuid",
+      "referred_display_name": "Friend",
+      "reward_type": "signup_bonus",
+      "amount_sat": 50000,
+      "status": "credited",
+      "eligibility_event": "kyc_verified",
+      "credited_at": "2026-04-12T12:00:00Z",
+      "created_at": "2026-04-12T12:00:00Z"
+    }
+  ]
+}
+```
+
 ---
 
 ## 3. Wallet Endpoints
@@ -190,10 +282,51 @@ Authorization: Bearer <token>
         "asset_name": "Downtown Office Building",
         "symbol": "DOB",
         "balance": 50,
-        "unit_price_sat": 10000
+        "unit_price_sat": 10000,
+        "accrued_yield_sat": 1200
       }
     ],
-    "total_value_sat": 1150000
+    "total_yield_earned_sat": 1200,
+    "total_value_sat": 1151200
+  }
+}
+```
+
+### 3.2 Yield Summary
+
+```
+GET /wallet/yield/summary
+Authorization: Bearer <token>
+```
+
+Returns accrued yield totals and the underlying accrual records. The service settles any pending full-day accruals before responding.
+
+**Response (200):**
+```json
+{
+  "yield_summary": {
+    "total_yield_earned_sat": 1200,
+    "by_token": [
+      {
+        "token_id": "uuid",
+        "asset_name": "Downtown Office Building",
+        "total_yield_sat": 1200
+      }
+    ],
+    "accruals": [
+      {
+        "id": "uuid",
+        "token_id": "uuid",
+        "asset_name": "Downtown Office Building",
+        "amount_sat": 1200,
+        "quantity_held": 50,
+        "reference_price_sat": 10000,
+        "annual_rate_pct": 8.5,
+        "accrued_from": "2026-04-10T12:00:00Z",
+        "accrued_to": "2026-04-11T12:00:00Z",
+        "created_at": "2026-04-11T12:00:00Z"
+      }
+    ]
   }
 }
 ```
@@ -223,7 +356,115 @@ Authorization: Bearer <token>
 }
 ```
 
-### 3.3 Create Lightning Invoice
+### 3.3 Get Custody Status
+
+```
+GET /wallet/custody
+Authorization: Bearer <token>
+```
+
+Returns the current wallet record's custody backend, configured signer backend, derivation path, and security notes required by the onboarding and settings flows.
+
+**Response (200):**
+```json
+{
+  "configured_backend": "software",
+  "wallet_backend": "software",
+  "signer_backend": "software",
+  "state": "ready",
+  "key_reference": "sw:8b2a6f5d1d6b11b2",
+  "signer_key_reference": "sw-signer:7200bcf18edc36cd",
+  "derivation_path": "m/86'/1'/0'",
+  "seed_exportable": true,
+  "withdraw_requires_2fa": true,
+  "server_compromise_impact": "Seeds are wrapped with an application-managed AES key...",
+  "disclaimers": [
+    "Software custody is intended for local, staging, or transitional deployments."
+  ]
+}
+```
+
+### 3.4 List Fiat On-Ramp Providers
+
+```
+GET /wallet/fiat/onramp/providers
+Authorization: Bearer <token>
+```
+
+Returns provider discovery data and compliance notices that the frontend must render before initiating an external checkout flow.
+
+**Response (200):**
+```json
+{
+  "providers": [
+    {
+      "provider_id": "bank-bridge",
+      "display_name": "Bank Bridge",
+      "state": "ready",
+      "supported_fiat_currencies": ["USD", "EUR", "GBP"],
+      "supported_countries": ["US", "GB", "DE", "FR", "NL", "ES"],
+      "payment_methods": ["bank_transfer"],
+      "min_fiat_amount": "25.00",
+      "max_fiat_amount": "5000.00",
+      "requires_kyc": true,
+      "disclaimer": "Bank Bridge completes cardholder checks and may ask the user to complete provider-hosted KYC...",
+      "external_handoff_url": "https://bank-bridge.partner.example/checkout"
+    }
+  ],
+  "compliance_notices": [
+    "Fiat purchases complete on a provider-hosted checkout outside platform custody.",
+    "Provider fees, exchange rates, KYC, and settlement timelines are determined by the selected partner."
+  ]
+}
+```
+
+### 3.5 Create Fiat On-Ramp Session
+
+```
+POST /wallet/fiat/onramp/session
+Authorization: Bearer <token>
+```
+
+**Request Body:**
+```json
+{
+  "provider_id": "bank-bridge",
+  "fiat_currency": "USD",
+  "fiat_amount": "150.00",
+  "country_code": "US",
+  "return_url": "https://app.platform.example/wallet/fiat/complete",
+  "cancel_url": "https://app.platform.example/wallet/fiat/cancel"
+}
+```
+
+Creates an external handoff session and pre-generates the on-chain deposit address that will receive the BTC purchase. If the provider requires KYC and the user is not verified, the API returns a provider-specific conflict instead of redirecting.
+
+**Response (201):**
+```json
+{
+  "session_id": "uuid",
+  "provider_id": "bank-bridge",
+  "state": "pending_redirect",
+  "handoff_url": "https://bank-bridge.partner.example/checkout?...",
+  "deposit_address": "bcrt1p...",
+  "destination_wallet_id": "uuid",
+  "expires_at": "2026-04-15T12:00:00Z",
+  "disclaimer": "Bank Bridge completes cardholder checks...",
+  "compliance_action": "review_terms"
+}
+```
+
+**Provider-specific failure example (409):**
+```json
+{
+  "error": {
+    "code": "provider_kyc_required",
+    "message": "Bank Bridge requires a verified KYC profile before launching checkout."
+  }
+}
+```
+
+### 3.6 Create Lightning Invoice
 
 ```
 POST /wallet/lightning/invoice
@@ -247,7 +488,7 @@ Authorization: Bearer <token>
 }
 ```
 
-### 3.4 Pay Lightning Invoice
+### 3.7 Pay Lightning Invoice
 
 ```
 POST /wallet/lightning/pay
@@ -344,14 +585,50 @@ Role: seller
     "id": "uuid",
     "name": "Downtown Office Building",
     "status": "pending",
+    "order_type": "stop_limit",
     "created_at": "2026-04-07T12:00:00Z"
   }
+    "trigger_price_sat": 10500,
+    "triggered_at": null,
+    "is_triggered": false,
 }
 ```
 
 ### 4.2 Get Asset Details
 
 ```
+
+### 7.6 Referral Reporting
+
+```
+GET /referrals/summary
+Authorization: Bearer <admin-token>
+```
+
+Returns platform-wide referral reward totals.
+
+```
+GET /referrals/{user_id}
+Authorization: Bearer <admin-token>
+```
+
+Returns one user's referral code, referred users, and credited rewards.
+
+### 7.7 Yield Reporting
+
+```
+GET /yield/summary
+Authorization: Bearer <admin-token>
+```
+
+Returns platform-wide yield totals.
+
+```
+GET /yield/{user_id}
+Authorization: Bearer <admin-token>
+```
+
+Returns a user's yield totals, grouped-by-token amounts, and individual accrual records.
 GET /assets/{asset_id}
 Authorization: Bearer <token>
 ```

@@ -5,7 +5,6 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 import os
 from pathlib import Path
-import secrets
 import sys
 from typing import Any
 import uuid
@@ -17,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common import get_settings
+from common.custody import build_wallet_custody
 from common.db.metadata import assets as assets_table
 from common.db.metadata import token_balances as token_balances_table
 from common.db.metadata import tokens as tokens_table
@@ -30,6 +30,7 @@ os.environ.setdefault("TAPD_MACAROON_PATH", "")
 os.environ.setdefault("TAPD_TLS_CERT_PATH", "")
 
 settings = get_settings(service_name="wallet", default_port=8001)
+_custody_backend = build_wallet_custody(settings)
 _engine: AsyncEngine | None = None
 
 
@@ -99,6 +100,9 @@ async def get_or_create_wallet(
     now = _utc_now()
     wallet_id = uuid.uuid4()
     user_uuid = _as_uuid(user_id)
+    seed = _custody_backend.generate_seed(32)
+    derivation_path = _custody_backend.get_derivation_path(0, bitcoin_network=settings.bitcoin_network)
+    encrypted_seed = _custody_backend.seal_seed(seed)
 
     try:
         await conn.execute(
@@ -107,8 +111,8 @@ async def get_or_create_wallet(
                 user_id=user_uuid,
                 onchain_balance_sat=0,
                 lightning_balance_sat=0,
-                encrypted_seed=secrets.token_bytes(32),
-                derivation_path="m/86'/0'/0'",
+                encrypted_seed=encrypted_seed,
+                derivation_path=derivation_path,
                 created_at=now,
                 updated_at=now,
             )

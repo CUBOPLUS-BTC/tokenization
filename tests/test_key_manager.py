@@ -6,8 +6,10 @@ from io import StringIO
 from pathlib import Path
 
 # Add services directory to path
+sys.path.append(str(Path(__file__).resolve().parents[1] / "services"))
 sys.path.append(str(Path(__file__).resolve().parents[1] / "services" / "wallet"))
 
+from common.custody import HsmCompatibleWalletCustody, describe_custody_record
 from key_manager import KeyManager
 from log_filter import SensitiveDataFilter
 
@@ -32,10 +34,11 @@ def test_generate_seed_uniqueness(key_manager):
 def test_encrypt_decrypt_roundtrip(key_manager):
     original_seed = os.urandom(32)
     encrypted = key_manager.encrypt_seed(original_seed)
-    
-    # Nonce (12) + Tag (16) + Ciphertext(32) = 60 bytes
-    assert len(encrypted) == 12 + 32 + 16
-    
+
+    descriptor = describe_custody_record(encrypted)
+    assert descriptor.backend == "software"
+    assert descriptor.envelope_version == 1
+
     decrypted = key_manager.decrypt_seed(encrypted)
     assert decrypted == original_seed
 
@@ -69,6 +72,19 @@ def test_derivation_path_mainnet(encryption_key):
     km_main = KeyManager(encryption_key=encryption_key, bitcoin_network="mainnet")
     path = km_main.get_derivation_path(5)
     assert path == "m/86'/0'/5'"
+
+def test_hsm_compatible_backend_marks_seed_non_exportable():
+    backend = HsmCompatibleWalletCustody(
+        wrapping_key="11" * 32,
+        key_label="hsm:test-wallet-root",
+    )
+
+    encrypted = backend.seal_seed(os.urandom(32))
+    descriptor = describe_custody_record(encrypted)
+
+    assert descriptor.backend == "hsm"
+    assert descriptor.key_reference == "hsm:test-wallet-root"
+    assert descriptor.exportable_seed is False
 
 def test_log_filter_redaction():
     # Setup test logger

@@ -16,6 +16,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     display_name: str = Field(min_length=1, max_length=100)
+    referrer_code: str | None = Field(default=None, min_length=6, max_length=12)
 
     @field_validator("password")
     @classmethod
@@ -66,6 +67,7 @@ class UserOut(BaseModel):
     email: str | None = None
     display_name: str
     role: str
+    referral_code: str | None = None
     created_at: datetime
 
 
@@ -111,3 +113,101 @@ class ErrorDetail(BaseModel):
 
 class ErrorResponse(BaseModel):
     error: ErrorDetail
+
+
+# ---------------------------------------------------------------------------
+# KYC verification schemas
+# ---------------------------------------------------------------------------
+
+KycStatus = Literal["pending", "verified", "rejected", "expired"]
+
+
+class KycSubmitRequest(BaseModel):
+    document_url: str | None = Field(default=None, max_length=2048)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class KycAdminUpdateRequest(BaseModel):
+    status: KycStatus
+    rejection_reason: str | None = Field(default=None, max_length=2000)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class KycStatusOut(BaseModel):
+    id: str
+    user_id: str
+    status: KycStatus
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    rejection_reason: str | None = None
+    notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class KycStatusResponse(BaseModel):
+    kyc: KycStatusOut
+
+
+class KycListResponse(BaseModel):
+    records: list[KycStatusOut]
+
+
+class OnboardingCustodyOut(BaseModel):
+    configured_backend: Literal["software", "hsm"]
+    signer_backend: Literal["software", "hsm"]
+    state: Literal["ready", "degraded"]
+    key_reference: str | None = None
+    signer_key_reference: str | None = None
+    seed_exportable: bool
+    server_compromise_impact: str
+    disclaimers: list[str]
+
+
+class OnboardingFiatProviderOut(BaseModel):
+    provider_id: str
+    display_name: str
+    state: Literal["ready", "pending_redirect", "kyc_required", "limited", "unavailable"]
+    supported_fiat_currencies: list[str]
+    supported_countries: list[str]
+    payment_methods: list[str]
+    requires_kyc: bool
+    disclaimer: str
+    external_handoff_url: str
+
+
+class OnboardingSummaryResponse(BaseModel):
+    user: UserOut
+    kyc_status: str
+    custody: OnboardingCustodyOut
+    fiat_onramp_providers: list[OnboardingFiatProviderOut]
+    compliance_notices: list[str]
+
+
+class ReferredUserOut(BaseModel):
+    id: str
+    email: str | None = None
+    display_name: str
+    created_at: datetime
+
+
+class ReferralRewardOut(BaseModel):
+    id: str
+    referred_user_id: str
+    referred_display_name: str
+    referred_email: str | None = None
+    reward_type: Literal["signup_bonus"]
+    amount_sat: int
+    status: Literal["credited", "reversed"]
+    eligibility_event: Literal["kyc_verified"]
+    credited_at: datetime
+    created_at: datetime
+
+
+class ReferralSummaryResponse(BaseModel):
+    referral_code: str
+    referrals_count: int
+    total_reward_sat: int
+    referred_users: list[ReferredUserOut]
+    rewards: list[ReferralRewardOut]
+

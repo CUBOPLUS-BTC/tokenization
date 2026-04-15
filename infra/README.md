@@ -5,9 +5,12 @@ Docker Compose files, Nginx/Traefik configuration, and environment templates.
 ## Contents
 
 - `docker-compose.local.yml` — Local orchestration for shared platform infra and services
+- `docker-compose.observability.yml` — Prometheus, Grafana, Alertmanager, blackbox, and cAdvisor
+- `docker-compose.public-beta.yml` — Public beta deployment profile wired for signet
 - `.env.example` — Template for required environment variables
 - `.env.local.example` — Local development profile
 - `.env.staging.example` — Staging profile
+- `.env.beta.example` — Public beta profile
 - `.env.production.example` — Production profile
 
 ## Local orchestration (PostgreSQL + Redis + platform services)
@@ -87,11 +90,28 @@ All Python services use the shared settings loader in `services/common/config.py
 
 ### Environment profile selection
 
-- Set `ENV_PROFILE` to `local`, `staging`, or `production`.
+- Set `ENV_PROFILE` to `local`, `staging`, `beta`, or `production`.
 - The loader reads, in order (when present):
     1. `.env`
     2. `infra/.env`
     3. `infra/.env.<profile>`
+
+## Public beta
+
+The beta environment is intended for external validation on Bitcoin `signet`.
+
+1. Copy `infra/.env.beta.example` to `infra/.env.beta`.
+2. Wire the `*_FILE` secrets and signet infrastructure endpoints.
+3. Start the stack with `docker compose -f infra/docker-compose.public-beta.yml up -d`.
+4. Follow [deploy/public-beta/README.md](../deploy/public-beta/README.md) before exposing the environment.
+
+## Observability
+
+Shared monitoring assets live under [infra/observability](./observability).
+
+```bash
+docker compose -f infra/docker-compose.observability.yml up -d
+```
 
 ### Secret handling convention
 
