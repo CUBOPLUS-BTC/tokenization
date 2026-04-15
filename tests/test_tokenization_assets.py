@@ -206,6 +206,13 @@ def _auth_headers(access_token: str) -> dict[str, str]:
 
 
 class TestSubmitAsset:
+    def test_asset_created_topic_is_mirrored_to_redis_stream(self, client):
+        _, _ = client
+        import services.tokenization.main as tokenization_main
+
+        handlers = tokenization_main._event_bus._handlers.get("asset.created", [])
+        assert handlers, "asset.created should be subscribed to at least one stream mirror handler"
+
     def test_seller_can_create_asset_with_pending_initial_status(self, client):
         app_client, settings = client
         fake_user = _make_fake_user(role="seller")

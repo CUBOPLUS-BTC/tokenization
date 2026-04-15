@@ -3,6 +3,7 @@ import contextlib
 import json
 import logging
 from pathlib import Path
+import hashlib
 import sys
 
 from fastapi import FastAPI
@@ -12,7 +13,7 @@ import uvicorn
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from common import get_readiness_payload, get_settings
-from nostr.events import map_internal_event_to_nostr
+from nostr.events import map_and_sign_internal_event
 from nostr.relay_client import NostrRelayConnector
 
 settings = get_settings(service_name="nostr", default_port=8005)
@@ -56,10 +57,11 @@ async def _pump_events_to_relays(stop_event: asyncio.Event, connector: NostrRela
                         logger.exception("Failed to parse stream payload JSON", extra={"topic": topic, "record_id": record_id})
                         continue
 
-                    nostr_event = map_internal_event_to_nostr(
+                    nostr_event = map_and_sign_internal_event(
                         topic,
                         payload,
                         source_service=settings.service_name,
+                        private_key_hex=_nostr_private_key(),
                     )
                     try:
                         await connector.publish(nostr_event, topic=topic)
@@ -96,6 +98,15 @@ async def _lifespan(app: FastAPI):
         worker.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await worker
+
+
+def _nostr_private_key() -> str:
+    key = (settings.nostr_private_key or "").strip().lower()
+    if key:
+        return key
+    # Deterministic local fallback to keep publishing operational in dev/test.
+    seed = f"{settings.service_name}:{settings.jwt_secret or 'dev-secret-change-me'}".encode("utf-8")
+    return hashlib.sha256(seed).hexdigest()
 
 app = FastAPI(title="Nostr Service", lifespan=_lifespan)
 
