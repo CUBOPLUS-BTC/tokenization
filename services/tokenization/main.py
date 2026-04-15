@@ -32,8 +32,8 @@ from common import (
     record_audit_event,
 )
 from common.logging import configure_structured_logging
-from common.metrics import metrics, mount_metrics_endpoint
-from common.alerting import alert_dispatcher, AlertSeverity
+from common.metrics import metrics, mount_metrics_endpoint, record_business_event
+from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
 from tokenization.tapd_client import TapdClient
 from tokenization.tapd_grpc import taprootassets as taproot_rpc
 from tokenization.db import (
@@ -70,6 +70,7 @@ _background_tasks: set[asyncio.Task[Any]] = set()
 _event_bus = InternalEventBus()
 _event_bus.subscribe("asset.created", RedisStreamMirror(settings.redis_url))
 _event_bus.subscribe("ai.evaluation.complete", RedisStreamMirror(settings.redis_url))
+configure_alerting(settings)
 
 
 class ContractError(Exception):
@@ -540,10 +541,22 @@ async def _run_asset_evaluation(
             await _publish_asset_evaluation_complete(completed_row)
         except Exception:
             logger.exception("Asset evaluation event publish failed for %s", asset_id)
+        record_business_event(
+            "asset_evaluation_complete",
+            outcome=str(_row_value(completed_row, "status", "success")),
+        )
     except asyncio.CancelledError:
         raise
     except Exception:
         logger.exception("Asset evaluation failed for %s", asset_id)
+        record_business_event("asset_evaluation_complete", outcome="failure")
+        await alert_dispatcher.fire(
+            severity=AlertSeverity.CRITICAL,
+            title="Asset evaluation failed",
+            detail=f"Background evaluation failed for asset {asset_id}.",
+            source=settings.service_name,
+            tags={"asset_id": str(asset_id)},
+        )
         async with _runtime_engine().connect() as conn:
             await reset_asset_evaluation(
                 conn,
@@ -720,6 +733,7 @@ async def submit_asset(
     except Exception:
         logger.exception("Asset created event publish failed for asset %s", _row_value(row, "id"))
 
+    record_business_event("asset_submit")
     return AssetResponse(asset=_asset_out(row)).model_dump(mode="json")
 
 
@@ -801,6 +815,7 @@ async def request_asset_evaluation(
         _dispatch_asset_evaluation(asset_id, fallback_status=previous_status)
     except RuntimeError as exc:
         logger.exception("Failed to dispatch evaluation for asset %s", asset_id)
+        record_business_event("asset_evaluation_request", outcome="failure")
         async with _runtime_engine().connect() as conn:
             await reset_asset_evaluation(
                 conn,
@@ -813,6 +828,7 @@ async def request_asset_evaluation(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         ) from exc
 
+    record_business_event("asset_evaluation_request")
     return AssetEvaluationRequestResponse(
         message="Evaluation started",
         estimated_completion=datetime.now(tz=timezone.utc) + timedelta(minutes=5),
@@ -909,6 +925,7 @@ async def tokenize_asset(
     except Exception:
         logger.exception("Token mint event publish failed for asset %s", asset_id)
 
+    record_business_event("asset_tokenize")
     return AssetDetailResponse(asset=_asset_detail_out(tokenized_row)).model_dump(
         mode="json",
         exclude_none=True,

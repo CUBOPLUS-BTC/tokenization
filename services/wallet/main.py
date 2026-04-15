@@ -29,8 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common import get_readiness_payload, get_settings, install_http_security, record_audit_event
 from common.logging import configure_structured_logging
-from common.metrics import metrics, mount_metrics_endpoint
-from common.alerting import alert_dispatcher, AlertSeverity
+from common.metrics import metrics, mount_metrics_endpoint, record_business_event
+from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
 
 from .auth import get_current_user_id, require_2fa
 from .db import (
@@ -70,6 +70,7 @@ os.environ.setdefault("TAPD_TLS_CERT_PATH", "")
 
 settings = get_settings(service_name="wallet", default_port=8001)
 configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
+configure_alerting(settings)
 lnd_client = LNDClient(settings)
 
 _ALGORITHM = "HS256"
@@ -422,6 +423,7 @@ async def create_invoice(
                 description=req.memo,
             )
 
+        record_business_event("wallet_invoice_create")
         return Invoice(
             payment_request=resp.payment_request,
             payment_hash=resp.r_hash.hex(),
@@ -433,9 +435,11 @@ async def create_invoice(
         )
     except grpc.RpcError as exc:
         logger.error("gRPC error creating invoice: %s", exc)
+        record_business_event("wallet_invoice_create", outcome="failure")
         raise HTTPException(status_code=503, detail="Lightning service unavailable") from exc
     except Exception as exc:
         logger.error("Unexpected error creating invoice: %s", exc)
+        record_business_event("wallet_invoice_create", outcome="failure")
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
@@ -461,6 +465,14 @@ async def pay_invoice(
             payment_status = PaymentStatus.FAILED
             db_status = "failed"
             failure_reason = resp.payment_error
+            record_business_event("wallet_payment", outcome="failure")
+            await alert_dispatcher.fire(
+                severity=AlertSeverity.CRITICAL,
+                title="Lightning payment failed",
+                detail=resp.payment_error,
+                source=settings.service_name,
+                tags={"user_id": user_id},
+            )
 
         amount_sat = resp.payment_route.total_amt if resp.payment_route else 0
 
@@ -489,6 +501,8 @@ async def pay_invoice(
             },
         )
 
+        if not resp.payment_error:
+            record_business_event("wallet_payment")
         return Payment(
             payment_hash=resp.payment_hash.hex(),
             payment_preimage=resp.payment_preimage.hex() if not resp.payment_error else None,
@@ -499,11 +513,13 @@ async def pay_invoice(
         )
     except grpc.RpcError as exc:
         logger.error("gRPC error paying invoice: %s", exc)
+        record_business_event("wallet_payment", outcome="failure")
         raise HTTPException(status_code=503, detail="Lightning service unavailable") from exc
     except HTTPException:
         raise
     except Exception as exc:
         logger.error("Unexpected error paying invoice: %s", exc)
+        record_business_event("wallet_payment", outcome="failure")
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
@@ -560,6 +576,7 @@ async def create_onchain_address(
     async with _runtime_engine().connect() as conn:
         await get_or_create_wallet(conn, principal.id)
 
+    record_business_event("wallet_onchain_address_create")
     return OnchainAddressResponse(address=_generate_onchain_address(), type="taproot").model_dump()
 
 
@@ -638,12 +655,14 @@ async def withdraw_onchain(
             )
 
     if row is None:
+        record_business_event("wallet_onchain_withdrawal", outcome="failure")
         raise ContractError(
             code="insufficient_funds",
             message="Wallet balance is insufficient for this withdrawal and fee.",
             status_code=status.HTTP_409_CONFLICT,
         )
 
+    record_business_event("wallet_onchain_withdrawal")
     return OnchainWithdrawalResponse(
         txid=_row_value(row, "txid"),
         amount_sat=_row_value(row, "amount_sat"),

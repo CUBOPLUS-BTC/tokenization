@@ -25,8 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from auth.jwt_utils import decode_token
 from common import get_readiness_payload, get_settings, install_http_security, record_audit_event
 from common.logging import configure_structured_logging
-from common.metrics import metrics, mount_metrics_endpoint
-from common.alerting import alert_dispatcher, AlertSeverity
+from common.metrics import metrics, mount_metrics_endpoint, record_business_event
+from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
 from admin.db import (
     create_course,
     disburse_treasury,
@@ -55,6 +55,7 @@ from marketplace.db import resolve_dispute
 
 settings = get_settings(service_name="admin", default_port=8006)
 configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
+configure_alerting(settings)
 _bearer_scheme = HTTPBearer(auto_error=False)
 _engine: AsyncEngine | object | None = None
 
@@ -450,6 +451,7 @@ async def update_user_role_endpoint(
     if row is None:
         return _error("user_not_found", "User not found.", status.HTTP_404_NOT_FOUND)
 
+    record_business_event("admin_user_role_update")
     return _user_out(row)
 
 
@@ -490,6 +492,7 @@ async def create_course_endpoint(
             metadata={"category": body.category, "difficulty": body.difficulty},
         )
 
+    record_business_event("admin_course_create")
     return CourseResponse(course=_course_out(row)).model_dump(mode="json")
 
 
@@ -540,6 +543,7 @@ async def disburse_treasury_endpoint(
             },
         )
 
+    record_business_event("admin_treasury_disburse")
     return TreasuryDisburseResponse(
         entry=_treasury_entry_out(row)
     ).model_dump(mode="json")
@@ -612,6 +616,7 @@ async def resolve_escrow_dispute_endpoint(
             metadata={"trade_id": str(trade_id), "resolution": db_resolution},
         )
 
+    record_business_event("admin_dispute_resolve")
     return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
 
 

@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from .config import Settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -207,9 +209,18 @@ class AlertDispatcher:
 
     def __init__(self) -> None:
         self._sinks: list[AlertSink] = [LogAlertSink()]
+        self._registered_sink_keys: set[str] = {"log"}
+        self._base_tags: dict[str, str] = {}
 
-    def register(self, sink: AlertSink) -> None:
+    def register(self, sink: AlertSink, *, sink_key: str | None = None) -> None:
+        resolved_key = sink_key or type(sink).__name__
+        if resolved_key in self._registered_sink_keys:
+            return
         self._sinks.append(sink)
+        self._registered_sink_keys.add(resolved_key)
+
+    def configure_context(self, **tags: str) -> None:
+        self._base_tags = {key: value for key, value in tags.items() if value}
 
     async def fire(
         self,
@@ -221,7 +232,9 @@ class AlertDispatcher:
         tags: dict[str, str] | None = None,
     ) -> None:
         fired_at = datetime.now(tz=timezone.utc).isoformat()
-        resolved_tags = tags or {}
+        resolved_tags = dict(self._base_tags)
+        if tags:
+            resolved_tags.update(tags)
 
         for sink in self._sinks:
             try:
@@ -245,6 +258,28 @@ class AlertDispatcher:
 alert_dispatcher = AlertDispatcher()
 
 
+def configure_alerting(settings: Settings, *, event_bus: Any | None = None) -> None:
+    """Attach environment-aware sinks to the shared dispatcher."""
+
+    alert_dispatcher.configure_context(
+        service=settings.service_name,
+        env_profile=settings.env_profile,
+        bitcoin_network=settings.bitcoin_network,
+    )
+
+    if settings.alert_webhook_url:
+        alert_dispatcher.register(
+            WebhookAlertSink(settings.alert_webhook_url),
+            sink_key=f"webhook:{settings.alert_webhook_url}",
+        )
+
+    if event_bus is not None:
+        alert_dispatcher.register(
+            EventBusAlertSink(event_bus),
+            sink_key=f"event-bus:{id(event_bus)}",
+        )
+
+
 __all__ = [
     "AlertSeverity",
     "AlertSink",
@@ -253,4 +288,5 @@ __all__ = [
     "EventBusAlertSink",
     "AlertDispatcher",
     "alert_dispatcher",
+    "configure_alerting",
 ]

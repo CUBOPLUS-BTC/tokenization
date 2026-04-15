@@ -39,8 +39,8 @@ from common import (
     record_audit_event,
 )
 from common.logging import configure_structured_logging
-from common.metrics import metrics, mount_metrics_endpoint
-from common.alerting import alert_dispatcher, AlertSeverity
+from common.metrics import metrics, mount_metrics_endpoint, record_business_event
+from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
 from marketplace.bitcoin_rpc import BitcoinRPCClient, BitcoinRPCError, FundingObservation
 from marketplace.db import (
     cancel_order,
@@ -97,6 +97,7 @@ _event_bus.subscribe("trade.matched", RedisStreamMirror(settings.redis_url))
 _event_bus.subscribe("escrow.funded", RedisStreamMirror(settings.redis_url))
 _realtime_feed = RedisStreamFeed(settings.redis_url)
 _event_bus.subscribe("escrow.released", RedisStreamMirror(settings.redis_url))
+configure_alerting(settings)
 _bitcoin_rpc_client = (
     BitcoinRPCClient(
         host=settings.bitcoin_rpc_host,
@@ -306,6 +307,7 @@ async def _publish_trade_matched(
         "escrow_status": _row_value(escrow_row, "status"),
         "escrow_expires_at": _isoformat(_row_value(escrow_row, "expires_at")),
     }
+    record_business_event("trade_match")
     await _event_bus.publish("trade.matched", payload)
 
 
@@ -328,6 +330,7 @@ async def _publish_escrow_funded(
         "funding_txid": _row_value(escrow_row, "funding_txid"),
         "status": _row_value(escrow_row, "status"),
     }
+    record_business_event("escrow_fund")
     await _event_bus.publish("escrow.funded", payload)
 
 
@@ -484,7 +487,32 @@ async def _publish_escrow_released(
         "trade_status": _row_value(trade_row, "status"),
         "settled_at": _isoformat(_row_value(trade_row, "settled_at")),
     }
+    record_business_event("escrow_release")
     await _event_bus.publish("escrow.released", payload)
+
+
+async def _record_settlement_failure(
+    *,
+    stage: str,
+    detail: str,
+    trade_id: str | None = None,
+    escrow_id: str | None = None,
+) -> None:
+    labels = {"stage": stage}
+    if trade_id:
+        labels["trade_id"] = trade_id
+    if escrow_id:
+        labels["escrow_id"] = escrow_id
+
+    record_business_event("settlement_failure", outcome="failure", labels=labels)
+    metrics.inc("marketplace_settlement_failures_total", labels={"stage": stage})
+    await alert_dispatcher.fire(
+        severity=AlertSeverity.CRITICAL,
+        title="Marketplace settlement failure",
+        detail=detail,
+        source=settings.service_name,
+        tags=labels,
+    )
 
 
 async def _scan_escrow_funding(escrow_row: object) -> FundingObservation | None:
@@ -498,6 +526,12 @@ async def _scan_escrow_funding(escrow_row: object) -> FundingObservation | None:
         )
     except BitcoinRPCError:
         logger.exception("Escrow funding check failed for trade %s", _row_value(escrow_row, "trade_id"))
+        await _record_settlement_failure(
+            stage="escrow_funding_scan",
+            detail=f"Escrow funding scan failed for trade {_row_value(escrow_row, 'trade_id')}.",
+            trade_id=str(_row_value(escrow_row, "trade_id")),
+            escrow_id=str(_row_value(escrow_row, "id")),
+        )
         return None
 
 
@@ -516,6 +550,16 @@ async def _refresh_escrow_funding(
 
     locked_amount_sat = int(_row_value(escrow_row, "locked_amount_sat", 0))
     if observation.total_amount_sat < locked_amount_sat:
+        expires_at = _row_value(escrow_row, "expires_at")
+        if isinstance(expires_at, datetime):
+            expiry = expires_at if expires_at.tzinfo is not None else expires_at.replace(tzinfo=timezone.utc)
+            if expiry <= datetime.now(tz=timezone.utc):
+                await _record_settlement_failure(
+                    stage="escrow_funding_timeout",
+                    detail=f"Escrow funding expired for trade {_row_value(trade_row, 'id')}.",
+                    trade_id=str(_row_value(trade_row, "id")),
+                    escrow_id=str(_row_value(escrow_row, "id")),
+                )
         return trade_row, escrow_row, False
 
     updated_trade_row, updated_escrow_row = await mark_escrow_funded(
@@ -905,6 +949,7 @@ async def place_order(
         except Exception:
             logger.exception("Trade event publish failed for trade %s", _row_value(trade_row, "id"))
 
+    record_business_event("order_place")
     return OrderResponse(order=_order_out(order_row)).model_dump(mode="json")
 
 
@@ -1336,6 +1381,7 @@ async def create_dispute(
             metadata={"trade_id": str(trade_id)},
         )
 
+    record_business_event("dispute_open")
     return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
 
 
@@ -1408,6 +1454,7 @@ async def resolve_trade_dispute(
             metadata={"trade_id": str(trade_id), "resolution": body.resolution},
         )
 
+    record_business_event("dispute_resolve")
     return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
 
 

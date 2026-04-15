@@ -6,7 +6,7 @@ from .realtime import RedisStreamFeed, StreamEvent, decode_resume_token, encode_
 from .readiness import get_readiness_payload
 from .security import configure_logging, install_http_security
 from .logging import JSONFormatter, configure_structured_logging
-from .metrics import MetricsCollector, metrics, mount_metrics_endpoint
+from .metrics import MetricsCollector, metrics, mount_metrics_endpoint, record_business_event
 from .alerting import (
     AlertDispatcher,
     AlertSeverity,
@@ -15,6 +15,7 @@ from .alerting import (
     LogAlertSink,
     WebhookAlertSink,
     alert_dispatcher,
+    configure_alerting,
 )
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "MetricsCollector",
     "metrics",
     "mount_metrics_endpoint",
+    "record_business_event",
     "AlertDispatcher",
     "AlertSeverity",
     "AlertSink",
@@ -43,4 +45,5 @@ __all__ = [
     "LogAlertSink",
     "WebhookAlertSink",
     "alert_dispatcher",
+    "configure_alerting",
 ]

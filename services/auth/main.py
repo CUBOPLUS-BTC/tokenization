@@ -44,8 +44,8 @@ from common import get_settings
 from common.security import install_http_security
 from common.readiness import get_readiness_payload
 from common.logging import configure_structured_logging
-from common.metrics import metrics, mount_metrics_endpoint
-from common.alerting import alert_dispatcher, AlertSeverity
+from common.metrics import metrics, mount_metrics_endpoint, record_business_event
+from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
 
 from .schemas import (
     AuthResponse,
@@ -91,6 +91,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncConnection
 
 settings = get_settings(service_name="auth", default_port=8000)
 configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
+configure_alerting(settings)
 
 # bcrypt hashing config (using default rounds)
 
@@ -385,11 +386,13 @@ async def register(body: RegisterRequest):
                 status.HTTP_409_CONFLICT,
             )
 
-        return await _issue_auth_response(
+        response = await _issue_auth_response(
             row,
             conn=conn,
             status_code=status.HTTP_201_CREATED,
         )
+    record_business_event("auth_register")
+    return response
 
 
 @app.post(
@@ -430,6 +433,7 @@ async def enable_2fa_endpoint(
         issuer_name=settings.totp_issuer,
     )
 
+    record_business_event("auth_2fa_enable")
     return TwoFactorEnableResponse(
         totp_uri=totp_uri,
         backup_codes=backup_codes,
@@ -463,6 +467,7 @@ async def verify_2fa_endpoint(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
+    record_business_event("auth_2fa_verify")
     return {"message": "2FA verification successful."}
 
 
@@ -493,6 +498,7 @@ async def login(body: LoginRequest):
         is_valid = False
 
     if not is_valid or row is None:
+        record_business_event("auth_login", outcome="failure")
         return _error(
             "invalid_credentials",
             "Invalid email or password.",
@@ -500,11 +506,13 @@ async def login(body: LoginRequest):
         )
 
     async with _engine.connect() as conn:  # type: AsyncConnection
-        return await _issue_auth_response(
+        response = await _issue_auth_response(
             row,
             conn=conn,
             status_code=status.HTTP_200_OK,
         )
+    record_business_event("auth_login")
+    return response
 
 
 @app.post(
@@ -518,6 +526,7 @@ async def nostr_login(body: NostrLoginRequest):
     try:
         validate_nostr_event(body.pubkey, body.signed_event)
     except NostrValidationError as e:
+        record_business_event("auth_nostr_login", outcome="failure")
         return _error(
             "invalid_credentials",
             str(e),
@@ -548,11 +557,13 @@ async def nostr_login(body: NostrLoginRequest):
                 relay_urls=None,
             )
 
-        return await _issue_auth_response(
+        response = await _issue_auth_response(
             user_row,
             conn=conn,
             status_code=status.HTTP_200_OK,
         )
+    record_business_event("auth_nostr_login")
+    return response
 
 
 @app.post(
@@ -592,8 +603,10 @@ async def refresh(body: RefreshRequest):
         )
 
     if not rotated:
+        record_business_event("auth_refresh", outcome="failure")
         return _invalid_refresh_token_response()
 
+    record_business_event("auth_refresh")
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content=_auth_response_payload(row, tokens),
@@ -625,8 +638,10 @@ async def logout(body: LogoutRequest):
         )
 
     if not revoked:
+        record_business_event("auth_logout", outcome="failure")
         return _invalid_refresh_token_response()
 
+    record_business_event("auth_logout")
     return MessageResponse(message="Session revoked.").model_dump()
 
 
