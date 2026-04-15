@@ -33,6 +33,7 @@ from marketplace.db import (
     create_order,
     create_trade_escrow,
     find_best_match,
+    get_dispute_by_trade_id,
     get_escrow_by_trade_id,
     get_last_trade_price_for_token,
     get_order_by_id,
@@ -47,11 +48,17 @@ from marketplace.db import (
     list_orders,
     list_trades,
     mark_escrow_funded,
+    open_dispute,
     process_escrow_signature,
+    resolve_dispute,
 )
 from marketplace.schemas import (
     CancelOrderResponse,
     CancelledOrderOut,
+    DisputeOpenRequest,
+    DisputeOut,
+    DisputeResolveRequest,
+    DisputeResponse,
     EscrowOut,
     EscrowResponse,
     EscrowSignRequest,
@@ -196,6 +203,20 @@ def _escrow_out(row: object) -> EscrowOut:
         release_txid=_row_value(row, "release_txid"),
         status=_row_value(row, "status"),
         expires_at=_row_value(row, "expires_at"),
+    )
+
+
+def _dispute_out(row: object) -> DisputeOut:
+    return DisputeOut(
+        id=_row_value(row, "id"),
+        trade_id=_row_value(row, "trade_id"),
+        opened_by=_row_value(row, "opened_by"),
+        reason=_row_value(row, "reason"),
+        status=_row_value(row, "status"),
+        resolution=_row_value(row, "resolution"),
+        resolved_by=_row_value(row, "resolved_by"),
+        resolved_at=_row_value(row, "resolved_at"),
+        created_at=_row_value(row, "created_at"),
     )
 
 
@@ -899,6 +920,129 @@ async def get_trade_history(
         trades=[_trade_out(row) for row in page],
         next_cursor=next_cursor,
     ).model_dump(mode="json")
+
+
+@app.post(
+    "/trades/{trade_id}/dispute",
+    status_code=status.HTTP_201_CREATED,
+    response_model=DisputeResponse,
+)
+async def create_dispute(
+    trade_id: uuid.UUID,
+    body: DisputeOpenRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    async with _runtime_engine().connect() as conn:
+        trade_row = await get_trade_by_id(conn, trade_id)
+        if trade_row is None:
+            raise _trade_not_found_error()
+
+        buy_order = await get_order_by_id(conn, _row_value(trade_row, "buy_order_id"))
+        sell_order = await get_order_by_id(conn, _row_value(trade_row, "sell_order_id"))
+        if buy_order is None or sell_order is None:
+            raise _trade_not_found_error()
+
+        participant_ids = {
+            str(_row_value(buy_order, "user_id")),
+            str(_row_value(sell_order, "user_id")),
+        }
+        if principal.id not in participant_ids:
+            raise ContractError(
+                code="forbidden",
+                message="You are not a participant in this trade.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        if _row_value(trade_row, "status") != "escrowed":
+            raise ContractError(
+                code="trade_state_conflict",
+                message="Only escrowed trades can be disputed.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        existing_dispute = await get_dispute_by_trade_id(conn, trade_id)
+        if existing_dispute is not None:
+            raise ContractError(
+                code="dispute_already_exists",
+                message="A dispute has already been opened for this trade.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            dispute_row = await open_dispute(
+                conn,
+                trade_id=trade_id,
+                opened_by=principal.id,
+                reason=body.reason,
+            )
+        except LookupError as exc:
+            raise ContractError(
+                code="trade_state_conflict",
+                message="Trade or escrow is not in a disputable state.",
+                status_code=status.HTTP_409_CONFLICT,
+            ) from exc
+
+    return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
+
+
+@app.post(
+    "/trades/{trade_id}/dispute/resolve",
+    response_model=DisputeResponse,
+)
+async def resolve_trade_dispute(
+    trade_id: uuid.UUID,
+    body: DisputeResolveRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    if principal.role != "admin":
+        raise ContractError(
+            code="forbidden",
+            message="Only admins can resolve disputes.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    async with _runtime_engine().connect() as conn:
+        trade_row = await get_trade_by_id(conn, trade_id)
+        if trade_row is None:
+            raise _trade_not_found_error()
+
+        if _row_value(trade_row, "status") != "disputed":
+            raise ContractError(
+                code="trade_state_conflict",
+                message="Trade is not in a disputed state.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        existing_dispute = await get_dispute_by_trade_id(conn, trade_id)
+        if existing_dispute is None:
+            raise ContractError(
+                code="dispute_not_found",
+                message="No open dispute found for this trade.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
+        if _row_value(existing_dispute, "status") != "open":
+            raise ContractError(
+                code="dispute_already_resolved",
+                message="This dispute has already been resolved.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            dispute_row, _trade_row, _escrow_row = await resolve_dispute(
+                conn,
+                trade_id=trade_id,
+                resolved_by=principal.id,
+                resolution=body.resolution,
+            )
+        except LookupError as exc:
+            raise ContractError(
+                code="resolution_conflict",
+                message="Could not apply resolution due to a state conflict.",
+                status_code=status.HTTP_409_CONFLICT,
+            ) from exc
+
+    return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
 
 
 if __name__ == "__main__":
