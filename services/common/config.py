@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     rate_limit_write_requests: int = 60
     rate_limit_sensitive_requests: int = 10
 
+    # KYC: trade value threshold (sats) above which KYC verification is required.
+    # Set to 0 to disable enforcement.  Default 10 000 000 sats (~0.1 BTC).
+    kyc_trade_threshold_sat: int = 10_000_000
+
     @property
     def nostr_relay_list(self) -> list[str]:
         return [relay.strip() for relay in self.nostr_relays.split(",") if relay.strip()]

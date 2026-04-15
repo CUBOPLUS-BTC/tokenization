@@ -337,6 +337,28 @@ Persists refresh-token JTIs so rotation and revocation can invalidate reused ses
 
 ---
 
+### 3.15 `kyc_verifications`
+
+Per-user identity verification state used to enforce KYC rules for high-value trades.
+
+| Column             | Type           | Constraints                    | Description                          |
+| :----------------- | :------------- | :----------------------------- | :----------------------------------- |
+| `id`               | `UUID`         | PK                             |                                      |
+| `user_id`          | `UUID`         | FK → users.id, UNIQUE, NOT NULL| One record per user                  |
+| `status`           | `VARCHAR(20)`  | NOT NULL, DEFAULT 'pending'    | `pending`, `verified`, `rejected`, `expired` |
+| `reviewed_by`      | `UUID`         | FK → users.id, nullable        | Admin who reviewed the submission    |
+| `reviewed_at`      | `TIMESTAMPTZ`  | nullable                       | When the review was completed        |
+| `rejection_reason` | `TEXT`         | nullable                       | Reason for rejection (if applicable) |
+| `notes`            | `TEXT`         | nullable                       | Additional notes from user or admin  |
+| `document_url`     | `TEXT`         | nullable                       | Link to uploaded KYC documents       |
+| `metadata`         | `JSONB`        | nullable                       | Additional verification metadata     |
+| `created_at`       | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
+| `updated_at`       | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
+
+**Indexes**: `ix_kyc_verifications_status`, `ix_kyc_verifications_user_id`, `uq_kyc_verifications_user_id` (UNIQUE via UniqueConstraint)
+
+---
+
 ## 4. Migration Strategy
 
 - Use **Alembic** for versioned schema migrations.

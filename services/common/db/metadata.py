@@ -375,3 +375,47 @@ audit_logs = sa.Table(
         name="outcome_allowed",
     ),
 )
+
+kyc_verifications = sa.Table(
+    "kyc_verifications",
+    metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column(
+        "status",
+        sa.String(length=20),
+        nullable=False,
+        server_default="pending",
+    ),
+    sa.Column("reviewed_by", postgresql.UUID(as_uuid=True), nullable=True),
+    sa.Column("reviewed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("rejection_reason", sa.Text(), nullable=True),
+    sa.Column("notes", sa.Text(), nullable=True),
+    sa.Column("document_url", sa.Text(), nullable=True),
+    sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("NOW()"),
+    ),
+    sa.Column(
+        "updated_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("NOW()"),
+    ),
+    sa.ForeignKeyConstraint(
+        ["user_id"], ["users.id"], name="fk_kyc_verifications_user_id_users"
+    ),
+    sa.ForeignKeyConstraint(
+        ["reviewed_by"], ["users.id"], name="fk_kyc_verifications_reviewed_by_users"
+    ),
+    sa.UniqueConstraint("user_id", name="uq_kyc_verifications_user_id"),
+    sa.Index("ix_kyc_verifications_status", "status"),
+    sa.Index("ix_kyc_verifications_user_id", "user_id"),
+    sa.CheckConstraint(
+        "status IN ('pending', 'verified', 'rejected', 'expired')",
+        name="status_allowed",
+    ),
+)
