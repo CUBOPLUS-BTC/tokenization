@@ -41,7 +41,17 @@ from jose import JWTError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common import get_settings
-from common import default_onramp_notices, describe_custody_settings, list_onramp_provider_views
+from common import (
+    create_referral_signup_reward,
+    default_onramp_notices,
+    describe_custody_settings,
+    generate_referral_code,
+    get_user_by_referral_code,
+    list_onramp_provider_views,
+    list_referral_rewards_for_user,
+    list_referred_users,
+    summarize_referrals_for_user,
+)
 from common.security import install_http_security
 from common.readiness import get_readiness_payload
 from common.logging import configure_structured_logging
@@ -69,6 +79,9 @@ from .schemas import (
     OnboardingCustodyOut,
     OnboardingFiatProviderOut,
     OnboardingSummaryResponse,
+    ReferralRewardOut,
+    ReferralSummaryResponse,
+    ReferredUserOut,
 )
 from .jwt_utils import decode_token, issue_token_pair
 from .nostr_utils import validate_nostr_event, NostrValidationError
@@ -199,7 +212,32 @@ def _user_out(row) -> UserOut:
         email=row.email,
         display_name=row.display_name,
         role=row.role,
+        referral_code=getattr(row, "referral_code", None),
         created_at=row.created_at,
+    )
+
+
+def _referred_user_out(row) -> ReferredUserOut:
+    return ReferredUserOut(
+        id=str(row.id),
+        email=row.email,
+        display_name=row.display_name,
+        created_at=row.created_at,
+    )
+
+
+def _referral_reward_out(row) -> ReferralRewardOut:
+    return ReferralRewardOut(
+        id=str(getattr(row, "id")),
+        referred_user_id=str(getattr(row, "referred_user_id")),
+        referred_display_name=getattr(getattr(row, "_mapping", {}), "get", lambda *_: None)("referred_display_name") or getattr(row, "referred_display_name"),
+        referred_email=getattr(getattr(row, "_mapping", {}), "get", lambda *_: None)("referred_email") or getattr(row, "referred_email", None),
+        reward_type=getattr(row, "reward_type"),
+        amount_sat=int(getattr(row, "amount_sat", 0)),
+        status=getattr(row, "status"),
+        eligibility_event=getattr(row, "eligibility_event"),
+        credited_at=getattr(row, "credited_at"),
+        created_at=getattr(row, "created_at"),
     )
 
 
@@ -387,13 +425,33 @@ async def register(body: RegisterRequest):
                 status.HTTP_409_CONFLICT,
             )
 
+        referrer_id: str | None = None
+        if body.referrer_code:
+            referrer_row = await get_user_by_referral_code(conn, body.referrer_code)
+            if referrer_row is None:
+                return _error(
+                    "referrer_not_found",
+                    "Referral code is invalid.",
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                )
+            if getattr(referrer_row, "email", None) == body.email:
+                return _error(
+                    "self_referral_not_allowed",
+                    "You cannot register using your own referral code.",
+                    status.HTTP_409_CONFLICT,
+                )
+            referrer_id = str(referrer_row.id)
+
         password_hash = bcrypt.hashpw(body.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
         try:
+            referral_code = await generate_referral_code(conn)
             row = await create_user(
                 conn,
                 email=body.email,
                 password_hash=password_hash,
                 display_name=body.display_name,
+                referral_code=referral_code,
+                referrer_id=referrer_id,
             )
         except IntegrityError:
             return _error(
@@ -562,9 +620,11 @@ async def nostr_login(body: NostrLoginRequest):
                 )
         else:
             display_name = f"nostr:{body.pubkey[:8]}"
+            referral_code = await generate_referral_code(conn)
             user_row = await create_nostr_user(
                 conn,
                 display_name=display_name,
+                referral_code=referral_code,
             )
             await create_nostr_identity(
                 conn,
@@ -677,6 +737,32 @@ async def get_current_user(
         role=principal.role,
         created_at=principal.created_at,
     )
+
+
+@app.get(
+    "/auth/referrals/summary",
+    status_code=status.HTTP_200_OK,
+    response_model=ReferralSummaryResponse,
+    summary="Return referral relationships and earned rewards for the authenticated user",
+)
+async def get_referral_summary(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    async with _engine.connect() as conn:
+        user_row = await get_user_by_id(conn, principal.id)
+        if user_row is None:
+            raise _invalid_access_token_error()
+        counts = await summarize_referrals_for_user(conn, principal.id)
+        referred_rows = await list_referred_users(conn, principal.id)
+        reward_rows = await list_referral_rewards_for_user(conn, principal.id)
+
+    return ReferralSummaryResponse(
+        referral_code=getattr(user_row, "referral_code"),
+        referrals_count=counts["referrals_count"],
+        total_reward_sat=counts["total_reward_sat"],
+        referred_users=[_referred_user_out(row) for row in referred_rows],
+        rewards=[_referral_reward_out(row) for row in reward_rows],
+    ).model_dump(mode="json")
 
 
 def _role_response(principal: AuthenticatedPrincipal, *required_roles: str) -> RoleCheckResponse:
@@ -916,6 +1002,11 @@ async def update_kyc_admin(
                 status.HTTP_404_NOT_FOUND,
             )
 
+        existing_status = getattr(existing, "status", None)
+        mapping = getattr(existing, "_mapping", None)
+        if mapping is not None:
+            existing_status = mapping.get("status", existing_status)
+
         row = await update_kyc_status(
             conn,
             user_id=user_id,
@@ -924,6 +1015,9 @@ async def update_kyc_admin(
             rejection_reason=body.rejection_reason,
             notes=body.notes,
         )
+        if body.status == "verified" and existing_status != "verified":
+            await create_referral_signup_reward(conn, referred_user_id=user_id)
+            await conn.commit()
 
     if row is None:
         return _error(

@@ -88,10 +88,12 @@ def test_target_tables_exist(inspector: sa.Inspector) -> None:
         "orders",
         "trades",
         "escrows",
+        "referral_rewards",
         "treasury",
         "courses",
         "enrollments",
         "audit_logs",
+        "yield_accruals",
     }.issubset(table_names)
 
 
@@ -106,11 +108,21 @@ def test_users_schema_matches_spec(inspector: sa.Inspector) -> None:
     assert columns["role"]["nullable"] is False
     assert columns["role"]["default"] is not None
     assert columns["is_verified"]["default"] is not None
+    assert columns["referrer_id"]["nullable"] is True
+    assert columns["referral_code"]["nullable"] is False
     assert columns["deleted_at"]["nullable"] is True
 
     assert "uq_users_email" in unique_constraints
+    assert "uq_users_referral_code" in unique_constraints
     assert "ix_users_role" in indexes
-    assert "ck_users_role_allowed" in checks
+    assert {"ck_users_role_allowed", "ck_users_self_referral_blocked"}.issubset(checks)
+    _assert_foreign_key(
+        inspector.get_foreign_keys("users"),
+        name="fk_users_referrer_id_users",
+        constrained_columns=["referrer_id"],
+        referred_table="users",
+        referred_columns=["id"],
+    )
 
 
 def test_refresh_token_sessions_schema_matches_spec(inspector: sa.Inspector) -> None:
@@ -310,18 +322,24 @@ def test_orders_schema_matches_spec(inspector: sa.Inspector) -> None:
     assert columns["user_id"]["nullable"] is False
     assert columns["token_id"]["nullable"] is False
     assert columns["side"]["nullable"] is False
+    assert columns["order_type"]["default"] is not None
     assert columns["quantity"]["nullable"] is False
     assert columns["price_sat"]["nullable"] is False
+    assert columns["trigger_price_sat"]["nullable"] is True
+    assert columns["triggered_at"]["nullable"] is True
     assert columns["filled_quantity"]["default"] is not None
     assert columns["status"]["default"] is not None
     assert columns["created_at"]["default"] is not None
     assert columns["updated_at"]["default"] is not None
 
-    assert {"ix_orders_user_id", "ix_orders_token_id"}.issubset(indexes)
+    assert {"ix_orders_user_id", "ix_orders_token_id", "ix_orders_order_type"}.issubset(indexes)
     assert {
         "ck_orders_side_allowed",
+        "ck_orders_order_type_allowed",
         "ck_orders_quantity_positive",
         "ck_orders_price_sat_positive",
+        "ck_orders_trigger_price_sat_positive",
+        "ck_orders_trigger_price_required",
         "ck_orders_status_allowed",
     }.issubset(checks)
     _assert_foreign_key(
@@ -419,6 +437,7 @@ def test_treasury_schema_matches_spec(inspector: sa.Inspector) -> None:
     checks = _constraint_names(inspector.get_check_constraints("treasury"))
 
     assert columns["source_trade_id"]["nullable"] is True
+    assert columns["source_referral_reward_id"]["nullable"] is True
     assert columns["type"]["nullable"] is False
     assert columns["amount_sat"]["nullable"] is False
     assert columns["balance_after_sat"]["nullable"] is False
@@ -432,6 +451,101 @@ def test_treasury_schema_matches_spec(inspector: sa.Inspector) -> None:
         name="fk_treasury_source_trade_id_trades",
         constrained_columns=["source_trade_id"],
         referred_table="trades",
+        referred_columns=["id"],
+    )
+    _assert_foreign_key(
+        foreign_keys,
+        name="fk_treasury_source_referral_reward_id_referral_rewards",
+        constrained_columns=["source_referral_reward_id"],
+        referred_table="referral_rewards",
+        referred_columns=["id"],
+    )
+
+
+def test_referral_rewards_schema_matches_spec(inspector: sa.Inspector) -> None:
+    columns = _column_map(inspector, "referral_rewards")
+    indexes = _constraint_names(inspector.get_indexes("referral_rewards"))
+    unique_constraints = _constraint_names(inspector.get_unique_constraints("referral_rewards"))
+    foreign_keys = inspector.get_foreign_keys("referral_rewards")
+    checks = _constraint_names(inspector.get_check_constraints("referral_rewards"))
+
+    assert columns["referrer_id"]["nullable"] is False
+    assert columns["referred_user_id"]["nullable"] is False
+    assert columns["reward_type"]["default"] is not None
+    assert columns["amount_sat"]["nullable"] is False
+    assert columns["status"]["default"] is not None
+    assert columns["eligibility_event"]["default"] is not None
+    assert columns["credited_at"]["default"] is not None
+    assert columns["created_at"]["default"] is not None
+
+    assert {
+        "ix_referral_rewards_referrer_id",
+        "ix_referral_rewards_status",
+        "ix_referral_rewards_created_at",
+    }.issubset(indexes)
+    assert "uq_referral_rewards_referred_user_reward_type" in unique_constraints
+    assert {
+        "ck_referral_rewards_amount_positive",
+        "ck_referral_rewards_self_referral_reward_blocked",
+        "ck_referral_rewards_reward_type_allowed",
+        "ck_referral_rewards_status_allowed",
+    }.issubset(checks)
+    _assert_foreign_key(
+        foreign_keys,
+        name="fk_referral_rewards_referrer_id_users",
+        constrained_columns=["referrer_id"],
+        referred_table="users",
+        referred_columns=["id"],
+    )
+    _assert_foreign_key(
+        foreign_keys,
+        name="fk_referral_rewards_referred_user_id_users",
+        constrained_columns=["referred_user_id"],
+        referred_table="users",
+        referred_columns=["id"],
+    )
+
+
+def test_yield_accruals_schema_matches_spec(inspector: sa.Inspector) -> None:
+    columns = _column_map(inspector, "yield_accruals")
+    indexes = _constraint_names(inspector.get_indexes("yield_accruals"))
+    foreign_keys = inspector.get_foreign_keys("yield_accruals")
+    checks = _constraint_names(inspector.get_check_constraints("yield_accruals"))
+
+    assert columns["user_id"]["nullable"] is False
+    assert columns["token_id"]["nullable"] is False
+    assert columns["annual_rate_pct"]["nullable"] is False
+    assert columns["quantity_held"]["nullable"] is False
+    assert columns["reference_price_sat"]["nullable"] is False
+    assert columns["amount_sat"]["nullable"] is False
+    assert columns["accrued_from"]["nullable"] is False
+    assert columns["accrued_to"]["nullable"] is False
+    assert columns["created_at"]["default"] is not None
+
+    assert {
+        "ix_yield_accruals_user_id",
+        "ix_yield_accruals_token_id",
+        "ix_yield_accruals_created_at",
+    }.issubset(indexes)
+    assert {
+        "ck_yield_accruals_quantity_positive",
+        "ck_yield_accruals_reference_price_sat_positive",
+        "ck_yield_accruals_amount_positive",
+        "ck_yield_accruals_annual_rate_pct_positive",
+        "ck_yield_accruals_accrual_window_positive",
+    }.issubset(checks)
+    _assert_foreign_key(
+        foreign_keys,
+        name="fk_yield_accruals_user_id_users",
+        constrained_columns=["user_id"],
+        referred_table="users",
+        referred_columns=["id"],
+    )
+    _assert_foreign_key(
+        foreign_keys,
+        name="fk_yield_accruals_token_id_tokens",
+        constrained_columns=["token_id"],
+        referred_table="tokens",
         referred_columns=["id"],
     )
 

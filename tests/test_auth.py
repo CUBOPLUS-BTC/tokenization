@@ -38,6 +38,7 @@ FakeUser = namedtuple(
         "password_hash",
         "display_name",
         "role",
+        "referral_code",
         "created_at",
         "deleted_at",
     ],
@@ -51,6 +52,7 @@ def _make_fake_user(email: str, password: str, *, role: str = "user") -> FakeUse
         password_hash=bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
         display_name="Alice",
         role=role,
+        referral_code="REF1234567",
         created_at=datetime.now(tz=timezone.utc),
         deleted_at=None,
     )
@@ -123,6 +125,7 @@ def client(fake_settings):
 
         with (
             patch.object(auth_main, "create_refresh_session", AsyncMock()),
+            patch.object(auth_main, "generate_referral_code", AsyncMock(return_value="REFCODE1234")),
             patch.object(auth_main, "rotate_refresh_session", AsyncMock(return_value=True)),
             patch.object(auth_main, "revoke_refresh_session", AsyncMock(return_value=True)),
         ):
@@ -286,6 +289,98 @@ class TestRegister:
         body = resp.json()
         assert body["error"]["code"] == "email_taken"
         assert "message" in body["error"]
+
+    def test_register_accepts_valid_referrer_code(self, client):
+        app_client, _, _ = client
+        referrer = _make_fake_user("referrer@example.com", "SecureP@ss123")
+        created_user = _make_fake_user("new@example.com", "SecureP@ss123")
+
+        with (
+            patch("services.auth.main.get_user_by_email", AsyncMock(return_value=None)),
+            patch("services.auth.main.get_user_by_referral_code", AsyncMock(return_value=referrer)),
+            patch("services.auth.main.generate_referral_code", AsyncMock(return_value="NEWCODE1234")),
+            patch("services.auth.main.create_user", AsyncMock(return_value=created_user)) as create_user_mock,
+        ):
+            response = app_client.post(
+                "/auth/register",
+                json={
+                    "email": "new@example.com",
+                    "password": "SecureP@ss123",
+                    "display_name": "Alice",
+                    "referrer_code": referrer.referral_code,
+                },
+            )
+
+        assert response.status_code == 201
+        create_user_mock.assert_awaited_once()
+        assert create_user_mock.await_args.kwargs["referrer_id"] == str(referrer.id)
+
+    def test_register_rejects_unknown_referrer_code(self, client):
+        app_client, _, _ = client
+
+        with (
+            patch("services.auth.main.get_user_by_email", AsyncMock(return_value=None)),
+            patch("services.auth.main.get_user_by_referral_code", AsyncMock(return_value=None)),
+        ):
+            response = app_client.post(
+                "/auth/register",
+                json={
+                    "email": "new@example.com",
+                    "password": "SecureP@ss123",
+                    "display_name": "Alice",
+                    "referrer_code": "UNKNOWN123",
+                },
+            )
+
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "referrer_not_found"
+
+
+class TestReferralSummary:
+    def test_referral_summary_returns_referred_users_and_rewards(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        referred_user = _make_fake_user("bob@example.com", "SecureP@ss123")
+        reward_row = type(
+            "ReferralRewardRow",
+            (),
+            {
+                "id": uuid.uuid4(),
+                "referrer_id": fake_user.id,
+                "referred_user_id": referred_user.id,
+                "reward_type": "signup_bonus",
+                "amount_sat": 50000,
+                "status": "credited",
+                "eligibility_event": "kyc_verified",
+                "credited_at": datetime.now(tz=timezone.utc),
+                "created_at": datetime.now(tz=timezone.utc),
+                "referred_display_name": referred_user.display_name,
+                "referred_email": referred_user.email,
+            },
+        )()
+
+        with (
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch(
+                "services.auth.main.summarize_referrals_for_user",
+                AsyncMock(return_value={"referrals_count": 1, "total_reward_sat": 50000}),
+            ),
+            patch("services.auth.main.list_referred_users", AsyncMock(return_value=[referred_user])),
+            patch("services.auth.main.list_referral_rewards_for_user", AsyncMock(return_value=[reward_row])),
+        ):
+            response = app_client.get(
+                "/auth/referrals/summary",
+                headers=_auth_headers(access_token),
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["referral_code"] == fake_user.referral_code
+        assert body["referrals_count"] == 1
+        assert body["total_reward_sat"] == 50000
+        assert body["referred_users"][0]["email"] == referred_user.email
+        assert body["rewards"][0]["reward_type"] == "signup_bonus"
 
     def test_register_missing_display_name_returns_422(self, client):
         app_client, *_ = client

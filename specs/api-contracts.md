@@ -42,7 +42,8 @@ POST /auth/register
 {
   "email": "user@example.com",
   "password": "SecureP@ss123",
-  "display_name": "Alice"
+  "display_name": "Alice",
+  "referrer_code": "AB12CD34EF"
 }
 ```
 
@@ -54,6 +55,7 @@ POST /auth/register
     "email": "user@example.com",
     "display_name": "Alice",
     "role": "user",
+    "referral_code": "ZX90LM12NP",
     "created_at": "2026-04-07T12:00:00Z"
   },
   "tokens": {
@@ -217,6 +219,45 @@ Returns the authenticated user's KYC status, configured custody posture, and the
 }
 ```
 
+### 2.9 Referral Summary
+
+```
+GET /auth/referrals/summary
+Authorization: Bearer <token>
+```
+
+Returns the authenticated user's immutable referral code, referred accounts, and signup rewards credited after successful onboarding.
+
+**Response (200):**
+```json
+{
+  "referral_code": "ZX90LM12NP",
+  "referrals_count": 2,
+  "total_reward_sat": 100000,
+  "referred_users": [
+    {
+      "id": "uuid",
+      "email": "friend@example.com",
+      "display_name": "Friend",
+      "created_at": "2026-04-10T12:00:00Z"
+    }
+  ],
+  "rewards": [
+    {
+      "id": "uuid",
+      "referred_user_id": "uuid",
+      "referred_display_name": "Friend",
+      "reward_type": "signup_bonus",
+      "amount_sat": 50000,
+      "status": "credited",
+      "eligibility_event": "kyc_verified",
+      "credited_at": "2026-04-12T12:00:00Z",
+      "created_at": "2026-04-12T12:00:00Z"
+    }
+  ]
+}
+```
+
 ---
 
 ## 3. Wallet Endpoints
@@ -241,10 +282,51 @@ Authorization: Bearer <token>
         "asset_name": "Downtown Office Building",
         "symbol": "DOB",
         "balance": 50,
-        "unit_price_sat": 10000
+        "unit_price_sat": 10000,
+        "accrued_yield_sat": 1200
       }
     ],
-    "total_value_sat": 1150000
+    "total_yield_earned_sat": 1200,
+    "total_value_sat": 1151200
+  }
+}
+```
+
+### 3.2 Yield Summary
+
+```
+GET /wallet/yield/summary
+Authorization: Bearer <token>
+```
+
+Returns accrued yield totals and the underlying accrual records. The service settles any pending full-day accruals before responding.
+
+**Response (200):**
+```json
+{
+  "yield_summary": {
+    "total_yield_earned_sat": 1200,
+    "by_token": [
+      {
+        "token_id": "uuid",
+        "asset_name": "Downtown Office Building",
+        "total_yield_sat": 1200
+      }
+    ],
+    "accruals": [
+      {
+        "id": "uuid",
+        "token_id": "uuid",
+        "asset_name": "Downtown Office Building",
+        "amount_sat": 1200,
+        "quantity_held": 50,
+        "reference_price_sat": 10000,
+        "annual_rate_pct": 8.5,
+        "accrued_from": "2026-04-10T12:00:00Z",
+        "accrued_to": "2026-04-11T12:00:00Z",
+        "created_at": "2026-04-11T12:00:00Z"
+      }
+    ]
   }
 }
 ```
@@ -272,10 +354,14 @@ Authorization: Bearer <token>
   ],
   "next_cursor": "uuid_or_null"
 }
+    "order_type": "stop_limit",
 ```
-
+    "price_sat": 10000,
+    "trigger_price_sat": 10500
 ### 3.3 Get Custody Status
 
+
+  `limit` orders are immediately eligible for matching. `stop_limit` orders are accepted onto the user's order list but stay hidden from the match engine and order book until the reference price crosses the configured trigger.
 ```
 GET /wallet/custody
 Authorization: Bearer <token>
@@ -503,14 +589,50 @@ Role: seller
     "id": "uuid",
     "name": "Downtown Office Building",
     "status": "pending",
+    "order_type": "stop_limit",
     "created_at": "2026-04-07T12:00:00Z"
   }
+    "trigger_price_sat": 10500,
+    "triggered_at": null,
+    "is_triggered": false,
 }
 ```
 
 ### 4.2 Get Asset Details
 
 ```
+
+### 7.6 Referral Reporting
+
+```
+GET /referrals/summary
+Authorization: Bearer <admin-token>
+```
+
+Returns platform-wide referral reward totals.
+
+```
+GET /referrals/{user_id}
+Authorization: Bearer <admin-token>
+```
+
+Returns one user's referral code, referred users, and credited rewards.
+
+### 7.7 Yield Reporting
+
+```
+GET /yield/summary
+Authorization: Bearer <admin-token>
+```
+
+Returns platform-wide yield totals.
+
+```
+GET /yield/{user_id}
+Authorization: Bearer <admin-token>
+```
+
+Returns a user's yield totals, grouped-by-token amounts, and individual accrual records.
 GET /assets/{asset_id}
 Authorization: Bearer <token>
 ```

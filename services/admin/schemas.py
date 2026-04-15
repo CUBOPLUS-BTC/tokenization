@@ -103,3 +103,62 @@ class DisputeOut(BaseModel):
 
 class DisputeResponse(BaseModel):
     dispute: DisputeOut
+
+
+class ReferralRewardOut(BaseModel):
+    id: str
+    referred_user_id: str
+    referred_display_name: str
+    referred_email: str | None = None
+    reward_type: str
+    amount_sat: int
+    status: str
+    eligibility_event: str
+    credited_at: datetime
+    created_at: datetime
+
+
+class ReferralUserSummaryResponse(BaseModel):
+    user_id: str
+    referral_code: str
+    referrals_count: int
+    total_reward_sat: int
+    rewards: list[ReferralRewardOut]
+
+
+class ReferralPlatformSummaryResponse(BaseModel):
+    referred_users: int
+    active_referrers: int
+    total_reward_sat: int
+
+
+class YieldTokenSummaryOut(BaseModel):
+    token_id: str
+    asset_name: str
+    total_yield_sat: int
+
+
+class YieldAccrualOut(BaseModel):
+    id: str
+    token_id: str
+    asset_name: str
+    amount_sat: int
+    quantity_held: int
+    reference_price_sat: int
+    annual_rate_pct: float
+    accrued_from: datetime
+    accrued_to: datetime
+    created_at: datetime
+
+
+class YieldUserSummaryResponse(BaseModel):
+    user_id: str
+    total_yield_sat: int
+    by_token: list[YieldTokenSummaryOut]
+    accruals: list[YieldAccrualOut]
+
+
+class YieldPlatformSummaryResponse(BaseModel):
+    users_with_yield: int
+    yield_tokens: int
+    total_yield_sat: int

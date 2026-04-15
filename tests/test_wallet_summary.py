@@ -72,7 +72,11 @@ def test_get_wallet_summary_unauthorized(mock_env):
 @patch("services.wallet.main._engine")
 @patch("services.wallet.main.get_wallet_by_user_id")
 @patch("services.wallet.main.get_token_balances_for_user")
+@patch("services.wallet.main.summarize_yield_for_user")
+@patch("services.wallet.main.accrue_pending_yield_for_user")
 def test_get_wallet_summary_success(
+    mock_accrue_yield,
+    mock_summarize_yield,
     mock_get_tokens,
     mock_get_wallet,
     mock_engine,
@@ -96,6 +100,16 @@ def test_get_wallet_summary_success(
             "unit_price_sat": 2500
         }
     ]
+    mock_summarize_yield.return_value = (
+        12000,
+        [
+            {
+                "token_id": token_id,
+                "asset_name": "Deep Ocean Blue",
+                "total_yield_sat": 12000,
+            }
+        ],
+    )
     
     mock_conn = AsyncMock()
     mock_engine.connect.return_value.__aenter__.return_value = mock_conn
@@ -108,8 +122,10 @@ def test_get_wallet_summary_success(
     assert data["lightning_balance_sat"] == 150000
     assert len(data["token_balances"]) == 1
     assert data["token_balances"][0]["asset_name"] == "Deep Ocean Blue"
-    # Total valuation = 500,000 + 150,000 + (100 * 2,500) = 900,000
-    assert data["total_value_sat"] == 900000
+    assert data["token_balances"][0]["accrued_yield_sat"] == 12000
+    assert data["total_yield_earned_sat"] == 12000
+    # Total valuation = 500,000 + 150,000 + (100 * 2,500) + 12,000 = 912,000
+    assert data["total_value_sat"] == 912000
 
 @patch("services.wallet.main._engine")
 @patch("services.wallet.main.get_wallet_by_user_id")
@@ -129,3 +145,55 @@ def test_get_wallet_summary_not_found(
     
     assert response.status_code == 404
     assert response.json()["detail"] == "Wallet not found for user"
+
+
+@patch("services.wallet.main._engine")
+@patch("services.wallet.main.get_wallet_by_user_id")
+@patch("services.wallet.main.get_user_yield_accruals")
+@patch("services.wallet.main.summarize_yield_for_user")
+@patch("services.wallet.main.accrue_pending_yield_for_user")
+def test_get_wallet_yield_summary_returns_breakdown(
+    mock_accrue_yield,
+    mock_summarize_yield,
+    mock_get_accruals,
+    mock_get_wallet,
+    mock_engine,
+    client,
+    mock_user_id,
+):
+    wallet_id = uuid4()
+    token_id = uuid4()
+    mock_get_wallet.return_value = {
+        "id": wallet_id,
+        "onchain_balance_sat": 500000,
+        "lightning_balance_sat": 150000,
+    }
+    mock_summarize_yield.return_value = (
+        7000,
+        [{"token_id": token_id, "asset_name": "Deep Ocean Blue", "total_yield_sat": 7000}],
+    )
+    mock_get_accruals.return_value = [
+        {
+            "id": uuid4(),
+            "token_id": token_id,
+            "asset_name": "Deep Ocean Blue",
+            "amount_sat": 7000,
+            "quantity_held": 100,
+            "reference_price_sat": 2500,
+            "annual_rate_pct": 8.5,
+            "accrued_from": datetime(2026, 4, 1),
+            "accrued_to": datetime(2026, 4, 2),
+            "created_at": datetime(2026, 4, 2),
+        }
+    ]
+
+    mock_conn = AsyncMock()
+    mock_engine.connect.return_value.__aenter__.return_value = mock_conn
+
+    response = client.get("/wallet/yield/summary", headers={"Authorization": "Bearer fake-token"})
+
+    assert response.status_code == 200
+    data = response.json()["yield_summary"]
+    assert data["total_yield_earned_sat"] == 7000
+    assert data["by_token"][0]["asset_name"] == "Deep Ocean Blue"
+    assert data["accruals"][0]["amount_sat"] == 7000

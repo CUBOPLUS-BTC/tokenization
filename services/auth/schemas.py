@@ -16,6 +16,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     display_name: str = Field(min_length=1, max_length=100)
+    referrer_code: str | None = Field(default=None, min_length=6, max_length=12)
 
     @field_validator("password")
     @classmethod
@@ -66,6 +67,7 @@ class UserOut(BaseModel):
     email: str | None = None
     display_name: str
     role: str
+    referral_code: str | None = None
     created_at: datetime
 
 
@@ -180,4 +182,32 @@ class OnboardingSummaryResponse(BaseModel):
     custody: OnboardingCustodyOut
     fiat_onramp_providers: list[OnboardingFiatProviderOut]
     compliance_notices: list[str]
+
+
+class ReferredUserOut(BaseModel):
+    id: str
+    email: str | None = None
+    display_name: str
+    created_at: datetime
+
+
+class ReferralRewardOut(BaseModel):
+    id: str
+    referred_user_id: str
+    referred_display_name: str
+    referred_email: str | None = None
+    reward_type: Literal["signup_bonus"]
+    amount_sat: int
+    status: Literal["credited", "reversed"]
+    eligibility_event: Literal["kyc_verified"]
+    credited_at: datetime
+    created_at: datetime
+
+
+class ReferralSummaryResponse(BaseModel):
+    referral_code: str
+    referrals_count: int
+    total_reward_sat: int
+    referred_users: list[ReferredUserOut]
+    rewards: list[ReferralRewardOut]
 

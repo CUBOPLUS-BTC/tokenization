@@ -30,11 +30,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import get_readiness_payload, get_settings, install_http_security, record_audit_event
 from common import (
     OnRampError,
+    accrue_pending_yield_for_user,
     create_onramp_session,
     default_onramp_notices,
     describe_custody_record,
     describe_custody_settings,
+    get_user_yield_accruals,
     list_onramp_provider_views,
+    summarize_yield_for_user,
 )
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
@@ -75,7 +78,15 @@ from .schemas_lnd import (
     PaymentCreate,
     PaymentStatus,
 )
-from .schemas_wallet import TokenBalance, WalletResponse, WalletSummary
+from .schemas_wallet import (
+    TokenBalance,
+    WalletResponse,
+    WalletSummary,
+    YieldAccrualOut,
+    YieldSummary,
+    YieldSummaryResponse,
+    YieldTokenSummary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -387,7 +398,15 @@ async def get_wallet_summary(user_id: str = Depends(get_current_user_id)):
                 detail="Wallet not found for user",
             )
 
+        await accrue_pending_yield_for_user(conn, user_id)
+        await conn.commit()
         token_rows = await get_token_balances_for_user(conn, user_id)
+        total_yield_earned_sat, yield_rows = await summarize_yield_for_user(conn, user_id)
+
+    yield_by_token = {
+        str(_row_value(row, "token_id")): int(_row_value(row, "total_yield_sat", 0))
+        for row in yield_rows
+    }
 
     token_balances = [
         TokenBalance(
@@ -396,6 +415,7 @@ async def get_wallet_summary(user_id: str = Depends(get_current_user_id)):
             symbol=None,
             balance=row["balance"],
             unit_price_sat=row["unit_price_sat"],
+            accrued_yield_sat=yield_by_token.get(str(row["token_id"]), 0),
         )
         for row in token_rows
     ]
@@ -410,7 +430,57 @@ async def get_wallet_summary(user_id: str = Depends(get_current_user_id)):
             onchain_balance_sat=onchain,
             lightning_balance_sat=lightning,
             token_balances=token_balances,
-            total_value_sat=onchain + lightning + tokens_valuation,
+            total_yield_earned_sat=total_yield_earned_sat,
+            total_value_sat=onchain + lightning + tokens_valuation + total_yield_earned_sat,
+        )
+    )
+
+
+@app.get(
+    "/wallet/yield/summary",
+    response_model=YieldSummaryResponse,
+    tags=["Wallet"],
+)
+async def get_wallet_yield_summary(user_id: str = Depends(get_current_user_id)):
+    async with _runtime_engine().connect() as conn:
+        wallet_row = await get_wallet_by_user_id(conn, user_id)
+        if not wallet_row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Wallet not found for user",
+            )
+
+        await accrue_pending_yield_for_user(conn, user_id)
+        await conn.commit()
+        total_yield_earned_sat, by_token_rows = await summarize_yield_for_user(conn, user_id)
+        accrual_rows = await get_user_yield_accruals(conn, user_id)
+
+    return YieldSummaryResponse(
+        yield_summary=YieldSummary(
+            total_yield_earned_sat=total_yield_earned_sat,
+            by_token=[
+                YieldTokenSummary(
+                    token_id=_row_value(row, "token_id"),
+                    asset_name=_row_value(row, "asset_name"),
+                    total_yield_sat=int(_row_value(row, "total_yield_sat", 0)),
+                )
+                for row in by_token_rows
+            ],
+            accruals=[
+                YieldAccrualOut(
+                    id=_row_value(row, "id"),
+                    token_id=_row_value(row, "token_id"),
+                    asset_name=_row_value(row, "asset_name"),
+                    amount_sat=int(_row_value(row, "amount_sat", 0)),
+                    quantity_held=int(_row_value(row, "quantity_held", 0)),
+                    reference_price_sat=int(_row_value(row, "reference_price_sat", 0)),
+                    annual_rate_pct=float(_row_value(row, "annual_rate_pct", 0)),
+                    accrued_from=_row_value(row, "accrued_from"),
+                    accrued_to=_row_value(row, "accrued_to"),
+                    created_at=_row_value(row, "created_at"),
+                )
+                for row in accrual_rows
+            ],
         )
     )
 

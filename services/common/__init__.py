@@ -20,6 +20,21 @@ from .onramp import (
 )
 from .audit import record_audit_event
 from .db import metadata
+from .incentives import (
+    REFERRAL_SIGNUP_BONUS_SAT,
+    accrue_pending_yield_for_user,
+    create_referral_signup_reward,
+    generate_referral_code,
+    get_referral_reward_by_referred_user,
+    get_user_by_referral_code,
+    get_user_yield_accruals,
+    list_referral_rewards_for_user,
+    list_referred_users,
+    summarize_referrals_for_user,
+    summarize_referrals_platform,
+    summarize_yield_for_user,
+    summarize_yield_platform,
+)
 from .events import InternalEventBus, RedisStreamMirror
 from .realtime import RedisStreamFeed, StreamEvent, decode_resume_token, encode_resume_token
 from .readiness import get_readiness_payload
@@ -57,6 +72,7 @@ __all__ = [
     "list_onramp_provider_views",
     "get_readiness_payload",
     "metadata",
+    "REFERRAL_SIGNUP_BONUS_SAT",
     "InternalEventBus",
     "RedisStreamMirror",
     "RedisStreamFeed",
@@ -66,7 +82,15 @@ __all__ = [
     "configure_logging",
     "install_http_security",
     "record_audit_event",
+    "accrue_pending_yield_for_user",
+    "create_referral_signup_reward",
+    "generate_referral_code",
+    "get_referral_reward_by_referred_user",
+    "get_user_by_referral_code",
+    "get_user_yield_accruals",
     "JSONFormatter",
+    "list_referral_rewards_for_user",
+    "list_referred_users",
     "configure_structured_logging",
     "MetricsCollector",
     "metrics",
@@ -77,6 +101,10 @@ __all__ = [
     "AlertSink",
     "EventBusAlertSink",
     "LogAlertSink",
+    "summarize_referrals_for_user",
+    "summarize_referrals_platform",
+    "summarize_yield_for_user",
+    "summarize_yield_platform",
     "WebhookAlertSink",
     "alert_dispatcher",
     "configure_alerting",

@@ -24,6 +24,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from auth.jwt_utils import decode_token
 from common import get_readiness_payload, get_settings, install_http_security, record_audit_event
+from common import (
+    get_user_yield_accruals,
+    list_referral_rewards_for_user,
+    summarize_referrals_for_user,
+    summarize_referrals_platform,
+    summarize_yield_for_user,
+    summarize_yield_platform,
+)
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
@@ -43,12 +51,19 @@ from admin.schemas import (
     CreateCourseRequest,
     DisputeOut,
     DisputeResponse,
+    ReferralPlatformSummaryResponse,
+    ReferralRewardOut,
+    ReferralUserSummaryResponse,
     TreasuryDisburseRequest,
     TreasuryDisburseResponse,
     TreasuryEntryOut,
     UpdateUserRoleRequest,
     UserListResponse,
     UserOut,
+    YieldAccrualOut,
+    YieldPlatformSummaryResponse,
+    YieldTokenSummaryOut,
+    YieldUserSummaryResponse,
 )
 from marketplace.db import resolve_dispute
 
@@ -140,6 +155,8 @@ def _error(code: str, message: str, status_code: int) -> JSONResponse:
 
 
 def _row_value(row: object, key: str, default: object | None = None):
+    if isinstance(row, dict):
+        return row.get(key, default)
     mapping = getattr(row, "_mapping", None)
     if mapping is not None and key in mapping:
         return mapping[key]
@@ -305,6 +322,36 @@ def _dispute_out(row: object) -> DisputeOut:
         resolved_at=_aware_datetime(_row_value(row, "resolved_at")),
         created_at=_aware_datetime(_row_value(row, "created_at")),
         updated_at=_aware_datetime(_row_value(row, "updated_at")),
+    )
+
+
+def _referral_reward_out(row: object) -> ReferralRewardOut:
+    return ReferralRewardOut(
+        id=str(_row_value(row, "id")),
+        referred_user_id=str(_row_value(row, "referred_user_id")),
+        referred_display_name=_row_value(row, "referred_display_name"),
+        referred_email=_row_value(row, "referred_email"),
+        reward_type=_row_value(row, "reward_type"),
+        amount_sat=int(_row_value(row, "amount_sat", 0)),
+        status=_row_value(row, "status"),
+        eligibility_event=_row_value(row, "eligibility_event"),
+        credited_at=_aware_datetime(_row_value(row, "credited_at")),
+        created_at=_aware_datetime(_row_value(row, "created_at")),
+    )
+
+
+def _yield_accrual_out(row: object) -> YieldAccrualOut:
+    return YieldAccrualOut(
+        id=str(_row_value(row, "id")),
+        token_id=str(_row_value(row, "token_id")),
+        asset_name=_row_value(row, "asset_name"),
+        amount_sat=int(_row_value(row, "amount_sat", 0)),
+        quantity_held=int(_row_value(row, "quantity_held", 0)),
+        reference_price_sat=int(_row_value(row, "reference_price_sat", 0)),
+        annual_rate_pct=float(_row_value(row, "annual_rate_pct", 0)),
+        accrued_from=_aware_datetime(_row_value(row, "accrued_from")),
+        accrued_to=_aware_datetime(_row_value(row, "accrued_to")),
+        created_at=_aware_datetime(_row_value(row, "created_at")),
     )
 
 
@@ -618,6 +665,90 @@ async def resolve_escrow_dispute_endpoint(
 
     record_business_event("admin_dispute_resolve")
     return DisputeResponse(dispute=_dispute_out(dispute_row)).model_dump(mode="json")
+
+
+@app.get(
+    "/referrals/summary",
+    response_model=ReferralPlatformSummaryResponse,
+    summary="Return platform-level referral reward totals",
+)
+async def get_referral_platform_summary(
+    principal: AuthenticatedPrincipal = Depends(_require_admin),
+):
+    async with _runtime_engine().connect() as conn:
+        summary = await summarize_referrals_platform(conn)
+
+    return ReferralPlatformSummaryResponse(**summary).model_dump(mode="json")
+
+
+@app.get(
+    "/referrals/{user_id}",
+    response_model=ReferralUserSummaryResponse,
+    summary="Return referral relationships and rewards for a specific user",
+)
+async def get_referral_user_summary(
+    user_id: uuid.UUID,
+    principal: AuthenticatedPrincipal = Depends(_require_admin),
+):
+    async with _runtime_engine().connect() as conn:
+        user_row = await get_user_by_id(conn, user_id)
+        if user_row is None:
+            return _error("user_not_found", "User not found.", status.HTTP_404_NOT_FOUND)
+        summary = await summarize_referrals_for_user(conn, user_id)
+        reward_rows = await list_referral_rewards_for_user(conn, user_id)
+
+    return ReferralUserSummaryResponse(
+        user_id=str(user_id),
+        referral_code=_row_value(user_row, "referral_code"),
+        referrals_count=summary["referrals_count"],
+        total_reward_sat=summary["total_reward_sat"],
+        rewards=[_referral_reward_out(row) for row in reward_rows],
+    ).model_dump(mode="json")
+
+
+@app.get(
+    "/yield/summary",
+    response_model=YieldPlatformSummaryResponse,
+    summary="Return platform-level yield totals",
+)
+async def get_yield_platform_summary(
+    principal: AuthenticatedPrincipal = Depends(_require_admin),
+):
+    async with _runtime_engine().connect() as conn:
+        summary = await summarize_yield_platform(conn)
+
+    return YieldPlatformSummaryResponse(**summary).model_dump(mode="json")
+
+
+@app.get(
+    "/yield/{user_id}",
+    response_model=YieldUserSummaryResponse,
+    summary="Return yield accruals for a specific user",
+)
+async def get_yield_user_summary(
+    user_id: uuid.UUID,
+    principal: AuthenticatedPrincipal = Depends(_require_admin),
+):
+    async with _runtime_engine().connect() as conn:
+        user_row = await get_user_by_id(conn, user_id)
+        if user_row is None:
+            return _error("user_not_found", "User not found.", status.HTTP_404_NOT_FOUND)
+        total_yield_sat, by_token_rows = await summarize_yield_for_user(conn, user_id)
+        accrual_rows = await get_user_yield_accruals(conn, user_id)
+
+    return YieldUserSummaryResponse(
+        user_id=str(user_id),
+        total_yield_sat=total_yield_sat,
+        by_token=[
+            YieldTokenSummaryOut(
+                token_id=str(_row_value(row, "token_id")),
+                asset_name=_row_value(row, "asset_name"),
+                total_yield_sat=int(_row_value(row, "total_yield_sat", 0)),
+            )
+            for row in by_token_rows
+        ],
+        accruals=[_yield_accrual_out(row) for row in accrual_rows],
+    ).model_dump(mode="json")
 
 
 if __name__ == "__main__":

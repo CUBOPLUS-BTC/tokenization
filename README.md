@@ -10,6 +10,8 @@ This repository contains the specification base and development framework for a 
 - Buying and selling fractions on a marketplace with 2-of-3 multisig escrow.
 - Integrating a self-custodial wallet with Bitcoin on-chain and Lightning.
 - Allocating platform fees to an auditable educational treasury.
+- Capturing referral relationships with auditable onboarding rewards.
+- Supporting advanced stop-triggered orders and yield accrual reporting for token holders.
 
 The complete design is documented in [specs/](specs), including architecture, API contracts, database schema, and frontend.
 
