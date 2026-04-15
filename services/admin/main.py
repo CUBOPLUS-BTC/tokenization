@@ -23,7 +23,10 @@ import uvicorn
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from auth.jwt_utils import decode_token
-from common import configure_logging, get_readiness_payload, get_settings, install_http_security, record_audit_event
+from common import get_readiness_payload, get_settings, install_http_security, record_audit_event
+from common.logging import configure_structured_logging
+from common.metrics import metrics, mount_metrics_endpoint
+from common.alerting import alert_dispatcher, AlertSeverity
 from admin.db import (
     create_course,
     disburse_treasury,
@@ -51,7 +54,7 @@ from marketplace.db import resolve_dispute
 
 
 settings = get_settings(service_name="admin", default_port=8006)
-configure_logging(settings.log_level)
+configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
 _bearer_scheme = HTTPBearer(auto_error=False)
 _engine: AsyncEngine | object | None = None
 
@@ -354,6 +357,7 @@ install_http_security(
         "/escrows/",
     ),
 )
+mount_metrics_endpoint(app, settings)
 
 
 @app.exception_handler(ContractError)

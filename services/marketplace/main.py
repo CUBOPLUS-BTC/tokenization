@@ -31,7 +31,6 @@ from common import (
     InternalEventBus,
     RedisStreamFeed,
     RedisStreamMirror,
-    configure_logging,
     decode_resume_token,
     encode_resume_token,
     get_readiness_payload,
@@ -39,6 +38,9 @@ from common import (
     install_http_security,
     record_audit_event,
 )
+from common.logging import configure_structured_logging
+from common.metrics import metrics, mount_metrics_endpoint
+from common.alerting import alert_dispatcher, AlertSeverity
 from marketplace.bitcoin_rpc import BitcoinRPCClient, BitcoinRPCError, FundingObservation
 from marketplace.db import (
     cancel_order,
@@ -88,7 +90,7 @@ from marketplace.schemas import (
 settings = get_settings(service_name="marketplace", default_port=8003)
 _bearer_scheme = HTTPBearer(auto_error=False)
 _engine: AsyncEngine | object | None = None
-configure_logging(settings.log_level)
+configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
 logger = logging.getLogger(__name__)
 _event_bus = InternalEventBus()
 _event_bus.subscribe("trade.matched", RedisStreamMirror(settings.redis_url))
@@ -534,6 +536,7 @@ install_http_security(
         "/trades/",
     ),
 )
+mount_metrics_endpoint(app, settings)
 
 
 @app.exception_handler(RequestValidationError)

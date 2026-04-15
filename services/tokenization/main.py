@@ -26,12 +26,14 @@ from google.protobuf.json_format import MessageToDict
 from common import (
     InternalEventBus,
     RedisStreamMirror,
-    configure_logging,
     get_readiness_payload,
     get_settings,
     install_http_security,
     record_audit_event,
 )
+from common.logging import configure_structured_logging
+from common.metrics import metrics, mount_metrics_endpoint
+from common.alerting import alert_dispatcher, AlertSeverity
 from tokenization.tapd_client import TapdClient
 from tokenization.tapd_grpc import taprootassets as taproot_rpc
 from tokenization.db import (
@@ -62,7 +64,7 @@ from tokenization.schemas import (
 settings = get_settings(service_name="tokenization", default_port=8002)
 _bearer_scheme = HTTPBearer(auto_error=False)
 _engine: AsyncEngine | object | None = None
-configure_logging(settings.log_level)
+configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
 logger = logging.getLogger(__name__)
 _background_tasks: set[asyncio.Task[Any]] = set()
 _event_bus = InternalEventBus()
@@ -617,6 +619,7 @@ install_http_security(
         "/assets/",
     ),
 )
+mount_metrics_endpoint(app, settings)
 tapd_client = TapdClient(settings)
 
 

@@ -27,7 +27,10 @@ import uvicorn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from common import configure_logging, get_readiness_payload, get_settings, install_http_security, record_audit_event
+from common import get_readiness_payload, get_settings, install_http_security, record_audit_event
+from common.logging import configure_structured_logging
+from common.metrics import metrics, mount_metrics_endpoint
+from common.alerting import alert_dispatcher, AlertSeverity
 
 from .auth import get_current_user_id, require_2fa
 from .db import (
@@ -66,7 +69,7 @@ os.environ.setdefault("TAPD_MACAROON_PATH", "")
 os.environ.setdefault("TAPD_TLS_CERT_PATH", "")
 
 settings = get_settings(service_name="wallet", default_port=8001)
-configure_logging(settings.log_level)
+configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
 lnd_client = LNDClient(settings)
 
 _ALGORITHM = "HS256"
@@ -149,6 +152,7 @@ install_http_security(
         "/onchain/withdraw",
     ),
 )
+mount_metrics_endpoint(app, settings)
 _original_router_lifespan = app.router.lifespan
 
 

@@ -41,8 +41,11 @@ from jose import JWTError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common import get_settings
-from common.security import configure_logging, install_http_security
+from common.security import install_http_security
 from common.readiness import get_readiness_payload
+from common.logging import configure_structured_logging
+from common.metrics import metrics, mount_metrics_endpoint
+from common.alerting import alert_dispatcher, AlertSeverity
 
 from .schemas import (
     AuthResponse,
@@ -87,7 +90,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncConnection
 # -------------------------------------------------------------------------------
 
 settings = get_settings(service_name="auth", default_port=8000)
-configure_logging(settings.log_level)
+configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
 
 # bcrypt hashing config (using default rounds)
 
@@ -130,6 +133,7 @@ install_http_security(
         "/auth/2fa",
     ),
 )
+mount_metrics_endpoint(app, settings)
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 
