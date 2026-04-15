@@ -57,6 +57,7 @@ _engine: AsyncEngine | object | None = None
 logger = logging.getLogger(__name__)
 _background_tasks: set[asyncio.Task[Any]] = set()
 _event_bus = InternalEventBus()
+_event_bus.subscribe("asset.created", RedisStreamMirror(settings.redis_url))
 _event_bus.subscribe("ai.evaluation.complete", RedisStreamMirror(settings.redis_url))
 
 

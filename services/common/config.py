@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     tapd_tls_cert_path: str
 
     nostr_relays: str
+    nostr_private_key: str | None = None
+    nostr_private_key_file: str | None = None
 
     jwt_secret: str | None = None
     jwt_secret_file: str | None = None
@@ -100,6 +102,7 @@ class Settings(BaseSettings):
         self.jwt_secret = self._resolve_secret(self.jwt_secret, self.jwt_secret_file)
         self.openai_api_key = self._resolve_secret(self.openai_api_key, self.openai_api_key_file)
         self.wallet_encryption_key = self._resolve_secret(self.wallet_encryption_key, self.wallet_encryption_key_file)
+        self.nostr_private_key = self._resolve_secret(self.nostr_private_key, self.nostr_private_key_file)
 
         if self.env_profile in {"staging", "production"}:
             if not self.jwt_secret:
