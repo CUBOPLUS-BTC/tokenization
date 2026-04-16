@@ -22,7 +22,6 @@ import uvicorn
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from auth.jwt_utils import decode_token
-from google.protobuf.json_format import MessageToDict
 from common import (
     InternalEventBus,
     RedisStreamMirror,
@@ -34,8 +33,6 @@ from common import (
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
-from tokenization.tapd_client import TapdClient
-from tokenization.tapd_grpc import taprootassets as taproot_rpc
 from tokenization.db import (
     begin_asset_evaluation,
     complete_asset_evaluation,
@@ -47,6 +44,7 @@ from tokenization.db import (
     reset_asset_evaluation,
 )
 from tokenization.evaluation import evaluate_asset_submission
+from tokenization.liquid_client import LiquidClient
 from tokenization.schemas import (
     AssetCategory,
     AssetCreateRequest,
@@ -202,35 +200,27 @@ def _asset_tokenization_conflict_error(message: str) -> ContractError:
     )
 
 
-def _taproot_asset_not_found_error() -> ContractError:
+def _liquid_issuance_error() -> ContractError:
     return ContractError(
-        code="taproot_asset_not_found",
-        message="Taproot asset not found.",
-        status_code=status.HTTP_404_NOT_FOUND,
-    )
-
-
-def _taproot_lookup_error() -> ContractError:
-    return ContractError(
-        code="taproot_lookup_failed",
-        message="Unable to fetch Taproot issuance details.",
+        code="liquid_issuance_failed",
+        message="Unable to issue Liquid asset.",
         status_code=status.HTTP_502_BAD_GATEWAY,
     )
 
 
-def _taproot_asset_mismatch_error() -> ContractError:
+def _liquid_issuance_response_error() -> ContractError:
     return ContractError(
-        code="taproot_asset_mismatch",
-        message="Taproot asset lookup did not return the requested asset id.",
-        status_code=status.HTTP_409_CONFLICT,
+        code="liquid_issuance_invalid",
+        message="Liquid asset issuance returned an invalid asset identifier.",
+        status_code=status.HTTP_502_BAD_GATEWAY,
     )
 
 
-def _taproot_supply_mismatch_error() -> ContractError:
+def _liquid_issuance_persist_error() -> ContractError:
     return ContractError(
-        code="taproot_supply_mismatch",
-        message="Taproot asset supply does not match the requested total supply.",
-        status_code=status.HTTP_409_CONFLICT,
+        code="liquid_issuance_persist_failed",
+        message="Liquid asset issuance succeeded on-chain but the token record could not be persisted. Operator recovery is required.",
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
     )
 
 
@@ -283,10 +273,6 @@ def _jsonable_value(value: object):
         return {str(key): _jsonable_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [_jsonable_value(item) for item in value]
-    try:
-        return MessageToDict(value, preserving_proto_field_name=True)
-    except Exception:
-        pass
     if hasattr(value, "_asdict"):
         return {key: _jsonable_value(item) for key, item in value._asdict().items()}
     if hasattr(value, "__dict__"):
@@ -307,47 +293,37 @@ def _enum_name(enum_type: object, value: object) -> str | None:
         return str(value)
 
 
-def _build_taproot_issuance_metadata(
-    taproot_asset: object,
-    taproot_meta: object,
+def _build_liquid_issuance_metadata(
+    *,
+    asset_row: object,
+    issuance_result: dict[str, object],
+    issuance_lookup: dict[str, object] | None,
+    total_supply: int,
+    blind_issuance: bool,
 ) -> dict[str, object]:
-    asset_genesis = getattr(taproot_asset, "asset_genesis", None)
-    asset_group = getattr(taproot_asset, "asset_group", None)
-    chain_anchor = getattr(taproot_asset, "chain_anchor", None)
-    decimal_display = getattr(getattr(taproot_asset, "decimal_display", None), "decimal_display", None)
-
     return {
-        "asset_id": _hex_bytes(getattr(asset_genesis, "asset_id", None)),
-        "asset_name": getattr(asset_genesis, "name", None),
-        "asset_type": _enum_name(
-            taproot_rpc.AssetType,
-            getattr(asset_genesis, "asset_type", None),
-        ),
-        "genesis_point": getattr(asset_genesis, "genesis_point", None),
-        "meta_hash": _hex_bytes(getattr(asset_genesis, "meta_hash", None)),
-        "output_index": getattr(asset_genesis, "output_index", None),
-        "script_key": _hex_bytes(getattr(taproot_asset, "script_key", None)),
-        "group_key": _hex_bytes(getattr(asset_group, "tweaked_group_key", None)),
-        "anchor_outpoint": getattr(chain_anchor, "anchor_outpoint", None),
-        "anchor_block_hash": getattr(chain_anchor, "anchor_block_hash", None),
-        "anchor_block_height": getattr(chain_anchor, "block_height", None),
-        "decimal_display": decimal_display,
-        "meta_reveal": {
-            "type": _enum_name(
-                taproot_rpc.AssetMetaType,
-                getattr(taproot_meta, "type", None),
-            ),
-            "meta_hash": _hex_bytes(getattr(taproot_meta, "meta_hash", None)),
-            "data": _decode_bytes(getattr(taproot_meta, "data", None)),
-            "decimal_display": getattr(taproot_meta, "decimal_display", None),
-            "universe_commitments": getattr(taproot_meta, "universe_commitments", None),
-            "canonical_universe_urls": _jsonable_value(
-                getattr(taproot_meta, "canonical_universe_urls", None)
-            ),
-            "delegation_key": _hex_bytes(getattr(taproot_meta, "delegation_key", None)),
-            "raw": _jsonable_value(taproot_meta),
+        "backend": "liquid",
+        "network": settings.elements_network,
+        "asset_id": _jsonable_value(issuance_result.get("asset")),
+        "asset_name": _row_value(asset_row, "name"),
+        "asset_category": _row_value(asset_row, "category"),
+        "documents_url": _optional_row_value(asset_row, "documents_url"),
+        "total_supply": total_supply,
+        "issuance_reference": {
+            "txid": _jsonable_value(issuance_result.get("txid")),
+            "vin": _jsonable_value(issuance_result.get("vin")),
+            "entropy": _jsonable_value(issuance_result.get("entropy")),
+            "contract_hash": _jsonable_value(issuance_result.get("contract_hash")),
         },
-        "taproot_asset": _jsonable_value(taproot_asset),
+        "reissuance": {
+            "token_id": _jsonable_value(issuance_result.get("token")),
+            "token_amount": _jsonable_value(issuance_result.get("token_amount")),
+        },
+        "confidential": {
+            "blind_issuance": blind_issuance,
+        },
+        "wallet_view": _jsonable_value(issuance_lookup),
+        "raw": _jsonable_value(issuance_result),
     }
 
 
@@ -376,10 +352,11 @@ def _asset_token_out(row: object) -> AssetTokenOut | None:
 
     minted_at = _aware_datetime(_optional_row_value(row, "minted_at"))
     assert minted_at is not None
+    liquid_asset_id = _row_value(row, "liquid_asset_id") or _row_value(row, "taproot_asset_id")
 
     return AssetTokenOut(
         id=str(token_id),
-        taproot_asset_id=_row_value(row, "taproot_asset_id"),
+        liquid_asset_id=liquid_asset_id,
         total_supply=_row_value(row, "total_supply"),
         circulating_supply=_row_value(row, "circulating_supply"),
         unit_price_sat=_row_value(row, "unit_price_sat"),
@@ -499,7 +476,7 @@ async def _publish_token_minted(row: object) -> None:
         "asset_id": str(_row_value(row, "id")),
         "owner_id": str(_row_value(row, "owner_id")),
         "token_id": str(_row_value(row, "token_id")),
-        "taproot_asset_id": _row_value(row, "taproot_asset_id"),
+        "liquid_asset_id": _row_value(row, "liquid_asset_id"),
         "total_supply": int(_row_value(row, "total_supply", 0)),
         "circulating_supply": int(_row_value(row, "circulating_supply", 0)),
         "unit_price_sat": int(_row_value(row, "unit_price_sat", 0)),
@@ -633,7 +610,7 @@ install_http_security(
     ),
 )
 mount_metrics_endpoint(app, settings)
-tapd_client = TapdClient(settings)
+liquid_client = LiquidClient(settings)
 
 
 @app.exception_handler(RequestValidationError)
@@ -671,27 +648,25 @@ async def ready():
     return JSONResponse(status_code=status_code, content=payload)
 
 
-@app.get("/tapd/info")
-async def tapd_info():
+@app.get("/liquid/info")
+async def liquid_info():
     try:
-        info = tapd_client.get_info()
-        return MessageToDict(info)
+        return await liquid_client.get_info()
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"error": "Failed to connect to tapd", "detail": str(e)},
+            content={"error": "Failed to connect to Elements RPC", "detail": str(e)},
         )
 
 
-@app.get("/tapd/assets")
-async def tapd_assets():
+@app.get("/liquid/issuances")
+async def liquid_issuances():
     try:
-        assets = tapd_client.list_assets()
-        return MessageToDict(assets)
+        return {"issuances": await liquid_client.list_issuances()}
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"error": "Failed to list assets from tapd", "detail": str(e)},
+            content={"error": "Failed to list issuances from Elements RPC", "detail": str(e)},
         )
 
 
@@ -862,24 +837,32 @@ async def tokenize_asset(
         raise _asset_tokenization_conflict_error("Only approved assets can be tokenized.")
 
     try:
-        taproot_asset = tapd_client.fetch_asset(body.taproot_asset_id)
-        taproot_meta = tapd_client.fetch_asset_meta(body.taproot_asset_id)
-    except LookupError as exc:
-        raise _taproot_asset_not_found_error() from exc
+        issuance_result = await liquid_client.issue_asset(amount=body.total_supply)
     except Exception as exc:
-        raise _taproot_lookup_error() from exc
+        raise _liquid_issuance_error() from exc
 
-    taproot_asset_id = _hex_bytes(
-        getattr(getattr(taproot_asset, "asset_genesis", None), "asset_id", None)
+    liquid_asset_id = str(issuance_result.get("asset") or "").strip().lower()
+    try:
+        bytes.fromhex(liquid_asset_id)
+    except ValueError as exc:
+        raise _liquid_issuance_response_error() from exc
+    if len(liquid_asset_id) != 64:
+        raise _liquid_issuance_response_error()
+
+    issuance_lookup = None
+    try:
+        issuance_lookup = await liquid_client.get_asset_issuance(liquid_asset_id)
+    except Exception:
+        logger.warning("Unable to fetch issuance lookup details for Liquid asset %s", liquid_asset_id)
+
+    issued_supply = body.total_supply
+    issuance_metadata = _build_liquid_issuance_metadata(
+        asset_row=asset_row,
+        issuance_result=issuance_result,
+        issuance_lookup=issuance_lookup,
+        total_supply=issued_supply,
+        blind_issuance=True,
     )
-    if taproot_asset_id != body.taproot_asset_id:
-        raise _taproot_asset_mismatch_error()
-
-    issued_supply = int(getattr(taproot_asset, "amount", 0))
-    if issued_supply != body.total_supply:
-        raise _taproot_supply_mismatch_error()
-
-    issuance_metadata = _build_taproot_issuance_metadata(taproot_asset, taproot_meta)
 
     try:
         async with _runtime_engine().connect() as conn:
@@ -887,7 +870,7 @@ async def tokenize_asset(
                 conn,
                 asset_id=asset_id,
                 owner_id=principal.id,
-                taproot_asset_id=body.taproot_asset_id,
+                liquid_asset_id=liquid_asset_id,
                 total_supply=issued_supply,
                 circulating_supply=issued_supply,
                 unit_price_sat=body.unit_price_sat,
@@ -905,20 +888,45 @@ async def tokenize_asset(
                     target_id=_row_value(tokenized_row, "token_id"),
                     metadata={
                         "asset_id": str(asset_id),
-                        "taproot_asset_id": body.taproot_asset_id,
+                        "liquid_asset_id": liquid_asset_id,
+                        "issuance_txid": issuance_result.get("txid"),
                         "total_supply": issued_supply,
                         "unit_price_sat": body.unit_price_sat,
                     },
                 )
     except IntegrityError as exc:
-        raise _asset_tokenization_conflict_error(
-            "Token issuance conflicts with an existing token record."
-        ) from exc
+        await alert_dispatcher.fire(
+            severity=AlertSeverity.CRITICAL,
+            title="Liquid issuance persisted on-chain without token record",
+            detail=(
+                f"Asset {asset_id} issued Liquid asset {liquid_asset_id} via tx "
+                f"{issuance_result.get('txid')}, but database persistence failed."
+            ),
+            source=settings.service_name,
+            tags={
+                "asset_id": str(asset_id),
+                "liquid_asset_id": liquid_asset_id,
+                "issuance_txid": str(issuance_result.get("txid") or ""),
+            },
+        )
+        raise _liquid_issuance_persist_error() from exc
 
     if tokenized_row is None:
-        raise _asset_tokenization_conflict_error(
-            "Asset status changed before tokenization could complete. Please retry."
+        await alert_dispatcher.fire(
+            severity=AlertSeverity.CRITICAL,
+            title="Liquid issuance completed after asset state changed",
+            detail=(
+                f"Asset {asset_id} issued Liquid asset {liquid_asset_id} via tx "
+                f"{issuance_result.get('txid')}, but the asset state changed before persistence."
+            ),
+            source=settings.service_name,
+            tags={
+                "asset_id": str(asset_id),
+                "liquid_asset_id": liquid_asset_id,
+                "issuance_txid": str(issuance_result.get("txid") or ""),
+            },
         )
+        raise _liquid_issuance_persist_error()
 
     try:
         await _publish_token_minted(tokenized_row)

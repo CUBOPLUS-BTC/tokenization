@@ -2,7 +2,7 @@
 
 ## Overview
 
-This specification defines the implementation plan for a **Real World Asset (RWA) Trading Platform with Social Impact**, built on the Bitcoin network. The platform enables users to tokenize real-world assets, trade fractional tokens over Bitcoin (via Taproot Assets or Liquid Network), and fund educational initiatives through automated treasury mechanics.
+This specification defines the implementation plan for a **Real World Asset (RWA) Trading Platform with Social Impact**, built on Bitcoin and Liquid. The platform enables users to tokenize real-world assets, trade fractional tokens over Liquid, and fund educational initiatives through automated treasury mechanics.
 
 ### Core Value Proposition
 
@@ -17,7 +17,7 @@ This specification defines the implementation plan for a **Real World Asset (RWA
 | :------------- | :----------------------------------------------- |
 | Backend        | Python 3.11+ / FastAPI                           |
 | Database       | PostgreSQL 15+ (primary), Redis (cache/queues)   |
-| Blockchain     | Bitcoin Core, LND (Lightning), Taproot Assets    |
+| Blockchain     | Bitcoin Core, LND (Lightning), Elements / Liquid |
 | AI / ML        | OpenAI API or local LLM for asset evaluation     |
 | Social Layer   | Nostr protocol (NIP-01, NIP-04)                  |
 | Frontend       | React 18 + TypeScript + Tailwind CSS             |

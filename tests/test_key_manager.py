@@ -64,14 +64,14 @@ def test_decrypt_tampered_data(key_manager):
         key_manager.decrypt_seed(bytes(encrypted))
 
 def test_derivation_path_regtest(key_manager):
-    # Regtest should use coin_type 1
+    # Elements regtest uses Liquid test coin type 1 under BIP-44.
     path = key_manager.get_derivation_path(0)
-    assert path == "m/86'/1'/0'"
+    assert path == "m/44'/1'/0'"
 
 def test_derivation_path_mainnet(encryption_key):
     km_main = KeyManager(encryption_key=encryption_key, bitcoin_network="mainnet")
     path = km_main.get_derivation_path(5)
-    assert path == "m/86'/0'/5'"
+    assert path == "m/44'/1776'/5'"
 
 def test_hsm_compatible_backend_marks_seed_non_exportable():
     backend = HsmCompatibleWalletCustody(
@@ -115,21 +115,22 @@ def test_key_manager_invalid_key():
     with pytest.raises(ValueError, match="valid hex string"):
         KeyManager(encryption_key="not hex" * 8)
 
-def test_derive_taproot_address(key_manager):
-    # Test vector for BIP-86 (sort of, using known fixed seed)
+def test_derive_liquid_address(key_manager):
     seed = b"0123456789abcdef" * 4
-    address, spk = key_manager.derive_taproot_address(seed, 0)
-    
-    # Check regtest/testnet address format
-    assert address.startswith("bcrt1p")
-    assert len(spk) == 68 # 34 bytes hex = 0x5120 + 32-byte pubkey
-    assert spk.startswith("5120")
+    derived = key_manager.derive_liquid_address(seed, 0)
 
-def test_derive_taproot_address_signet_uses_test_prefix(encryption_key):
+    assert derived.confidential_address.startswith("el1")
+    assert derived.unconfidential_address.startswith("ert1")
+    assert len(derived.script_pubkey) == 44
+    assert derived.script_pubkey.startswith("0014")
+    assert derived.derivation_path == "m/44'/1'/0'/0/0"
+
+def test_derive_liquid_address_signet_uses_test_prefix(encryption_key):
     km_signet = KeyManager(encryption_key=encryption_key, bitcoin_network="signet")
     seed = b"fedcba9876543210" * 4
-    address, spk = km_signet.derive_taproot_address(seed, 0)
+    derived = km_signet.derive_liquid_address(seed, 0)
 
-    assert address.startswith("tb1p")
-    assert len(spk) == 68
-    assert spk.startswith("5120")
+    assert derived.confidential_address.startswith("tlq1")
+    assert derived.unconfidential_address.startswith("tex1")
+    assert len(derived.script_pubkey) == 44
+    assert derived.script_pubkey.startswith("0014")

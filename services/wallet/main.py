@@ -67,7 +67,7 @@ from .db import (
 import asyncio
 from .reconciliation import reconciliation_loop, lightning_sync_loop, sync_wallet_lightning_state
 from .key_manager import KeyManager
-from .bitcoin_rpc import BitcoinRPCError, get_bitcoin_rpc
+from .liquid_rpc import ElementsRPCError, get_liquid_rpc
 from .lnd_client import LNDClient
 from .schemas import (
     CustodyStatusResponse,
@@ -80,6 +80,11 @@ from .schemas import (
     OnchainWithdrawalResponse,
     FeeEstimateLevel,
     FeeEstimateResponse,
+    PegInAddressResponse,
+    PegInClaimRequest,
+    PegInClaimResponse,
+    PegOutRequest,
+    PegOutResponse,
     TransactionHistoryItem,
     TransactionHistoryResponse,
     TransactionType,
@@ -108,8 +113,11 @@ from .schemas_wallet import (
 
 logger = logging.getLogger(__name__)
 
-os.environ.setdefault("TAPD_MACAROON_PATH", "")
-os.environ.setdefault("TAPD_TLS_CERT_PATH", "")
+os.environ.setdefault("ELEMENTS_RPC_HOST", "localhost")
+os.environ.setdefault("ELEMENTS_RPC_PORT", "7041")
+os.environ.setdefault("ELEMENTS_RPC_USER", "user")
+os.environ.setdefault("ELEMENTS_RPC_PASSWORD", "pass")
+os.environ.setdefault("ELEMENTS_NETWORK", "elementsregtest")
 
 settings = get_settings(service_name="wallet", default_port=8001)
 configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
@@ -208,6 +216,7 @@ install_http_security(
     sensitive_paths=(
         "/lightning/payments",
         "/wallet/onchain/withdraw",
+        "/wallet/pegout",
         "/onchain/withdraw",
     ),
 )
@@ -375,10 +384,14 @@ def _estimate_onchain_fee(fee_rate_sat_vb: int) -> int:
     return fee_rate_sat_vb * _DEFAULT_TX_VSIZE
 
 
-async def _create_real_onchain_address(conn: AsyncConnection, wallet: sa.engine.Row) -> str:
+async def _create_real_onchain_address(conn: AsyncConnection, wallet: sa.engine.Row):
     try:
         encrypted_seed = bytes(_row_value(wallet, "encrypted_seed", b""))
-        key_mgr = KeyManager(settings.wallet_encryption_key, settings.bitcoin_network)
+        key_mgr = KeyManager(
+            settings.wallet_encryption_key,
+            settings.bitcoin_network,
+            elements_network=settings.elements_network,
+        )
         seed = key_mgr.decrypt_seed(encrypted_seed)
     except Exception as exc:
         raise ContractError(
@@ -388,48 +401,37 @@ async def _create_real_onchain_address(conn: AsyncConnection, wallet: sa.engine.
         ) from exc
 
     idx = await get_next_derivation_index(conn, str(_row_value(wallet, "id")))
-    address, script_pubkey = key_mgr.derive_taproot_address(seed, idx)
+    derived_address = key_mgr.derive_liquid_address(seed, idx)
 
-    bitcoin_rpc = get_bitcoin_rpc(settings)
+    liquid_rpc = get_liquid_rpc(settings)
     try:
-        descriptor_info = await bitcoin_rpc.getdescriptorinfo(f"addr({address})")
-        import_results = await bitcoin_rpc.importdescriptors(
-            [
-                {
-                    "desc": descriptor_info["descriptor"],
-                    "timestamp": "now",
-                    "active": False,
-                    "internal": False,
-                    "label": f"wallet_{_row_value(wallet, 'id')}",
-                }
-            ]
+        await liquid_rpc.importaddress(
+            derived_address.confidential_address,
+            label=f"wallet_{_row_value(wallet, 'id')}",
+            rescan=False,
         )
-    except BitcoinRPCError as exc:
-        logger.error("Failed to import address %s into Bitcoin Core: %s", address, exc)
+        await liquid_rpc.importblindingkey(
+            derived_address.confidential_address,
+            derived_address.blinding_private_key,
+        )
+    except ElementsRPCError as exc:
+        logger.error("Failed to import Liquid address %s into Elements: %s", derived_address.confidential_address, exc)
         raise ContractError(
-            code="bitcoin_rpc_unavailable",
-            message="Bitcoin Core could not register the deposit address.",
+            code="elements_rpc_unavailable",
+            message="Elements could not register the deposit address.",
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         ) from exc
-
-    if not import_results or not import_results[0].get("success"):
-        logger.error("Bitcoin Core rejected deposit address import for %s: %s", address, import_results)
-        raise ContractError(
-            code="address_import_failed",
-            message="Bitcoin Core rejected the deposit address import.",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
 
     await save_wallet_address(
         conn,
         wallet_id=str(_row_value(wallet, "id")),
-        address=address,
+        address=derived_address.confidential_address,
         derivation_index=idx,
-        script_pubkey=script_pubkey,
+        script_pubkey=derived_address.script_pubkey,
         imported_to_node=True,
     )
 
-    return address
+    return derived_address
 
 def _generate_txid(*, wallet_id: str, address: str, amount_sat: int, fee_sat: int) -> str:
     payload = f"{wallet_id}:{address}:{amount_sat}:{fee_sat}:{time.time_ns()}".encode("utf-8")
@@ -586,6 +588,7 @@ async def get_wallet_summary(user_id: str = Depends(get_current_user_id)):
     token_balances = [
         TokenBalance(
             token_id=row["token_id"],
+            liquid_asset_id=row["liquid_asset_id"],
             asset_name=row["asset_name"],
             symbol=None,
             balance=row["balance"],
@@ -751,7 +754,7 @@ async def create_fiat_onramp_session(
                 provider_id=body.provider_id,
                 user_id=principal.id,
                 wallet_id=str(_row_value(wallet, "id")),
-                deposit_address=deposit_address,
+                deposit_address=deposit_address.confidential_address,
                 fiat_currency=body.fiat_currency,
                 fiat_amount=body.fiat_amount,
                 country_code=body.country_code,
@@ -1036,18 +1039,18 @@ async def decode_bolt11(
 async def get_onchain_fees(
     _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
-    bitcoin_rpc = get_bitcoin_rpc(settings)
+    liquid_rpc = get_liquid_rpc(settings)
 
     async def _estimate(blocks: int, default_sat_vb: int) -> FeeEstimateLevel:
         try:
-            res = await bitcoin_rpc.estimatesmartfee(blocks)
+            res = await liquid_rpc.estimatesmartfee(blocks)
             btc_kvb = res.get("feerate", -1)
             if btc_kvb > 0:
                 sat_vb = int((btc_kvb * 100_000_000) / 1000)
                 return FeeEstimateLevel(
                     sat_per_vb=max(1, sat_vb),
                     target_blocks=blocks,
-                    source="bitcoin_rpc",
+                    source="elements_rpc",
                 )
         except Exception as exc:
             logger.warning("Fee estimation failed for %s blocks: %s", blocks, exc)
@@ -1114,10 +1117,82 @@ async def create_onchain_address(
 ):
     async with _runtime_engine().connect() as conn:
         wallet = await get_or_create_wallet(conn, principal.id)
-        address = await _create_real_onchain_address(conn, wallet)
+        address_bundle = await _create_real_onchain_address(conn, wallet)
 
     record_business_event("wallet_onchain_address_create")
-    return OnchainAddressResponse(address=address, type="taproot").model_dump()
+    return OnchainAddressResponse(
+        address=address_bundle.confidential_address,
+        unconfidential_address=address_bundle.unconfidential_address,
+        type="liquid_confidential",
+    ).model_dump()
+
+
+@app.get(
+    "/wallet/pegin/address",
+    status_code=status.HTTP_200_OK,
+    response_model=PegInAddressResponse,
+    summary="Create a mainchain peg-in deposit address",
+)
+async def get_pegin_address(
+    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    liquid_rpc = get_liquid_rpc(settings)
+    try:
+        payload = await liquid_rpc.getpeginaddress()
+    except ElementsRPCError as exc:
+        raise ContractError(
+            code="elements_rpc_unavailable",
+            message="Elements could not create a peg-in address.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        ) from exc
+
+    record_business_event("wallet_pegin_address_create")
+    return PegInAddressResponse(
+        mainchain_address=str(payload.get("mainchain_address") or payload.get("mainchainaddress") or ""),
+        claim_script=str(payload.get("claim_script") or payload.get("claimscript") or ""),
+    ).model_dump()
+
+
+@app.post(
+    "/wallet/pegin/claim",
+    status_code=status.HTTP_200_OK,
+    response_model=PegInClaimResponse,
+    summary="Claim a confirmed mainchain peg-in on Liquid",
+)
+async def claim_pegin(
+    request: Request,
+    body: PegInClaimRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    liquid_rpc = get_liquid_rpc(settings)
+    try:
+        result = await liquid_rpc.claimpegin(
+            body.raw_transaction,
+            body.txout_proof,
+            body.claim_script,
+        )
+    except ElementsRPCError as exc:
+        raise ContractError(
+            code="pegin_claim_failed",
+            message="Elements rejected the peg-in claim.",
+            status_code=status.HTTP_502_BAD_GATEWAY,
+        ) from exc
+
+    txid = str(result.get("txid") or result.get("hex") or "")
+    async with _runtime_engine().connect() as conn:
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="wallet.pegin.claim",
+            actor_id=principal.id,
+            target_type="transaction",
+            target_id=txid or None,
+            metadata={"claim_script": body.claim_script[-16:]},
+        )
+
+    record_business_event("wallet_pegin_claim")
+    return PegInClaimResponse(txid=txid, status="pending").model_dump()
 
 
 @app.post(
@@ -1182,18 +1257,18 @@ async def withdraw_onchain(
         options = {
             "feeRate": fee_rate_btc_kvb,
             "includeWatching": True,
-            "changeAddress": change_address,
+            "changeAddress": change_address.confidential_address,
         }
 
-        bitcoin_rpc = get_bitcoin_rpc(settings)
+        liquid_rpc = get_liquid_rpc(settings)
         try:
-            funded = await bitcoin_rpc.walletcreatefundedpsbt([], outputs, options)
-            psbt_str = funded["psbt"]
+            funded = await liquid_rpc.walletcreatefundedpsbt([], outputs, options)
+            pset_str = funded["psbt"]
             fee_sat = int(funded["fee"] * 100_000_000)
         except Exception as exc:
             if idempotency_key:
                 _clear_withdrawal_inflight(wallet_id, idempotency_key)
-            logger.error("Failed to fund PSBT: %s", exc)
+            logger.error("Failed to fund Liquid PSET: %s", exc)
             raise ContractError(
                 code="insufficient_funds",
                 message="Wallet balance is insufficient for this withdrawal and fee or no UTXOs available.",
@@ -1217,7 +1292,11 @@ async def withdraw_onchain(
 
         try:
             encrypted_seed = bytes(_row_value(wallet, "encrypted_seed", b""))
-            key_mgr = KeyManager(settings.wallet_encryption_key, settings.bitcoin_network)
+            key_mgr = KeyManager(
+                settings.wallet_encryption_key,
+                settings.bitcoin_network,
+                elements_network=settings.elements_network,
+            )
             seed = key_mgr.decrypt_seed(encrypted_seed)
 
             from common.db.metadata import wallet_addresses as wa_table
@@ -1227,45 +1306,37 @@ async def withdraw_onchain(
             )
             address_map = {row.script_pubkey: row.derivation_index for row in result}
 
-            from embit.psbt import PSBT, DerivationPath
-            from embit.networks import NETWORKS
+            from embit.liquid.finalizer import finalize_psbt
+            from embit.liquid.networks import NETWORKS as LIQUID_NETWORKS
+            from embit.liquid.pset import PSET
             from embit import bip32
 
-            psbt = PSBT.from_base64(psbt_str)
-            network = NETWORKS["main"] if settings.bitcoin_network == "mainnet" else NETWORKS["regtest"]
-            if settings.bitcoin_network in {"testnet", "signet"}:
-                network = NETWORKS["test"]
-            
+            pset = PSET.from_string(pset_str)
+            network = LIQUID_NETWORKS[settings.elements_network]
             root = bip32.HDKey.from_seed(seed, version=network["xprv"])
-            coin_type = 0 if settings.bitcoin_network == "mainnet" else 1
+            coin_type = 1776 if settings.elements_network == "liquidv1" else 1
+            signed_inputs = 0
 
-            for inp in psbt.inputs:
-                if not inp.witness_utxo:
-                    raise ValueError("PSBT missing witness_utxo")
-                spk_hex = inp.witness_utxo.script_pubkey.data.hex()
+            for inp in pset.inputs:
+                utxo = inp.utxo
+                if utxo is None:
+                    raise ValueError("PSET missing utxo")
+                spk_hex = utxo.script_pubkey.data.hex()
                 if spk_hex not in address_map:
-                    raise ValueError(f"Unknown input script pubkey: {spk_hex}")
-                
+                    raise ValueError(f"Unknown Liquid input script pubkey: {spk_hex}")
+
                 idx = address_map[spk_hex]
-                path = f"m/86'/{coin_type}'/0'/0/{idx}"
-                derived = root.derive(path)
+                path = f"m/44'/{coin_type}'/0'/0/{idx}"
+                signed_inputs += pset.sign_with(root.derive(path).key)
 
-                inp.taproot_bip32_derivations[derived.key.get_public_key()] = (
-                    [],
-                    DerivationPath(
-                        getattr(root, "my_fingerprint", root.child(0).fingerprint),
-                        [86 | 0x80000000, coin_type | 0x80000000, 0x80000000, 0, idx]
-                    )
-                )
+            if signed_inputs <= 0:
+                raise ValueError("Failed to sign any Liquid inputs")
 
-            psbt.sign_with(root)
-            signed_psbt_b64 = psbt.to_base64()
+            finalized = finalize_psbt(pset)
+            if finalized is None:
+                raise ValueError("Failed to finalize Liquid PSET")
 
-            finalized = await bitcoin_rpc.finalizepsbt(signed_psbt_b64)
-            if not finalized.get("complete"):
-                raise ValueError(f"Failed to finalize PSBT. Result: {finalized}")
-
-            txid = await bitcoin_rpc.sendrawtransaction(finalized["hex"])
+            txid = await liquid_rpc.sendrawtransaction(finalized.serialize().hex())
 
         except Exception as exc:
             await release_onchain_balance(
@@ -1275,7 +1346,7 @@ async def withdraw_onchain(
             )
             if idempotency_key:
                 _clear_withdrawal_inflight(wallet_id, idempotency_key)
-            logger.error("Failed to sign/broadcast PSBT: %s", exc)
+            logger.error("Failed to sign/broadcast Liquid PSET: %s", exc)
             raise ContractError(
                 code="transaction_failed",
                 message=f"Failed to sign and broadcast transaction: {exc}",
@@ -1289,7 +1360,7 @@ async def withdraw_onchain(
                 amount_sat=body.amount_sat,
                 fee_sat=fee_sat,
                 txid=txid,
-                description=f"On-chain withdrawal to {body.address}",
+                description=f"Liquid withdrawal to {body.address}",
             )
             await record_audit_event(
                 conn,
@@ -1322,6 +1393,94 @@ async def withdraw_onchain(
         _store_cached_withdrawal_response(wallet_id, idempotency_key, response_payload)
         _clear_withdrawal_inflight(wallet_id, idempotency_key)
     return response_payload
+
+
+@app.post(
+    "/wallet/pegout",
+    status_code=status.HTTP_200_OK,
+    response_model=PegOutResponse,
+    summary="Submit a Liquid peg-out to a mainchain Bitcoin address",
+)
+async def pegout_to_mainchain(
+    request: Request,
+    body: PegOutRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    two_fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
+):
+    if not two_fa_code:
+        raise ContractError(
+            code="two_factor_required",
+            message="X-2FA-Code header is required for peg-outs.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    async with _runtime_engine().connect() as conn:
+        user = await get_user_by_id(conn, principal.id)
+        if user is None or _row_value(user, "deleted_at") is not None:
+            raise _invalid_access_token_error()
+        if not _row_value(user, "totp_secret"):
+            raise ContractError(
+                code="two_factor_not_enabled",
+                message="Two-factor authentication must be enabled before peg-outs.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        if not _verify_totp_code(_row_value(user, "totp_secret"), two_fa_code):
+            raise ContractError(
+                code="invalid_2fa_code",
+                message="Two-factor authentication code is invalid.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        wallet = await get_or_create_wallet(conn, principal.id)
+        wallet_id = str(_row_value(wallet, "id"))
+        reserved = await reserve_onchain_balance(
+            conn,
+            wallet_id=wallet_id,
+            total_cost_sat=body.amount_sat,
+        )
+        if not reserved:
+            raise ContractError(
+                code="insufficient_funds",
+                message="Wallet balance is insufficient for this peg-out.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        liquid_rpc = get_liquid_rpc(settings)
+        try:
+            txid = await liquid_rpc.sendtomainchain(body.mainchain_address, body.amount_sat / 100_000_000.0)
+        except Exception as exc:
+            await release_onchain_balance(conn, wallet_id=wallet_id, total_cost_sat=body.amount_sat)
+            raise ContractError(
+                code="pegout_failed",
+                message="Elements rejected the peg-out request.",
+                status_code=status.HTTP_502_BAD_GATEWAY,
+            ) from exc
+
+        row = await create_onchain_withdrawal(
+            conn,
+            wallet_id=wallet_id,
+            amount_sat=body.amount_sat,
+            fee_sat=0,
+            txid=txid,
+            description=f"Liquid peg-out to {body.mainchain_address}",
+        )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="wallet.pegout",
+            actor_id=principal.id,
+            actor_role=_row_value(user, "role"),
+            target_type="transaction",
+            target_id=_row_value(row, "id"),
+            metadata={
+                "amount_sat": body.amount_sat,
+                "mainchain_address_tail": body.mainchain_address[-8:],
+            },
+        )
+
+    record_business_event("wallet_pegout")
+    return PegOutResponse(txid=txid, amount_sat=body.amount_sat, status="pending").model_dump()
 
 
 @app.get(

@@ -1,4 +1,4 @@
-# RWA Tokenization Platform on Bitcoin
+# RWA Tokenization Platform on Bitcoin and Liquid
 
 Platform for tokenization of real-world assets (RWA) on Bitcoin, with a focus on social impact.
 
@@ -20,7 +20,7 @@ The complete design is documented in [specs/](specs), including architecture, AP
 - Backend: Python 3.11+, FastAPI
 - Frontend: React 18 + TypeScript + Tailwind CSS
 - Database: PostgreSQL + Redis
-- Blockchain infra: Bitcoin Core + LND + Taproot Assets
+- Blockchain infra: Bitcoin Core + LND + Elements / Liquid
 - Infrastructure: Docker + CI/CD on GitHub Actions
 
 ## Key Documentation

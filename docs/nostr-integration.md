@@ -1,5 +1,7 @@
 # Nostr Service Integration Guide
 
+> Migration notice: this guide predates the Liquid / Elements cutover. References to tapd or Taproot-era shared readiness/config are historical unless explicitly marked otherwise.
+
 This document describes the Nostr service as it is currently implemented in `services/nostr`, with explicit notes where the broader platform materials describe a larger Nostr feature set than the code currently provides.
 
 ## 1. Service Overview

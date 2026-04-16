@@ -40,6 +40,7 @@ class FakeAsset(NamedTuple):
     ai_analysis: dict[str, Any] | None = None
     projected_roi: float | None = None
     token_id: uuid.UUID | None = None
+    liquid_asset_id: str | None = None
     taproot_asset_id: str | None = None
     total_supply: int | None = None
     circulating_supply: int | None = None
@@ -86,6 +87,7 @@ def _make_fake_asset(
         ai_analysis=ai_analysis,
         projected_roi=projected_roi,
         token_id=uuid.uuid4() if tokenized else None,
+        liquid_asset_id="ab" * 32 if tokenized else None,
         taproot_asset_id="ab" * 32 if tokenized else None,
         total_supply=1_000 if tokenized else None,
         circulating_supply=350 if tokenized else None,
@@ -421,7 +423,7 @@ class TestGetAssetDetails:
         assert body["projected_roi"] == 7.2
         assert body["token"] == {
             "id": str(fake_asset.token_id),
-            "taproot_asset_id": fake_asset.taproot_asset_id,
+            "liquid_asset_id": fake_asset.liquid_asset_id,
             "total_supply": fake_asset.total_supply,
             "circulating_supply": fake_asset.circulating_supply,
             "unit_price_sat": fake_asset.unit_price_sat,
@@ -516,47 +518,46 @@ class TestTokenizeAsset:
         app_client, settings = client
         fake_user = _make_fake_user(role="seller")
         approved_asset = _make_fake_asset(fake_user.id, status="approved")
-        taproot_asset_id = "ab" * 32
-        token_metadata = {
-            "asset_id": taproot_asset_id,
-            "asset_name": approved_asset.name,
-            "meta_reveal": {
-                "data": '{"issuer":"tapd"}',
-            },
-        }
+        liquid_asset_id = "ab" * 32
+        issuance_lookup = {"asset": liquid_asset_id, "txid": "cd" * 32, "amount": 1_000}
         tokenized_asset = approved_asset._replace(
             status="tokenized",
             token_id=uuid.uuid4(),
-            taproot_asset_id=taproot_asset_id,
+            liquid_asset_id=liquid_asset_id,
             total_supply=1_000,
             circulating_supply=1_000,
             unit_price_sat=100_000,
             minted_at=datetime.now(tz=timezone.utc),
-            token_metadata=token_metadata,
+            token_metadata={
+                "backend": "liquid",
+                "asset_id": liquid_asset_id,
+                "asset_name": approved_asset.name,
+            },
         )
         access_token = _issue_access_token(fake_user, settings.jwt_secret)
-        tapd_asset = _make_taproot_asset(
-            asset_id=taproot_asset_id,
-            amount=1_000,
-            name=approved_asset.name,
-        )
-        tapd_meta = _make_taproot_meta()
         create_asset_token_mock = AsyncMock(return_value=tokenized_asset)
         audit_mock = AsyncMock()
+        issuance_result = {
+            "asset": liquid_asset_id,
+            "txid": "cd" * 32,
+            "vin": 0,
+            "entropy": "ef" * 32,
+            "token": "12" * 32,
+            "token_amount": 0,
+        }
 
         with (
             patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
             patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=approved_asset)),
             patch("services.tokenization.main.create_asset_token", create_asset_token_mock),
-            patch("services.tokenization.main.tapd_client.fetch_asset", return_value=tapd_asset),
-            patch("services.tokenization.main.tapd_client.fetch_asset_meta", return_value=tapd_meta),
+            patch("services.tokenization.main.liquid_client.issue_asset", AsyncMock(return_value=issuance_result)),
+            patch("services.tokenization.main.liquid_client.get_asset_issuance", AsyncMock(return_value=issuance_lookup)),
             patch("services.tokenization.main.record_audit_event", audit_mock),
         ):
             resp = app_client.post(
                 f"/assets/{approved_asset.id}/tokenize",
                 headers=_auth_headers(access_token),
                 json={
-                    "taproot_asset_id": taproot_asset_id,
                     "total_supply": 1_000,
                     "unit_price_sat": 100_000,
                 },
@@ -567,27 +568,27 @@ class TestTokenizeAsset:
         assert body["status"] == "tokenized"
         assert body["token"] == {
             "id": str(tokenized_asset.token_id),
-            "taproot_asset_id": taproot_asset_id,
+            "liquid_asset_id": liquid_asset_id,
             "total_supply": 1_000,
             "circulating_supply": 1_000,
             "unit_price_sat": 100_000,
-            "issuance_metadata": token_metadata,
+            "issuance_metadata": tokenized_asset.token_metadata,
             "minted_at": tokenized_asset.minted_at.isoformat().replace("+00:00", "Z"),
         }
 
         create_asset_token_mock.assert_awaited_once()
         assert create_asset_token_mock.await_args.kwargs["asset_id"] == approved_asset.id
         assert create_asset_token_mock.await_args.kwargs["owner_id"] == str(fake_user.id)
-        assert create_asset_token_mock.await_args.kwargs["taproot_asset_id"] == taproot_asset_id
+        assert create_asset_token_mock.await_args.kwargs["liquid_asset_id"] == liquid_asset_id
         assert create_asset_token_mock.await_args.kwargs["total_supply"] == 1_000
         assert create_asset_token_mock.await_args.kwargs["circulating_supply"] == 1_000
         assert create_asset_token_mock.await_args.kwargs["unit_price_sat"] == 100_000
         issuance_metadata = create_asset_token_mock.await_args.kwargs["issuance_metadata"]
-        assert issuance_metadata["asset_id"] == taproot_asset_id
+        assert issuance_metadata["backend"] == "liquid"
+        assert issuance_metadata["asset_id"] == liquid_asset_id
         assert issuance_metadata["asset_name"] == approved_asset.name
-        assert issuance_metadata["group_key"] == "33" * 32
-        assert issuance_metadata["anchor_outpoint"] == "e" * 64 + ":1"
-        assert issuance_metadata["meta_reveal"]["data"] == '{"issuer":"tapd"}'
+        assert issuance_metadata["issuance_reference"]["txid"] == "cd" * 32
+        assert issuance_metadata["wallet_view"] == issuance_lookup
         audit_mock.assert_awaited_once_with(
             ANY,
             settings=settings,
@@ -599,7 +600,8 @@ class TestTokenizeAsset:
             target_id=tokenized_asset.token_id,
             metadata={
                 "asset_id": str(approved_asset.id),
-                "taproot_asset_id": taproot_asset_id,
+                "liquid_asset_id": liquid_asset_id,
+                "issuance_txid": "cd" * 32,
                 "total_supply": 1_000,
                 "unit_price_sat": 100_000,
             },
@@ -611,41 +613,41 @@ class TestTokenizeAsset:
 
         fake_user = _make_fake_user(role="seller")
         approved_asset = _make_fake_asset(fake_user.id, status="approved")
-        taproot_asset_id = "ab" * 32
+        liquid_asset_id = "ab" * 32
         minted_at = datetime.now(tz=timezone.utc)
         tokenized_asset = approved_asset._replace(
             status="tokenized",
             token_id=uuid.uuid4(),
-            taproot_asset_id=taproot_asset_id,
+            liquid_asset_id=liquid_asset_id,
             total_supply=1_000,
             circulating_supply=1_000,
             unit_price_sat=100_000,
             minted_at=minted_at,
-            token_metadata={"issuer": "tapd"},
+            token_metadata={"backend": "liquid"},
         )
         access_token = _issue_access_token(fake_user, settings.jwt_secret)
         publish_mock = AsyncMock(return_value=None)
+        issuance_result = {
+            "asset": liquid_asset_id,
+            "txid": "cd" * 32,
+            "vin": 0,
+            "entropy": "ef" * 32,
+            "token": "12" * 32,
+            "token_amount": 0,
+        }
 
         with (
             patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
             patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=approved_asset)),
             patch("services.tokenization.main.create_asset_token", AsyncMock(return_value=tokenized_asset)),
-            patch(
-                "services.tokenization.main.tapd_client.fetch_asset",
-                return_value=_make_taproot_asset(
-                    asset_id=taproot_asset_id,
-                    amount=1_000,
-                    name=approved_asset.name,
-                ),
-            ),
-            patch("services.tokenization.main.tapd_client.fetch_asset_meta", return_value=_make_taproot_meta()),
+            patch("services.tokenization.main.liquid_client.issue_asset", AsyncMock(return_value=issuance_result)),
+            patch("services.tokenization.main.liquid_client.get_asset_issuance", AsyncMock(return_value={"asset": liquid_asset_id})),
             patch.object(tokenization_main._event_bus, "publish", publish_mock),
         ):
             response = app_client.post(
                 f"/assets/{approved_asset.id}/tokenize",
                 headers=_auth_headers(access_token),
                 json={
-                    "taproot_asset_id": taproot_asset_id,
                     "total_supply": 1_000,
                     "unit_price_sat": 100_000,
                 },
@@ -659,7 +661,7 @@ class TestTokenizeAsset:
                 "asset_id": str(approved_asset.id),
                 "owner_id": str(fake_user.id),
                 "token_id": str(tokenized_asset.token_id),
-                "taproot_asset_id": taproot_asset_id,
+                "liquid_asset_id": liquid_asset_id,
                 "total_supply": 1_000,
                 "circulating_supply": 1_000,
                 "unit_price_sat": 100_000,
@@ -676,13 +678,12 @@ class TestTokenizeAsset:
         with (
             patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
             patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=pending_asset)),
-            patch("services.tokenization.main.tapd_client.fetch_asset") as fetch_asset_mock,
+            patch("services.tokenization.main.liquid_client.issue_asset", AsyncMock()) as issue_asset_mock,
         ):
             resp = app_client.post(
                 f"/assets/{pending_asset.id}/tokenize",
                 headers=_auth_headers(access_token),
                 json={
-                    "taproot_asset_id": "ab" * 32,
                     "total_supply": 1_000,
                     "unit_price_sat": 100_000,
                 },
@@ -693,41 +694,33 @@ class TestTokenizeAsset:
             "code": "asset_state_conflict",
             "message": "Only approved assets can be tokenized.",
         }
-        fetch_asset_mock.assert_not_called()
+        issue_asset_mock.assert_not_called()
 
     def test_tokenization_rejects_taproot_supply_mismatch(self, client):
         app_client, settings = client
         fake_user = _make_fake_user(role="seller")
         approved_asset = _make_fake_asset(fake_user.id, status="approved")
         access_token = _issue_access_token(fake_user, settings.jwt_secret)
-        taproot_asset_id = "ab" * 32
-        tapd_asset = _make_taproot_asset(
-            asset_id=taproot_asset_id,
-            amount=900,
-            name=approved_asset.name,
-        )
 
         with (
             patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
             patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=approved_asset)),
-            patch("services.tokenization.main.tapd_client.fetch_asset", return_value=tapd_asset),
-            patch("services.tokenization.main.tapd_client.fetch_asset_meta", return_value=_make_taproot_meta()),
+            patch("services.tokenization.main.liquid_client.issue_asset", AsyncMock(return_value={"asset": "invalid-asset-id"})),
             patch("services.tokenization.main.create_asset_token", AsyncMock()) as create_asset_token_mock,
         ):
             resp = app_client.post(
                 f"/assets/{approved_asset.id}/tokenize",
                 headers=_auth_headers(access_token),
                 json={
-                    "taproot_asset_id": taproot_asset_id,
                     "total_supply": 1_000,
                     "unit_price_sat": 100_000,
                 },
             )
 
-        assert resp.status_code == 409
+        assert resp.status_code == 502
         assert resp.json()["error"] == {
-            "code": "taproot_supply_mismatch",
-            "message": "Taproot asset supply does not match the requested total supply.",
+            "code": "liquid_issuance_invalid",
+            "message": "Liquid asset issuance returned an invalid asset identifier.",
         }
         create_asset_token_mock.assert_not_called()
 

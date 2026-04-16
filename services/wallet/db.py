@@ -28,8 +28,11 @@ from common.db.metadata import wallet_addresses as wallet_addresses_table
 from common.db.metadata import onchain_deposits as onchain_deposits_table
 
 
-os.environ.setdefault("TAPD_MACAROON_PATH", "")
-os.environ.setdefault("TAPD_TLS_CERT_PATH", "")
+os.environ.setdefault("ELEMENTS_RPC_HOST", "localhost")
+os.environ.setdefault("ELEMENTS_RPC_PORT", "7041")
+os.environ.setdefault("ELEMENTS_RPC_USER", "user")
+os.environ.setdefault("ELEMENTS_RPC_PASSWORD", "pass")
+os.environ.setdefault("ELEMENTS_NETWORK", "elementsregtest")
 
 settings = get_settings(service_name="wallet", default_port=8001)
 _custody_backend = build_wallet_custody(settings)
@@ -118,7 +121,7 @@ async def get_or_create_wallet(
     wallet_id = uuid.uuid4()
     user_uuid = _as_uuid(user_id)
     seed = _custody_backend.generate_seed(32)
-    derivation_path = _custody_backend.get_derivation_path(0, bitcoin_network=settings.bitcoin_network)
+    derivation_path = _custody_backend.get_derivation_path(0, liquid_network=settings.elements_network)
     encrypted_seed = _custody_backend.seal_seed(seed)
 
     try:
@@ -168,6 +171,7 @@ async def get_token_balances_for_user(
     stmt = (
         sa.select(
             token_balances_table.c.token_id,
+            tokens_table.c.liquid_asset_id,
             assets_table.c.name.label("asset_name"),
             token_balances_table.c.balance,
             sa.func.coalesce(

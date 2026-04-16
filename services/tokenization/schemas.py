@@ -40,17 +40,8 @@ class AssetCreateRequest(BaseModel):
 
 
 class AssetTokenizationRequest(BaseModel):
-    taproot_asset_id: str = Field(min_length=64, max_length=64)
     total_supply: int = Field(gt=0)
     unit_price_sat: int = Field(gt=0)
-
-    @field_validator("taproot_asset_id")
-    @classmethod
-    def _validate_taproot_asset_id(cls, value: str) -> str:
-        normalized = _normalize_hex_string(value)
-        if len(normalized) != 64:
-            raise ValueError("Taproot asset id must be 32 bytes encoded as hex.")
-        return normalized
 
 
 class AssetOut(BaseModel):
@@ -72,7 +63,7 @@ class AssetResponse(BaseModel):
 
 class AssetTokenOut(BaseModel):
     id: str
-    taproot_asset_id: str
+    liquid_asset_id: str
     total_supply: int
     circulating_supply: int
     unit_price_sat: int

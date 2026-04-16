@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common import get_settings
+from common import build_platform_signer
 from common.custody import derive_platform_signing_material, derive_wallet_escrow_material
 from common.db.metadata import escrows as escrows_table
 from common.db.metadata import nostr_identities as nostr_identities_table
@@ -24,7 +25,7 @@ from common.db.metadata import trades as trades_table
 from common.db.metadata import users as users_table
 from common.db.metadata import wallets as wallets_table
 from common.db.metadata import disputes as disputes_table
-from marketplace.escrow import compress_xonly_pubkey, derive_compressed_pubkey, generate_2of3_multisig_address
+from marketplace.escrow import build_liquid_2of3_escrow, compress_xonly_pubkey, derive_compressed_pubkey
 
 
 _OPEN_ORDER_STATUSES = ("open", "partially_filled")
@@ -632,9 +633,11 @@ async def apply_order_fill(
 
 
 def _platform_escrow_pubkey() -> str:
-    return derive_compressed_pubkey(
-        derive_platform_signing_material(settings, purpose="escrow-pubkey")
-    )
+    signer = build_platform_signer(settings)
+    public_key = signer.public_key()
+    if not public_key:
+        raise RuntimeError("platform_signer_public_key_unavailable")
+    return public_key
 
 
 async def _resolve_escrow_pubkey(
@@ -663,6 +666,49 @@ async def _resolve_escrow_pubkey(
     return derive_compressed_pubkey(seed_material)
 
 
+async def resolve_escrow_signing_material(
+    conn: AsyncConnection,
+    user_id: str | uuid.UUID,
+) -> bytes | None:
+    nostr_identity = await get_nostr_identity_by_user_id(conn, user_id)
+    if nostr_identity is not None:
+        return None
+
+    wallet_row = await get_wallet_by_user_id(conn, user_id)
+    if wallet_row is None:
+        raise LookupError("wallet_not_found")
+
+    seed_bytes = bytes(_row_value(wallet_row, "encrypted_seed", b""))
+    if not seed_bytes:
+        raise LookupError("wallet_not_found")
+
+    derivation_path = str(_row_value(wallet_row, "derivation_path", ""))
+    return derive_wallet_escrow_material(
+        user_id=_as_uuid(user_id),
+        derivation_path=derivation_path,
+        encrypted_seed=seed_bytes,
+    )
+
+
+async def update_escrow_settlement_metadata(
+    conn: AsyncConnection,
+    *,
+    escrow_id: str | uuid.UUID,
+    settlement_metadata: dict,
+) -> sa.engine.Row:
+    result = await conn.execute(
+        sa.update(escrows_table)
+        .where(escrows_table.c.id == _as_uuid(escrow_id))
+        .values(settlement_metadata=settlement_metadata, updated_at=_utc_now())
+        .returning(escrows_table)
+    )
+    row = result.fetchone()
+    if row is None:
+        raise LookupError("escrow_not_found")
+    await conn.commit()
+    return row
+
+
 async def create_trade_escrow(
     conn: AsyncConnection,
     *,
@@ -684,13 +730,15 @@ async def create_trade_escrow(
     token_id = _row_value(buy_order, "token_id")
     total_sat = quantity * price_sat
     now = _utc_now()
+    trade_id = uuid.uuid4()
 
     buyer_pubkey = await _resolve_escrow_pubkey(conn, buyer_id)
     seller_pubkey = await _resolve_escrow_pubkey(conn, seller_id)
     platform_pubkey = _platform_escrow_pubkey()
-    multisig_address = generate_2of3_multisig_address(
+    escrow_details = build_liquid_2of3_escrow(
         (buyer_pubkey, seller_pubkey, platform_pubkey),
-        settings.bitcoin_network,
+        settings.elements_network,
+        blinding_seed=derive_platform_signing_material(settings, purpose=f"escrow-blinding:{trade_id}"),
     )
 
     try:
@@ -701,7 +749,7 @@ async def create_trade_escrow(
         trade_result = await conn.execute(
             sa.insert(trades_table)
             .values(
-                id=uuid.uuid4(),
+                id=trade_id,
                 buy_order_id=_row_value(buy_order, "id"),
                 sell_order_id=_row_value(sell_order, "id"),
                 token_id=token_id,
@@ -723,7 +771,7 @@ async def create_trade_escrow(
             .values(
                 id=uuid.uuid4(),
                 trade_id=_row_value(trade_row, "id"),
-                multisig_address=multisig_address,
+                multisig_address=escrow_details.confidential_address,
                 buyer_pubkey=buyer_pubkey,
                 seller_pubkey=seller_pubkey,
                 platform_pubkey=platform_pubkey,
@@ -731,6 +779,13 @@ async def create_trade_escrow(
                 funding_txid=None,
                 release_txid=None,
                 status="created",
+                settlement_metadata={
+                    "unconfidential_address": escrow_details.unconfidential_address,
+                    "witness_script": escrow_details.witness_script_hex,
+                    "script_pubkey": escrow_details.script_pubkey_hex,
+                    "blinding_pubkey": escrow_details.blinding_pubkey,
+                    "blinding_private_key": escrow_details.blinding_private_key,
+                },
                 expires_at=now + _ESCROW_EXPIRATION,
                 created_at=now,
                 updated_at=now,
@@ -816,8 +871,10 @@ async def mark_escrow_funded(
     *,
     trade_id: str | uuid.UUID,
     funding_txid: str,
+    settlement_metadata_update: dict | None = None,
 ) -> tuple[sa.engine.Row, sa.engine.Row]:
     now = _utc_now()
+    settlement_metadata = settlement_metadata_update or {}
 
     try:
         escrow_result = await conn.execute(
@@ -827,6 +884,7 @@ async def mark_escrow_funded(
             .values(
                 funding_txid=funding_txid,
                 status="funded",
+                settlement_metadata=escrows_table.c.settlement_metadata.op("||")(sa.cast(settlement_metadata, sa.JSON)),
                 updated_at=now,
             )
             .returning(escrows_table)
@@ -866,86 +924,67 @@ async def process_escrow_signature(
     signer_role: str,
     signature: str,
     platform_signature: str,
+    release_txid: str,
+    settlement_metadata: dict | None = None,
 ) -> tuple[sa.engine.Row, sa.engine.Row]:
-    """Record a party's signature and the platform counter-signature.
-
-    If the 2-of-3 threshold is satisfied the escrow is released and the
-    trade is settled atomically: buyer receives tokens, seller is credited
-    with the sale proceeds, and the buyer's wallet is debited.
-
-    Returns ``(trade_row, escrow_row)`` reflecting the final state.
-    """
+    """Persist a Liquid escrow release after the settlement transaction broadcasts."""
     escrow_id = _as_uuid(_row_value(escrow_row, "id"))
     trade_id = _as_uuid(_row_value(trade_row, "id"))
     now = _utc_now()
 
     existing: dict = _row_value(escrow_row, "collected_signatures") or {}
+    existing_metadata: dict = _row_value(escrow_row, "settlement_metadata") or {}
     updated_sigs = dict(existing)
     updated_sigs[signer_role] = signature
     updated_sigs["platform"] = platform_signature
-
-    threshold_met = len(updated_sigs) >= _SIGNATURE_THRESHOLD
+    updated_metadata = dict(existing_metadata)
+    if settlement_metadata:
+        updated_metadata.update(settlement_metadata)
 
     try:
-        if threshold_met:
-            release_txid = _generate_release_txid(escrow_id, trade_id)
-
-            escrow_result = await conn.execute(
-                sa.update(escrows_table)
-                .where(escrows_table.c.id == escrow_id)
-                .where(escrows_table.c.status == "funded")
-                .values(
-                    collected_signatures=updated_sigs,
-                    release_txid=release_txid,
-                    status="released",
-                    updated_at=now,
-                )
-                .returning(escrows_table)
+        escrow_result = await conn.execute(
+            sa.update(escrows_table)
+            .where(escrows_table.c.id == escrow_id)
+            .where(escrows_table.c.status == "funded")
+            .values(
+                collected_signatures=updated_sigs,
+                settlement_metadata=updated_metadata,
+                release_txid=release_txid,
+                status="released",
+                updated_at=now,
             )
-            escrow_row = escrow_result.fetchone()
-            if escrow_row is None:
-                raise LookupError("escrow_not_found_or_state_conflict")
+            .returning(escrows_table)
+        )
+        escrow_row = escrow_result.fetchone()
+        if escrow_row is None:
+            raise LookupError("escrow_not_found_or_state_conflict")
 
-            trade_result = await conn.execute(
-                sa.update(trades_table)
-                .where(trades_table.c.id == trade_id)
-                .values(status="settled", settled_at=now)
-                .returning(trades_table)
-            )
-            trade_row = trade_result.fetchone()
-            if trade_row is None:
-                raise LookupError("trade_not_found")
+        trade_result = await conn.execute(
+            sa.update(trades_table)
+            .where(trades_table.c.id == trade_id)
+            .values(status="settled", settled_at=now)
+            .returning(trades_table)
+        )
+        trade_row = trade_result.fetchone()
+        if trade_row is None:
+            raise LookupError("trade_not_found")
 
-            buyer_id = _row_value(buy_order, "user_id")
-            seller_id = _row_value(sell_order, "user_id")
-            token_id = _row_value(trade_row, "token_id")
-            quantity = int(_row_value(trade_row, "quantity", 0))
-            total_sat = int(_row_value(trade_row, "total_sat", 0))
-            fee_sat = int(_row_value(trade_row, "fee_sat", 0))
+        buyer_id = _row_value(buy_order, "user_id")
+        seller_id = _row_value(sell_order, "user_id")
+        token_id = _row_value(trade_row, "token_id")
+        quantity = int(_row_value(trade_row, "quantity", 0))
+        total_sat = int(_row_value(trade_row, "total_sat", 0))
+        fee_sat = int(_row_value(trade_row, "fee_sat", 0))
 
-            buyer_wallet = await get_wallet_by_user_id(conn, buyer_id)
-            seller_wallet = await get_wallet_by_user_id(conn, seller_id)
-            if buyer_wallet is None or seller_wallet is None:
-                raise LookupError("wallet_not_found")
+        buyer_wallet = await get_wallet_by_user_id(conn, buyer_id)
+        seller_wallet = await get_wallet_by_user_id(conn, seller_id)
+        if buyer_wallet is None or seller_wallet is None:
+            raise LookupError("wallet_not_found")
 
-            await debit_wallet_balance(conn, wallet_row=buyer_wallet, amount_sat=total_sat + fee_sat)
-            await credit_wallet_balance(conn, wallet_row=seller_wallet, amount_sat=total_sat)
-            await increment_token_balance(conn, user_id=buyer_id, token_id=token_id, quantity=quantity)
-            await record_trade_fee_income(conn, trade_row=trade_row)
-        else:
-            escrow_result = await conn.execute(
-                sa.update(escrows_table)
-                .where(escrows_table.c.id == escrow_id)
-                .where(escrows_table.c.status == "funded")
-                .values(
-                    collected_signatures=updated_sigs,
-                    updated_at=now,
-                )
-                .returning(escrows_table)
-            )
-            escrow_row = escrow_result.fetchone()
-            if escrow_row is None:
-                raise LookupError("escrow_not_found_or_state_conflict")
+        await debit_wallet_balance(conn, wallet_row=buyer_wallet, amount_sat=total_sat + fee_sat)
+        await credit_wallet_balance(conn, wallet_row=seller_wallet, amount_sat=total_sat)
+        await increment_token_balance(conn, user_id=buyer_id, token_id=token_id, quantity=quantity)
+        await record_trade_fee_income(conn, trade_row=trade_row)
 
         await conn.commit()
     except Exception:
@@ -953,14 +992,6 @@ async def process_escrow_signature(
         raise
 
     return trade_row, escrow_row
-
-
-def _generate_release_txid(escrow_id: uuid.UUID, trade_id: uuid.UUID) -> str:
-    import hashlib
-    import time as _time
-
-    payload = f"release:{escrow_id}:{trade_id}:{_time.time_ns()}".encode()
-    return hashlib.sha256(payload).hexdigest()
 
 
 async def get_dispute_by_trade_id(

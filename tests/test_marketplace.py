@@ -837,11 +837,14 @@ def test_create_trade_escrow_persists_multisig_details_and_locks_seller_tokens(m
     trade_params = trade_insert_stmt.compile().params
     escrow_params = escrow_insert_stmt.compile().params
     assert trade_params["status"] == "pending"
-    assert escrow_params["multisig_address"].startswith("bcrt1q")
+    assert escrow_params["multisig_address"].startswith("el1")
     assert escrow_params["buyer_pubkey"] == buyer_pubkey
     assert escrow_params["seller_pubkey"] == seller_pubkey
     assert escrow_params["platform_pubkey"] == platform_pubkey
     assert escrow_params["locked_amount_sat"] == trade_row["total_sat"]
+    assert escrow_params["settlement_metadata"]["unconfidential_address"].startswith("ert1")
+    assert escrow_params["settlement_metadata"]["witness_script"]
+    assert escrow_params["settlement_metadata"]["script_pubkey"]
     fake_conn.commit.assert_awaited_once()
     fake_conn.rollback.assert_not_awaited()
 
@@ -952,6 +955,10 @@ def test_get_escrow_details_refreshes_funding_status_and_emits_event(client):
             "services.marketplace.main._refresh_escrow_funding",
             AsyncMock(return_value=(funded_trade_row, funded_escrow, True)),
         ),
+        patch(
+            "services.marketplace.main._prepare_escrow_release_pset",
+            AsyncMock(return_value=funded_escrow),
+        ),
         patch.object(marketplace_main._event_bus, "publish", publish_mock),
     ):
         response = app_client.get(
@@ -970,6 +977,7 @@ def test_get_escrow_details_refreshes_funding_status_and_emits_event(client):
             "release_txid": None,
             "status": "funded",
             "expires_at": funded_escrow["expires_at"].isoformat().replace("+00:00", "Z"),
+            "settlement_metadata": None,
         }
     }
     publish_mock.assert_awaited_once_with(
@@ -1192,7 +1200,6 @@ def test_process_escrow_signature_release_extracts_fee_and_records_treasury_inco
     fake_conn.rollback = AsyncMock()
 
     with (
-        patch.object(marketplace_db, "_generate_release_txid", return_value="cd" * 32),
         patch.object(marketplace_db, "get_wallet_by_user_id", AsyncMock(side_effect=[buyer_wallet, seller_wallet])),
         patch.object(marketplace_db, "debit_wallet_balance", AsyncMock()) as debit_mock,
         patch.object(marketplace_db, "credit_wallet_balance", AsyncMock()) as credit_mock,
@@ -1209,6 +1216,8 @@ def test_process_escrow_signature_release_extracts_fee_and_records_treasury_inco
                 signer_role="buyer",
                 signature="11" * 32,
                 platform_signature="33" * 32,
+                release_txid="cd" * 32,
+                settlement_metadata={"signed_pset": "cHNldA=="},
             )
         )
 

@@ -46,8 +46,8 @@ def get_readiness_payload(settings: Settings) -> dict:
     redis_ok, redis_error, redis_target = _check_redis_ping(settings.redis_url)
 
     bitcoin_ok, bitcoin_error = _check_tcp_socket(settings.bitcoin_rpc_host, settings.bitcoin_rpc_port)
+    elements_ok, elements_error = _check_tcp_socket(settings.elements_rpc_host, settings.elements_rpc_port)
     lnd_ok, lnd_error = _check_tcp_socket(settings.lnd_grpc_host, settings.lnd_grpc_port)
-    tapd_ok, tapd_error = _check_tcp_socket(settings.tapd_grpc_host, settings.tapd_grpc_port)
 
     dependencies = {
         "postgres": {
@@ -65,19 +65,19 @@ def get_readiness_payload(settings: Settings) -> dict:
             "target": f"{settings.bitcoin_rpc_host}:{settings.bitcoin_rpc_port}",
             "error": bitcoin_error,
         },
+        "elements": {
+            "ok": elements_ok,
+            "target": f"{settings.elements_rpc_host}:{settings.elements_rpc_port}",
+            "error": elements_error,
+        },
         "lnd": {
             "ok": lnd_ok,
             "target": f"{settings.lnd_grpc_host}:{settings.lnd_grpc_port}",
             "error": lnd_error,
         },
-        "tapd": {
-            "ok": tapd_ok,
-            "target": f"{settings.tapd_grpc_host}:{settings.tapd_grpc_port}",
-            "error": tapd_error,
-        },
     }
 
-    all_ready = postgres_ok and redis_ok and bitcoin_ok and lnd_ok and tapd_ok
+    all_ready = postgres_ok and redis_ok and bitcoin_ok and elements_ok and lnd_ok
     return {
         "status": "ready" if all_ready else "not_ready",
         "service": settings.service_name,

@@ -21,7 +21,7 @@ This directory defines the operational gate for the public beta environment that
 1. Copy `infra/.env.beta.example` to `infra/.env.beta`.
 2. Replace placeholder hostnames with the beta cluster addresses.
 3. Mount the required secrets referenced by `*_FILE`.
-4. Point `BITCOIN_RPC_*`, `LND_*`, and `TAPD_*` to signet-connected infrastructure.
+4. Point `BITCOIN_RPC_*`, `LND_*`, and `ELEMENTS_*` to signet/testnet-connected infrastructure.
 5. Start the platform with `docker compose -f infra/docker-compose.public-beta.yml up -d`.
 6. Open Grafana at `http://<beta-observability-host>:3000` and confirm the `Platform Overview` and `Beta Release Gate` dashboards load.
 7. Confirm Alertmanager routes are mapped to beta receivers before opening access to participants.
@@ -41,7 +41,7 @@ This directory defines the operational gate for the public beta environment that
 - [ ] `Beta Release Gate` shows zero settlement failures for the previous 24 hours.
 - [ ] Auth works for at least one seller account and one buyer account.
 - [ ] Seller submits an asset and requests evaluation.
-- [ ] Approved asset is tokenized against a signet-connected tapd issuance.
+- [ ] Approved asset is tokenized against a Liquid testnet issuance through Elements RPC.
 - [ ] Seller places a sell order and buyer places a matching buy order.
 - [ ] Escrow funding is detected and visible on the marketplace endpoints.
 - [ ] Escrow release completes or a dispute path is exercised successfully.

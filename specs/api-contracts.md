@@ -1,5 +1,7 @@
 # API Contracts Specification
 
+> Migration notice: portions of this spec still describe Taproot-era contracts. The current runtime uses Liquid / Elements semantics, including `liquid_asset_id`, confidential Liquid addresses, and PSET-based settlement flows.
+
 ## 1. General Conventions
 
 | Property         | Value                                                   |

@@ -1,5 +1,7 @@
 # Database Schema Specification
 
+> Migration notice: this schema spec predates the Liquid migration in Alembic `0013`. The live schema now uses `tokens.liquid_asset_id`, a Liquid wallet derivation default, and escrow settlement metadata for PSET flows.
+
 ## 1. Overview
 
 - **RDBMS**: PostgreSQL 15+

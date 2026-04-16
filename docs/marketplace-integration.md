@@ -1,5 +1,7 @@
 # Marketplace Service Integration Guide
 
+> Migration notice: this guide predates the Liquid / Elements cutover. References to tapd, Taproot-era readiness, or Taproot asset identifiers are historical unless explicitly marked otherwise.
+
 This document describes the marketplace service as it is currently implemented in `services/marketplace`, with explicit notes where repository specs or service README text describe intended behavior that is not yet fully realized in code.
 
 ## 1. Service Overview

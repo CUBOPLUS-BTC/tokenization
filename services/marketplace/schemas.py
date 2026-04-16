@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -105,6 +105,7 @@ class EscrowOut(BaseModel):
     release_txid: str | None = None
     status: EscrowStatus
     expires_at: datetime
+    settlement_metadata: dict[str, Any] | None = None
 
 
 class EscrowResponse(BaseModel):
@@ -112,7 +113,7 @@ class EscrowResponse(BaseModel):
 
 
 class EscrowSignRequest(BaseModel):
-    partial_signature: str = Field(min_length=1)
+    pset: str | None = Field(default=None, min_length=1)
 
 
 class DisputeOpenRequest(BaseModel):
