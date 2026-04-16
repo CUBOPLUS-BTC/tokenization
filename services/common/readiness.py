@@ -41,6 +41,16 @@ def _check_redis_ping(redis_url: str) -> tuple[bool, str | None, str]:
         return False, str(exc), f"{host}:{port}"
 
 
+def _dependency_payload(*, ok: bool, target: str, error: str | None, required: bool) -> dict[str, object]:
+    return {
+        "ok": ok,
+        "target": target,
+        "error": error,
+        "required": required,
+        "blocking": required and not ok,
+    }
+
+
 def get_readiness_payload(settings: Settings) -> dict:
     postgres_ok, postgres_error = _check_tcp_socket(settings.postgres_host, settings.postgres_port)
     redis_ok, redis_error, redis_target = _check_redis_ping(settings.redis_url)
@@ -50,34 +60,39 @@ def get_readiness_payload(settings: Settings) -> dict:
     lnd_ok, lnd_error = _check_tcp_socket(settings.lnd_grpc_host, settings.lnd_grpc_port)
 
     dependencies = {
-        "postgres": {
-            "ok": postgres_ok,
-            "target": f"{settings.postgres_host}:{settings.postgres_port}",
-            "error": postgres_error,
-        },
-        "redis": {
-            "ok": redis_ok,
-            "target": redis_target,
-            "error": redis_error,
-        },
-        "bitcoin": {
-            "ok": bitcoin_ok,
-            "target": f"{settings.bitcoin_rpc_host}:{settings.bitcoin_rpc_port}",
-            "error": bitcoin_error,
-        },
-        "elements": {
-            "ok": elements_ok,
-            "target": f"{settings.elements_rpc_host}:{settings.elements_rpc_port}",
-            "error": elements_error,
-        },
-        "lnd": {
-            "ok": lnd_ok,
-            "target": f"{settings.lnd_grpc_host}:{settings.lnd_grpc_port}",
-            "error": lnd_error,
-        },
+        "postgres": _dependency_payload(
+            ok=postgres_ok,
+            target=f"{settings.postgres_host}:{settings.postgres_port}",
+            error=postgres_error,
+            required=True,
+        ),
+        "redis": _dependency_payload(
+            ok=redis_ok,
+            target=redis_target,
+            error=redis_error,
+            required=True,
+        ),
+        "bitcoin": _dependency_payload(
+            ok=bitcoin_ok,
+            target=f"{settings.bitcoin_rpc_host}:{settings.bitcoin_rpc_port}",
+            error=bitcoin_error,
+            required=settings.bitcoin_rpc_required,
+        ),
+        "elements": _dependency_payload(
+            ok=elements_ok,
+            target=f"{settings.elements_rpc_host}:{settings.elements_rpc_port}",
+            error=elements_error,
+            required=settings.resolved_elements_rpc_required,
+        ),
+        "lnd": _dependency_payload(
+            ok=lnd_ok,
+            target=f"{settings.lnd_grpc_host}:{settings.lnd_grpc_port}",
+            error=lnd_error,
+            required=settings.resolved_lnd_grpc_required,
+        ),
     }
 
-    all_ready = postgres_ok and redis_ok and bitcoin_ok and elements_ok and lnd_ok
+    all_ready = not any(payload["blocking"] for payload in dependencies.values())
     return {
         "status": "ready" if all_ready else "not_ready",
         "service": settings.service_name,

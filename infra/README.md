@@ -23,6 +23,8 @@ cp infra/.env.local.example infra/.env.local
 
 `infra/.env.local` is the runtime env file used by Docker Compose.
 
+By default, the local profile requires PostgreSQL, Redis, and Bitcoin Core. LND and Elements are marked optional via `LND_GRPC_REQUIRED=false` and `ELEMENTS_RPC_REQUIRED=false`, so the stack can report `ready` while Lightning/Liquid-specific flows remain degraded until you wire those services.
+
 Run from repository root:
 
 ```bash
@@ -97,6 +99,7 @@ All Python services use the shared settings loader in `services/common/config.py
     1. `.env`
     2. `infra/.env`
     3. `infra/.env.<profile>`
+- Dependency gating can be tuned with `BITCOIN_RPC_REQUIRED`, `LND_GRPC_REQUIRED`, and `ELEMENTS_RPC_REQUIRED`.
 
 ## Public beta
 

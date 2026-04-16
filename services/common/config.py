@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     bitcoin_rpc_password: str | None = None
     bitcoin_rpc_password_file: str | None = None
     bitcoin_network: str
+    bitcoin_rpc_required: bool = True
 
     elements_rpc_host: str = "localhost"
     elements_rpc_port: int = 7041
@@ -52,11 +53,13 @@ class Settings(BaseSettings):
     elements_rpc_password_file: str | None = None
     elements_network: str = "elementsregtest"
     elements_wallet_name: str = ""
+    elements_rpc_required: bool | None = None
 
     lnd_grpc_host: str
     lnd_grpc_port: int
     lnd_macaroon_path: str
     lnd_tls_cert_path: str
+    lnd_grpc_required: bool | None = None
 
     nostr_relays: str
     nostr_private_key: str | None = None
@@ -93,6 +96,18 @@ class Settings(BaseSettings):
     @property
     def nostr_relay_list(self) -> list[str]:
         return [relay.strip() for relay in self.nostr_relays.split(",") if relay.strip()]
+
+    @property
+    def resolved_elements_rpc_required(self) -> bool:
+        if self.elements_rpc_required is not None:
+            return self.elements_rpc_required
+        return self.env_profile != "local"
+
+    @property
+    def resolved_lnd_grpc_required(self) -> bool:
+        if self.lnd_grpc_required is not None:
+            return self.lnd_grpc_required
+        return self.env_profile != "local"
 
     @staticmethod
     def _resolve_secret(secret_value: str | None, file_path: str | None) -> str | None:
