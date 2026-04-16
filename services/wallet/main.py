@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import logging
@@ -55,7 +55,15 @@ from .db import (
     get_user_by_id,
     get_wallet_by_user_id,
     list_wallet_transactions,
+    get_next_derivation_index,
+    save_wallet_address,
+    get_wallet_address_by_address,
+    mark_address_imported,
 )
+import asyncio
+from .reconciliation import reconciliation_loop, lightning_sync_loop
+from .key_manager import KeyManager
+from .bitcoin_rpc import get_bitcoin_rpc
 from .lnd_client import LNDClient
 from .schemas import (
     CustodyStatusResponse,
@@ -63,9 +71,12 @@ from .schemas import (
     FiatOnRampProvidersResponse,
     FiatOnRampSessionRequest,
     FiatOnRampSessionResponse,
+    FiatOnRampSessionResponse,
     OnchainAddressResponse,
     OnchainWithdrawalRequest,
     OnchainWithdrawalResponse,
+    FeeEstimateLevel,
+    FeeEstimateResponse,
     TransactionHistoryItem,
     TransactionHistoryResponse,
     TransactionType,
@@ -77,6 +88,8 @@ from .schemas_lnd import (
     Payment,
     PaymentCreate,
     PaymentStatus,
+    Bolt11DecodeRequest,
+    Bolt11DecodeResponse,
 )
 from .schemas_wallet import (
     TokenBalance,
@@ -102,7 +115,6 @@ _ALGORITHM = "HS256"
 _DEFAULT_TX_VSIZE = 141
 _TOTP_DIGITS = 6
 _TOTP_PERIOD_SECONDS = 30
-_BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 _bearer_scheme = HTTPBearer(auto_error=False)
 _engine: AsyncEngine | Any | None = None
 
@@ -159,7 +171,20 @@ async def _lifespan(app: FastAPI):
     global _engine
     if _engine is None:
         _engine = engine
+
+    # Start background tasks
+    recon_task = asyncio.create_task(reconciliation_loop(engine, settings))
+    ln_task = asyncio.create_task(lightning_sync_loop(engine, lnd_client))
+    
     yield
+    
+    recon_task.cancel()
+    ln_task.cancel()
+    try:
+        await asyncio.gather(recon_task, ln_task)
+    except asyncio.CancelledError:
+        pass
+        
     await engine.dispose()
 
 
@@ -247,23 +272,55 @@ async def _get_current_principal(
     return AuthenticatedPrincipal(id=user_id)
 
 
-def _network_hrp() -> str:
-    network = settings.bitcoin_network.lower()
-    if network == "mainnet":
-        return "bc"
-    if network == "regtest":
-        return "bcrt"
-    return "tb"
-
-
-def _generate_onchain_address() -> str:
-    suffix = "".join(secrets.choice(_BECH32_CHARSET) for _ in range(58))
-    return f"{_network_hrp()}1p{suffix}"
-
-
 def _estimate_onchain_fee(fee_rate_sat_vb: int) -> int:
     return fee_rate_sat_vb * _DEFAULT_TX_VSIZE
 
+
+async def _create_real_onchain_address(conn: AsyncConnection, wallet: sa.engine.Row) -> str:
+    try:
+        encrypted_seed = bytes(_row_value(wallet, "encrypted_seed", b""))
+        key_mgr = KeyManager(settings.wallet_encryption_key, settings.bitcoin_network)
+        seed = key_mgr.decrypt_seed(encrypted_seed)
+    except Exception as exc:
+        raise ContractError(
+            code="wallet_seed_error",
+            message="Failed to decrypt wallet seed.",
+            status_code=500,
+        ) from exc
+
+    idx = await get_next_derivation_index(conn, str(_row_value(wallet, "id")))
+    address, script_pubkey = key_mgr.derive_taproot_address(seed, idx)
+    
+    bitcoin_rpc = get_bitcoin_rpc(settings)
+    imported = False
+    try:
+        desc = f"addr({address})"
+        desc_info = await bitcoin_rpc._call("getdescriptorinfo", desc)
+        chksum_desc = desc_info["descriptor"]
+        
+        await bitcoin_rpc.importdescriptors([{
+            "desc": chksum_desc,
+            "timestamp": "now",
+            "watchonly": True,
+            "label": f"wallet_{_row_value(wallet, 'id')}"
+        }])
+        imported = True
+    except Exception as exc:
+        logger.warning("Failed to import address %s to Bitcoin node: %s", address, exc)
+
+    await save_wallet_address(
+        conn,
+        wallet_id=str(_row_value(wallet, "id")),
+        address=address,
+        derivation_index=idx,
+        script_pubkey=script_pubkey,
+    )
+    if imported:
+        row = await get_wallet_address_by_address(conn, address)
+        if row:
+            await mark_address_imported(conn, str(_row_value(row, "id")))
+            
+    return address
 
 def _generate_txid(*, wallet_id: str, address: str, amount_sat: int, fee_sat: int) -> str:
     payload = f"{wallet_id}:{address}:{amount_sat}:{fee_sat}:{time.time_ns()}".encode("utf-8")
@@ -355,6 +412,9 @@ def _transaction_history_item(row: object) -> TransactionHistoryItem:
         status=_row_value(row, "status"),
         description=_row_value(row, "description"),
         created_at=created_at,
+        txHash=_row_value(row, "txid"),
+        paymentHash=_row_value(row, "ln_payment_hash"),
+        fee_sat=_row_value(row, "fee_sat"),
     )
 
 
@@ -571,11 +631,12 @@ async def create_fiat_onramp_session(
         kyc_row = await get_kyc_status(conn, principal.id)
 
         try:
+            deposit_address = await _create_real_onchain_address(conn, wallet)
             session = create_onramp_session(
                 provider_id=body.provider_id,
                 user_id=principal.id,
                 wallet_id=str(_row_value(wallet, "id")),
-                deposit_address=_generate_onchain_address(),
+                deposit_address=deposit_address,
                 fiat_currency=body.fiat_currency,
                 fiat_amount=body.fiat_amount,
                 country_code=body.country_code,
@@ -780,6 +841,76 @@ async def get_invoice(
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
+@app.post("/lightning/decode", response_model=Bolt11DecodeResponse, tags=["Lightning"])
+async def decode_bolt11(
+    body: Bolt11DecodeRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    try:
+        req = lnd_client.decode_pay_req(payment_request=body.payment_request)
+        
+        created_at = datetime.fromtimestamp(req.timestamp, tz=timezone.utc)
+        is_expired = (created_at + timedelta(seconds=req.expiry)) < datetime.now(timezone.utc)
+
+        record_business_event("wallet_bolt11_decode")
+        return Bolt11DecodeResponse(
+            payment_hash=req.payment_hash,
+            amount_sat=req.num_satoshis,
+            description=req.description,
+            description_hash=req.description_hash if req.description_hash else None,
+            timestamp=created_at,
+            expiry=req.expiry,
+            destination=req.destination,
+            is_expired=is_expired,
+        )
+    except grpc.RpcError as exc:
+        logger.error("gRPC error decoding invoice: %s", exc)
+        raise HTTPException(status_code=400, detail="Invalid or unsupported invoice") from exc
+    except Exception as exc:
+        logger.error("Unexpected error decoding invoice: %s", exc)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@app.get(
+    "/wallet/onchain/fees",
+    status_code=status.HTTP_200_OK,
+    response_model=FeeEstimateResponse,
+    summary="Get current on-chain fee estimates",
+)
+@app.get(
+    "/onchain/fees",
+    status_code=status.HTTP_200_OK,
+    response_model=FeeEstimateResponse,
+    include_in_schema=False,
+)
+async def get_onchain_fees():
+    bitcoin_rpc = get_bitcoin_rpc(settings)
+    
+    async def _estimate(blocks: int, default_sat_vb: int) -> int:
+        try:
+            res = await bitcoin_rpc.estimatesmartfee(blocks)
+            btc_kvb = res.get("feerate", -1)
+            if btc_kvb > 0:
+                sat_vb = int((btc_kvb * 100_000_000) / 1000)
+                return max(1, sat_vb)
+        except Exception as exc:
+            logger.warning("Fee estimation failed for %s blocks: %s", blocks, exc)
+        return default_sat_vb
+
+    # low = 12 blocks (~2 hrs), medium = 6 blocks (~1 hr), high = 2 blocks (~20 mins)
+    low_sat_vb, med_sat_vb, high_sat_vb = await asyncio.gather(
+        _estimate(12, 1),
+        _estimate(6, 5),
+        _estimate(2, 10)
+    )
+
+    record_business_event("wallet_fee_estimate")
+    return FeeEstimateResponse(
+        low=FeeEstimateLevel(sat_per_vb=low_sat_vb, target_blocks=12),
+        medium=FeeEstimateLevel(sat_per_vb=med_sat_vb, target_blocks=6),
+        high=FeeEstimateLevel(sat_per_vb=high_sat_vb, target_blocks=2),
+    )
+
 @app.post(
     "/wallet/onchain/address",
     status_code=status.HTTP_201_CREATED,
@@ -796,10 +927,11 @@ async def create_onchain_address(
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
     async with _runtime_engine().connect() as conn:
-        await get_or_create_wallet(conn, principal.id)
+        wallet = await get_or_create_wallet(conn, principal.id)
+        address = await _create_real_onchain_address(conn, wallet)
 
     record_business_event("wallet_onchain_address_create")
-    return OnchainAddressResponse(address=_generate_onchain_address(), type="taproot").model_dump()
+    return OnchainAddressResponse(address=address, type="taproot").model_dump()
 
 
 @app.post(
@@ -845,18 +977,90 @@ async def withdraw_onchain(
             )
 
         wallet = await get_or_create_wallet(conn, principal.id)
-        fee_sat = _estimate_onchain_fee(body.fee_rate_sat_vb)
+        fee_rate_btc_kvb = body.fee_rate_sat_vb / 100_000.0
+        outputs = [{body.address: body.amount_sat / 100_000_000.0}]
+        options = {"feeRate": fee_rate_btc_kvb}
+
+        bitcoin_rpc = get_bitcoin_rpc(settings)
+        try:
+            funded = await bitcoin_rpc.walletcreatefundedpsbt([], outputs, options)
+            psbt_str = funded["psbt"]
+            fee_sat = int(funded["fee"] * 100_000_000)
+        except Exception as exc:
+            logger.error("Failed to fund PSBT: %s", exc)
+            raise ContractError(
+                code="insufficient_funds",
+                message="Wallet balance is insufficient for this withdrawal and fee or no UTXOs available.",
+                status_code=status.HTTP_409_CONFLICT,
+            ) from exc
+
+        try:
+            encrypted_seed = bytes(_row_value(wallet, "encrypted_seed", b""))
+            key_mgr = KeyManager(settings.wallet_encryption_key, settings.bitcoin_network)
+            seed = key_mgr.decrypt_seed(encrypted_seed)
+
+            from common.db.metadata import wallet_addresses as wa_table
+            import sqlalchemy as sa
+            result = await conn.execute(
+                sa.select(wa_table.c.script_pubkey, wa_table.c.derivation_index)
+                .where(wa_table.c.wallet_id == _row_value(wallet, "id"))
+            )
+            address_map = {row.script_pubkey: row.derivation_index for row in result}
+
+            from embit.psbt import PSBT, DerivationPath
+            from embit.networks import NETWORKS
+            from embit import bip32
+
+            psbt = PSBT.from_base64(psbt_str)
+            network = NETWORKS["main"] if settings.bitcoin_network == "mainnet" else NETWORKS["regtest"]
+            if settings.bitcoin_network == "testnet":
+                network = NETWORKS["test"]
+            
+            root = bip32.HDKey.from_seed(seed, version=network["xprv"])
+            coin_type = 0 if settings.bitcoin_network == "mainnet" else 1
+
+            for inp in psbt.inputs:
+                if not inp.witness_utxo:
+                    raise ValueError("PSBT missing witness_utxo")
+                spk_hex = inp.witness_utxo.script_pubkey.data.hex()
+                if spk_hex not in address_map:
+                    raise ValueError(f"Unknown input script pubkey: {spk_hex}")
+                
+                idx = address_map[spk_hex]
+                path = f"m/86'/{coin_type}'/0'/0/{idx}"
+                derived = root.derive(path)
+
+                inp.taproot_bip32_derivations[derived.key.get_public_key()] = (
+                    [],
+                    DerivationPath(
+                        root.child(0).fingerprint,
+                        [86 | 0x80000000, coin_type | 0x80000000, 0x80000000, 0, idx]
+                    )
+                )
+
+            psbt.sign_with(root)
+            signed_psbt_b64 = psbt.to_base64()
+
+            finalized = await bitcoin_rpc.finalizepsbt(signed_psbt_b64)
+            if not finalized.get("complete"):
+                raise ValueError(f"Failed to finalize PSBT. Result: {finalized}")
+
+            txid = await bitcoin_rpc.sendrawtransaction(finalized["hex"])
+
+        except Exception as exc:
+            logger.error("Failed to sign/broadcast PSBT: %s", exc)
+            raise ContractError(
+                code="transaction_failed",
+                message=f"Failed to sign and broadcast transaction: {exc}",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            ) from exc
+
         row = await create_onchain_withdrawal(
             conn,
             wallet_id=str(_row_value(wallet, "id")),
             amount_sat=body.amount_sat,
             fee_sat=fee_sat,
-            txid=_generate_txid(
-                wallet_id=str(_row_value(wallet, "id")),
-                address=body.address,
-                amount_sat=body.amount_sat,
-                fee_sat=fee_sat,
-            ),
+            txid=txid,
             description=f"On-chain withdrawal to {body.address}",
         )
         if row is not None:
@@ -886,8 +1090,8 @@ async def withdraw_onchain(
 
     record_business_event("wallet_onchain_withdrawal")
     return OnchainWithdrawalResponse(
-        txid=_row_value(row, "txid"),
-        amount_sat=_row_value(row, "amount_sat"),
+        txid=txid,
+        amount_sat=body.amount_sat,
         fee_sat=fee_sat,
         status=_row_value(row, "status"),
     ).model_dump()
