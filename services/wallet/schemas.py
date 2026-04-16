@@ -54,6 +54,9 @@ class TransactionHistoryItem(BaseModel):
     status: Literal["pending", "confirmed", "failed"]
     description: str | None = None
     created_at: datetime
+    txHash: str | None = Field(None, description="Bitcoin transaction ID (txid) for on-chain transactions")
+    paymentHash: str | None = Field(None, description="Lightning payment hash for LN transactions")
+    fee_sat: int | None = Field(None, description="Fee paid in satoshis")
 
 
 class TransactionHistoryResponse(BaseModel):
@@ -128,3 +131,27 @@ class FiatOnRampSessionResponse(BaseModel):
     expires_at: datetime
     disclaimer: str
     compliance_action: Literal["review_terms", "complete_kyc"]
+
+class OnchainAddressResponse(BaseModel):
+    address: str
+    type: str
+
+class FeeEstimateLevel(BaseModel):
+    sat_per_vb: int
+    target_blocks: int
+
+class FeeEstimateResponse(BaseModel):
+    low: FeeEstimateLevel
+    medium: FeeEstimateLevel
+    high: FeeEstimateLevel
+
+class OnchainWithdrawalRequest(BaseModel):
+    address: str
+    amount_sat: int
+    fee_rate_sat_vb: int
+
+class OnchainWithdrawalResponse(BaseModel):
+    txid: str
+    amount_sat: int
+    fee_sat: int
+    status: str

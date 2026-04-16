@@ -1,25 +1,28 @@
-Add a QR code generation endpoint to services/wallet.
+Implement Lightning balance synchronization in services/wallet so wallets.lightning_balance_sat reflects the real LND balance.
 
-Goal:
-Provide a simple endpoint that turns a text payload into a QR code image for wallet receive/payment flows.
+Current problem:
+Lightning invoice creation, payment, and lookup work, but the DB wallet lightning balance is not updated from LND.
 
 Requirements:
-- Add an authenticated endpoint that accepts a text string.
-- Return a PNG image response.
-- Validate input size and reject unreasonably large payloads.
-- Keep the implementation small and deterministic.
-- Set the correct Content-Type header.
-- Do not overcomplicate with styling; a standard QR is enough.
+- Inspect services/wallet/lnd_client.py and existing wallet summary logic.
+- Add support for reading LND balances relevant to the wallet’s user-facing Lightning balance.
+- Update wallets.lightning_balance_sat periodically or through a practical sync mechanism compatible with the current service architecture.
+- Make the implementation safe and explicit about what “Lightning balance” means:
+  - channel balance
+  - local balance
+  - available balance
+  - wallet balance
+- Choose a clear definition and document it in code comments.
 
-Implementation suggestions:
-- Add a minimal dependency if needed, but keep the dependency footprint reasonable.
-- If the project prefers returning binary directly, do that.
-- If the project prefers returning base64 in JSON, only do that if it fits existing API conventions better. Binary PNG is preferred unless existing conventions strongly suggest otherwise.
+Implementation expectations:
+- If there is no dedicated scheduler infrastructure, add a lightweight periodic sync loop or a sync-on-read helper with minimal side effects.
+- Ensure the solution does not break existing Lightning invoice/payment flows.
+- Update GET /wallet so the returned lightning balance is reasonably fresh.
+- Add tests for:
+  - successful sync from mocked LND
+  - stale value update
+  - LND unavailable behavior
+  - wallet summary still works when sync fails gracefully
 
-Add tests for:
-- successful PNG response
-- invalid or oversized input
-- non-empty output bytes
-- auth enforcement
-
-At the end, summarize the new endpoint and any dependency added.
+Also add business events and any useful logs.
+At the end, summarize the chosen synchronization strategy and tradeoffs.

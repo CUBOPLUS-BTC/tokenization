@@ -109,6 +109,7 @@ transactions = sa.Table(
     sa.Column("txid", sa.String(length=64), nullable=True),
     sa.Column("ln_payment_hash", sa.String(length=64), nullable=True),
     sa.Column("description", sa.Text(), nullable=True),
+    sa.Column("fee_sat", sa.BigInteger(), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=True),
     sa.ForeignKeyConstraint(["wallet_id"], ["wallets.id"], name="fk_transactions_wallet_id_wallets"),
@@ -128,6 +129,48 @@ transactions = sa.Table(
     sa.CheckConstraint(
         "type IN ('deposit', 'withdrawal', 'ln_send', 'ln_receive', 'escrow_lock', 'escrow_release', 'fee')",
         name="type_allowed",
+    ),
+)
+
+wallet_addresses = sa.Table(
+    "wallet_addresses",
+    metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("wallet_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("address", sa.String(length=100), nullable=False),
+    sa.Column("derivation_index", sa.Integer(), nullable=False),
+    sa.Column("script_pubkey", sa.String(length=100), nullable=False),
+    sa.Column("imported_to_node", sa.Boolean(), nullable=False, server_default=sa.false()),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
+    sa.ForeignKeyConstraint(["wallet_id"], ["wallets.id"], name="fk_wallet_addresses_wallet_id_wallets"),
+    sa.UniqueConstraint("address", name="uq_wallet_addresses_address"),
+    sa.UniqueConstraint("wallet_id", "derivation_index", name="uq_wallet_addresses_wallet_derivation"),
+    sa.Index("ix_wallet_addresses_wallet_id", "wallet_id"),
+    sa.Index("ix_wallet_addresses_address", "address"),
+)
+
+onchain_deposits = sa.Table(
+    "onchain_deposits",
+    metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("wallet_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("wallet_address_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("txid", sa.String(length=64), nullable=False),
+    sa.Column("vout", sa.Integer(), nullable=False),
+    sa.Column("amount_sat", sa.BigInteger(), nullable=False),
+    sa.Column("confirmations", sa.Integer(), nullable=False, server_default="0"),
+    sa.Column("status", sa.String(length=20), nullable=False, server_default="pending"),
+    sa.Column("credited_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
+    sa.ForeignKeyConstraint(["wallet_id"], ["wallets.id"], name="fk_onchain_deposits_wallet_id_wallets"),
+    sa.ForeignKeyConstraint(["wallet_address_id"], ["wallet_addresses.id"], name="fk_onchain_deposits_wallet_address_id_wallet_addrs"),
+    sa.UniqueConstraint("txid", "vout", name="uq_onchain_deposits_txid_vout"),
+    sa.Index("ix_onchain_deposits_wallet_id", "wallet_id"),
+    sa.Index("ix_onchain_deposits_status", "status"),
+    sa.CheckConstraint("amount_sat > 0", name="amount_positive"),
+    sa.CheckConstraint(
+        "status IN ('pending', 'confirmed', 'credited')",
+        name="status_allowed",
     ),
 )
 

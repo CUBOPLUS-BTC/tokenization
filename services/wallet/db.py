@@ -24,6 +24,8 @@ from common.db.metadata import trades as trades_table
 from common.db.metadata import transactions as transactions_table
 from common.db.metadata import users as users_table
 from common.db.metadata import wallets as wallets_table
+from common.db.metadata import wallet_addresses as wallet_addresses_table
+from common.db.metadata import onchain_deposits as onchain_deposits_table
 
 
 os.environ.setdefault("TAPD_MACAROON_PATH", "")
@@ -288,3 +290,74 @@ async def list_wallet_transactions(
         .order_by(transactions_table.c.created_at.desc(), transactions_table.c.id.desc())
     )
     return list(result.fetchall())
+
+async def get_next_derivation_index(
+    conn: AsyncConnection,
+    wallet_id: str | uuid.UUID,
+) -> int:
+    result = await conn.execute(
+        sa.select(sa.func.max(wallet_addresses_table.c.derivation_index))
+        .where(wallet_addresses_table.c.wallet_id == _as_uuid(wallet_id))
+    )
+    max_index = result.scalar()
+    return 0 if max_index is None else max_index + 1
+
+async def save_wallet_address(
+    conn: AsyncConnection,
+    *,
+    wallet_id: str | uuid.UUID,
+    address: str,
+    derivation_index: int,
+    script_pubkey: str,
+) -> sa.engine.Row:
+    now = _utc_now()
+    result = await conn.execute(
+        sa.insert(wallet_addresses_table)
+        .values(
+            id=uuid.uuid4(),
+            wallet_id=_as_uuid(wallet_id),
+            address=address,
+            derivation_index=derivation_index,
+            script_pubkey=script_pubkey,
+            imported_to_node=False,
+            created_at=now,
+        )
+        .returning(wallet_addresses_table)
+    )
+    row = result.fetchone()
+    await conn.commit()
+    assert row is not None
+    return row
+
+async def get_wallet_address_by_address(
+    conn: AsyncConnection,
+    address: str,
+) -> sa.engine.Row | None:
+    result = await conn.execute(
+        sa.select(wallet_addresses_table).where(wallet_addresses_table.c.address == address)
+    )
+    return result.fetchone()
+
+async def mark_address_imported(
+    conn: AsyncConnection,
+    address_id: str | uuid.UUID,
+) -> None:
+    await conn.execute(
+        sa.update(wallet_addresses_table)
+        .where(wallet_addresses_table.c.id == _as_uuid(address_id))
+        .values(imported_to_node=True)
+    )
+    await conn.commit()
+
+async def update_lightning_balance(
+    conn: AsyncConnection,
+    wallet_id: str | uuid.UUID,
+    balance_sat: int,
+) -> None:
+    await conn.execute(
+        sa.update(wallets_table)
+        .where(wallets_table.c.id == _as_uuid(wallet_id))
+        .values(lightning_balance_sat=balance_sat)
+    )
+    await conn.commit()
+

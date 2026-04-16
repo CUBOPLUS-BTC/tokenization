@@ -6,7 +6,7 @@ Target area:
 - tests for wallet behavior
 
 Context:
-The current wallet service has real Lightning integration through LND, but on-chain BTC receive/send behavior is still placeholder-based in important areas. The current implementation generates fake deposit addresses, does not reconcile on-chain deposits, and does not build/broadcast real Bitcoin transactions. The service also lacks endpoints for fee estimation, BOLT11 decoding, and QR generation. In addition, the wallet DB balance for Lightning is not periodically synchronized from LND.
+The current wallet service has real Lightning integration through LND, but on-chain BTC receive/send behavior is still placeholder-based in important areas. The current implementation generates fake deposit addresses, does not reconcile on-chain deposits, and does not build/broadcast real Bitcoin transactions. The service also lacks endpoints for fee estimation, BOLT11 decoding. In addition, the wallet DB balance for Lightning is not periodically synchronized from LND.
 
 Your task is to implement and/or correct the wallet service so that it supports real Bitcoin Core-backed on-chain wallet operations and better Lightning wallet observability, while preserving the project’s existing patterns:
 - FastAPI + Pydantic

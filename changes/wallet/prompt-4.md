@@ -1,38 +1,32 @@
-Replace placeholder on-chain withdrawal logic in services/wallet with real Bitcoin transaction creation and broadcast via Bitcoin Core RPC.
+Add a fee estimation endpoint to services/wallet using Bitcoin Core.
 
-Current problem:
-POST /wallet/onchain/withdraw currently deducts DB balance and returns a synthetic txid, but it does not actually move funds.
+Goal:
+Expose low/medium/high fee estimates in sat/vB for frontend transaction-building UX.
 
 Requirements:
-- Inspect services/wallet/main.py, services/wallet/db.py, schemas, auth/2FA flow, and settings.
-- Preserve JWT auth and mandatory 2FA behavior for on-chain withdrawals.
-- Use Bitcoin Core RPC to build, fund, sign, and broadcast a real transaction.
-- Respect the requested fee_rate_sat_vb value.
-- Return a real txid, actual fee_sat, amount_sat, and status.
-- Persist the withdrawal transaction with the real txid.
-- Update wallet accounting consistently and safely.
-- Handle insufficient funds, invalid address, RPC failures, signing failures, and broadcast failures.
+- Add a new authenticated wallet endpoint for fee estimates.
+- Use Bitcoin Core RPC fee estimation primitives.
+- Return a simple response shape with low, medium, and high fee suggestions in sat/vB.
+- Define what each tier means in terms of target confirmation windows, and document that in code comments.
+- Validate and normalize values safely.
+- If Bitcoin Core cannot provide estimates, return safe fallbacks or a clear error according to project conventions.
 
-Implementation expectations:
-- Prefer a robust Bitcoin Core RPC flow such as:
-  - createpsbt / walletcreatefundedpsbt
-  - walletprocesspsbt
-  - finalizepsbt
-  - sendrawtransaction
-  or an equivalent safe flow supported by the configured node/wallet mode.
-- Avoid deducting wallet balance before successful transaction creation/broadcast unless your accounting model explicitly tracks reserved funds; document the chosen approach.
-- Keep error responses aligned with the project contract.
-- Add metrics, audit logging, and structured logs.
-- Protect against accidental duplicate submissions where feasible.
+Suggested response example:
+{
+  "fees": {
+    "low": {"sat_per_vb": 2, "target_blocks": 12},
+    "medium": {"sat_per_vb": 5, "target_blocks": 6},
+    "high": {"sat_per_vb": 8, "target_blocks": 2}
+  }
+}
 
-Tests to add/update:
-- successful withdrawal
-- insufficient funds
-- invalid 2FA
-- Bitcoin Core RPC error
-- real txid persistence
-- fee propagation
-- transaction row correctness
+Implementation details:
+- Add request/response schemas.
+- Add unit tests for:
+  - successful estimate mapping
+  - missing estimate fallback behavior
+  - RPC failure handling
+  - authenticated access
+- Record a business event for this endpoint.
 
-If schema changes are needed, create the migration and update metadata.
-At the end, summarize the implementation and any operational assumptions about Bitcoin Core wallet/descriptors.
+At the end, summarize the endpoint path and response contract.

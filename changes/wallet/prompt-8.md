@@ -1,42 +1,26 @@
-Update wallet transaction history responses to expose real transaction identifiers needed by the frontend.
+Create the database schema changes required to support real on-chain wallet operations in services/wallet.
 
-Current problem:
-The transactions table already has txid and Lightning payment hash fields, but the API hides them in responses.
+Goal:
+Add the minimum robust schema support needed for:
+- deterministic receive addresses
+- address import/watch state
+- on-chain deposit reconciliation
+- real txid exposure
+- idempotent balance updates
 
 Requirements:
-- Update transaction history schemas and serialization so frontend clients receive:
-  - txHash for on-chain transactions
-  - paymentHash for Lightning transactions
-- Preserve pagination and existing filtering behavior.
-- Do not remove existing fields unless absolutely necessary.
-- Keep nullability appropriate for transaction types that do not use a given hash.
+- Inspect existing wallet-related tables in services/common/db/metadata.py and current Alembic migrations.
+- Propose and implement schema changes for one or more of the following:
+  - derived wallet addresses table
+  - on-chain deposits / UTXO reconciliation table
+  - extra columns on transactions for txid/payment hash visibility and reconciliation metadata if not already present
+- Preserve existing constraints and naming conventions.
+- Add upgrade() and downgrade() implementations.
+- Update any SQLAlchemy metadata definitions accordingly.
 
-Expected response shape example:
-{
-  "transactions": [
-    {
-      "id": "uuid",
-      "type": "withdrawal",
-      "amount_sat": 90000,
-      "direction": "out",
-      "status": "confirmed",
-      "description": "On-chain withdrawal",
-      "created_at": "2026-04-15T12:00:00Z",
-      "txHash": "real_txid_here",
-      "paymentHash": null
-    }
-  ],
-  "next_cursor": "uuid_or_null"
-}
+Also:
+- describe how the new tables/columns are used by the wallet service
+- mention indexes and uniqueness constraints needed to prevent double-crediting
 
-Tasks:
-- Inspect current schemas and DB row-to-response mapping.
-- Update the relevant Pydantic models.
-- Update GET /wallet/transactions and any legacy alias responses.
-- Add tests covering:
-  - on-chain deposit rows
-  - on-chain withdrawal rows
-  - Lightning receive rows
-  - Lightning send rows
-
-At the end, summarize all response contract changes.
+Do not implement endpoint logic in this task unless necessary for compile correctness.
+At the end, summarize the migration plan and the invariants it protects.

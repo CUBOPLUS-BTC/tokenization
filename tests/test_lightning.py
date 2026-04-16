@@ -244,3 +244,32 @@ def test_get_invoice_unauthorized(mock_lnd, mock_env):
     client = TestClient(app)
     response = client.get("/lightning/invoices/010203")
     assert response.status_code in [401, 403]
+
+
+@patch("services.wallet.main.lnd_client")
+def test_decode_lightning_invoice(mock_lnd, client):
+    """Should decode a BOLT11 invoice using LND."""
+    # Mock LND response
+    mock_resp = MagicMock()
+    mock_resp.destination = "03abcdef..."
+    mock_resp.payment_hash = "1234..."
+    mock_resp.num_satoshis = 1000
+    mock_resp.timestamp = 1600000000
+    mock_resp.expiry = 3600
+    mock_resp.description = "Test decode"
+    mock_resp.description_hash = "" # Avoid MagicMock validation error
+    mock_resp.cltv_expiry = 144
+    mock_lnd.decode_pay_req.return_value = mock_resp
+
+    response = client.post(
+        "/lightning/decode",
+        json={"payment_request": "lnbc1..."},
+        headers={"Authorization": "Bearer fake-token"}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["destination"] == "03abcdef..."
+    assert data["amount_sat"] == 1000
+    assert data["description"] == "Test decode"
+    mock_lnd.decode_pay_req.assert_called_once_with(payment_request="lnbc1...")

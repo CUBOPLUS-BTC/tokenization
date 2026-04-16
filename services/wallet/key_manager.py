@@ -8,6 +8,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common.custody import CustodyError, build_wallet_custody
 
+try:
+    from embit import bip32, bip39
+    from embit.networks import NETWORKS
+    from embit.script import p2tr
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,3 +82,28 @@ class KeyManager:
         m / purpose' / coin_type' / account'
         """
         return self._backend.get_derivation_path(account_index, bitcoin_network=self.bitcoin_network)
+
+    def derive_taproot_address(self, seed: bytes, derivation_index: int) -> tuple[str, str]:
+        """
+        Derives a BIP-86 Taproot address and its scriptPubKey from the given seed.
+        Path: m/86'/coin_type'/0'/0/derivation_index
+        Returns: (bech32m_address, script_pubkey_hex)
+        """
+        network = NETWORKS["main"] if self.bitcoin_network == "mainnet" else NETWORKS["regtest"]
+        if self.bitcoin_network == "testnet":
+            network = NETWORKS["test"]
+        
+        root = bip32.HDKey.from_seed(seed, version=network["xprv"])
+        
+        # BIP-86 path: m/86'/coin_type'/0'/0/index
+        coin_type = 0 if self.bitcoin_network == "mainnet" else 1
+        path = f"m/86'/{coin_type}'/0'/0/{derivation_index}"
+        
+        derived = root.derive(path)
+        
+        # For BIP-86, Taproot internal pubkey is just the x coordinate of the derived pubkey
+        # using the un-tweaked pubkey as internal key
+        script_pubkey = p2tr(derived.key)
+        address = script_pubkey.address(network)
+        
+        return address, script_pubkey.data.hex()

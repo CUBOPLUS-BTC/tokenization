@@ -114,3 +114,13 @@ def test_key_manager_invalid_key():
     
     with pytest.raises(ValueError, match="valid hex string"):
         KeyManager(encryption_key="not hex" * 8)
+
+def test_derive_taproot_address(key_manager):
+    # Test vector for BIP-86 (sort of, using known fixed seed)
+    seed = b"0123456789abcdef" * 4
+    address, spk = key_manager.derive_taproot_address(seed, 0)
+    
+    # Check regtest/testnet address format
+    assert address.startswith("bcrt1p")
+    assert len(spk) == 68 # 34 bytes hex = 0x5120 + 32-byte pubkey
+    assert spk.startswith("5120")

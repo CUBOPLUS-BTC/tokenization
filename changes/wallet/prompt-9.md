@@ -1,26 +1,25 @@
-Create the database schema changes required to support real on-chain wallet operations in services/wallet.
+Perform a test-focused hardening pass for the recent services/wallet changes related to real on-chain Bitcoin support and Lightning balance synchronization.
 
-Goal:
-Add the minimum robust schema support needed for:
-- deterministic receive addresses
-- address import/watch state
-- on-chain deposit reconciliation
-- real txid exposure
-- idempotent balance updates
+Your task:
+- Add or update unit tests and integration-style tests using the repository’s current testing conventions.
+- Mock async DB access and mocked Bitcoin Core/LND clients instead of requiring real infrastructure.
+- Cover happy paths and failure paths.
 
-Requirements:
-- Inspect existing wallet-related tables in services/common/db/metadata.py and current Alembic migrations.
-- Propose and implement schema changes for one or more of the following:
-  - derived wallet addresses table
-  - on-chain deposits / UTXO reconciliation table
-  - extra columns on transactions for txid/payment hash visibility and reconciliation metadata if not already present
-- Preserve existing constraints and naming conventions.
-- Add upgrade() and downgrade() implementations.
-- Update any SQLAlchemy metadata definitions accordingly.
+At minimum include tests for:
+1. real BIP-86 address derivation path behavior
+2. Bitcoin Core address import/registration
+3. deposit reconciliation without double-credit
+4. pending vs confirmed deposits
+5. real withdrawal flow with txid persistence
+6. fee estimation endpoint
+7. BOLT11 decode endpoint
+8. QR endpoint returns PNG
+9. Lightning balance synchronization updates wallets.lightning_balance_sat
+10. transaction history now includes txHash/paymentHash
 
-Also:
-- describe how the new tables/columns are used by the wallet service
-- mention indexes and uniqueness constraints needed to prevent double-crediting
+Constraints:
+- Follow existing fixture style and patch settings safely.
+- Preserve current working Lightning tests.
+- Keep tests readable and narrow in scope.
 
-Do not implement endpoint logic in this task unless necessary for compile correctness.
-At the end, summarize the migration plan and the invariants it protects.
+At the end, summarize test coverage added and any uncovered edge cases.
