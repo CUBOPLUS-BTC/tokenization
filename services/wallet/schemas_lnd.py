@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -24,7 +24,7 @@ class Invoice(BaseModel):
     memo: Optional[str] = None
     status: InvoiceStatus
     settled_at: Optional[datetime] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class PaymentCreate(BaseModel):
     payment_request: str = Field(..., description="The bech32 encoded lightning invoice to pay")
@@ -40,17 +40,35 @@ class Payment(BaseModel):
     status: PaymentStatus
     fee_sats: int = 0
     failure_reason: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RouteHintHop(BaseModel):
+    node_id: str
+    chan_id: str
+    fee_base_msat: int
+    fee_proportional_millionths: int
+    cltv_expiry_delta: int
+
+
+class RouteHintOut(BaseModel):
+    hops: list[RouteHintHop]
 
 class Bolt11DecodeRequest(BaseModel):
     payment_request: str
 
 class Bolt11DecodeResponse(BaseModel):
     payment_hash: str
-    amount_sat: int
-    description: str
+    amount_sat: int | None = None
+    amount_msat: int | None = None
+    description: str | None = None
     description_hash: str | None = None
     timestamp: datetime
+    created_at: datetime
     expiry: int
-    destination: str
+    expires_at: datetime
+    destination: str | None = None
+    fallback_address: str | None = None
+    network: str
+    route_hints: list[RouteHintOut] = Field(default_factory=list)
     is_expired: bool

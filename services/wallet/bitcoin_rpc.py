@@ -63,6 +63,9 @@ class BitcoinRPCClient:
     async def importdescriptors(self, requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return await self._call("importdescriptors", requests)
 
+    async def getdescriptorinfo(self, descriptor: str) -> dict[str, Any]:
+        return await self._call("getdescriptorinfo", descriptor)
+
     async def listunspent(self, minconf: int = 1, maxconf: int = 9999999, addresses: list[str] | None = None) -> list[dict[str, Any]]:
         params: list[Any] = [minconf, maxconf]
         if addresses is not None:
@@ -94,6 +97,9 @@ class BitcoinRPCClient:
 
     async def getblockcount(self) -> int:
         return await self._call("getblockcount")
+
+    async def gettransaction(self, txid: str, include_watchonly: bool = True) -> dict[str, Any]:
+        return await self._call("gettransaction", txid, include_watchonly)
 
     async def decodepsbt(self, psbt: str) -> dict[str, Any]:
         return await self._call("decodepsbt", psbt)

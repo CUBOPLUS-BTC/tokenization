@@ -83,6 +83,8 @@ def test_target_tables_exist(inspector: sa.Inspector) -> None:
         "nostr_identities",
         "wallets",
         "transactions",
+        "wallet_addresses",
+        "onchain_deposits",
         "assets",
         "tokens",
         "token_balances",
@@ -223,6 +225,66 @@ def test_transactions_schema_matches_spec(inspector: sa.Inspector) -> None:
         name="fk_transactions_wallet_id_wallets",
         constrained_columns=["wallet_id"],
         referred_table="wallets",
+        referred_columns=["id"],
+    )
+
+
+def test_wallet_addresses_schema_matches_spec(inspector: sa.Inspector) -> None:
+    columns = _column_map(inspector, "wallet_addresses")
+    indexes = _constraint_names(inspector.get_indexes("wallet_addresses"))
+    unique_constraints = _constraint_names(inspector.get_unique_constraints("wallet_addresses"))
+    foreign_keys = inspector.get_foreign_keys("wallet_addresses")
+
+    assert columns["wallet_id"]["nullable"] is False
+    assert columns["address"]["nullable"] is False
+    assert columns["derivation_index"]["nullable"] is False
+    assert columns["script_pubkey"]["nullable"] is False
+    assert columns["imported_to_node"]["default"] is not None
+
+    assert {"ix_wallet_addresses_wallet_id", "ix_wallet_addresses_address"}.issubset(indexes)
+    assert {"uq_wallet_addresses_address", "uq_wallet_addresses_wallet_derivation"}.issubset(unique_constraints)
+    _assert_foreign_key(
+        foreign_keys,
+        name="fk_wallet_addresses_wallet_id_wallets",
+        constrained_columns=["wallet_id"],
+        referred_table="wallets",
+        referred_columns=["id"],
+    )
+
+
+def test_onchain_deposits_schema_matches_spec(inspector: sa.Inspector) -> None:
+    columns = _column_map(inspector, "onchain_deposits")
+    indexes = _constraint_names(inspector.get_indexes("onchain_deposits"))
+    unique_constraints = _constraint_names(inspector.get_unique_constraints("onchain_deposits"))
+    foreign_keys = inspector.get_foreign_keys("onchain_deposits")
+    checks = _constraint_names(inspector.get_check_constraints("onchain_deposits"))
+
+    assert columns["wallet_id"]["nullable"] is False
+    assert columns["wallet_address_id"]["nullable"] is False
+    assert columns["txid"]["nullable"] is False
+    assert columns["vout"]["nullable"] is False
+    assert columns["amount_sat"]["nullable"] is False
+    assert columns["confirmations"]["default"] is not None
+    assert columns["status"]["default"] is not None
+
+    assert {"ix_onchain_deposits_wallet_id", "ix_onchain_deposits_status"}.issubset(indexes)
+    assert "uq_onchain_deposits_txid_vout" in unique_constraints
+    assert {
+        "ck_onchain_deposits_amount_positive",
+        "ck_onchain_deposits_status_allowed",
+    }.issubset(checks)
+    _assert_foreign_key(
+        foreign_keys,
+        name="fk_onchain_deposits_wallet_id_wallets",
+        constrained_columns=["wallet_id"],
+        referred_table="wallets",
+        referred_columns=["id"],
+    )
+    _assert_foreign_key(
+        foreign_keys,
+        name="fk_onchain_deposits_wallet_address_id_wallet_addrs",
+        constrained_columns=["wallet_address_id"],
+        referred_table="wallet_addresses",
         referred_columns=["id"],
     )
 

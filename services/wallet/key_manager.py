@@ -13,9 +13,17 @@ try:
     from embit.networks import NETWORKS
     from embit.script import p2tr
 except ImportError:
-    pass
+    bip32 = None
+    bip39 = None
+    NETWORKS = {}
+    p2tr = None
 
 logger = logging.getLogger(__name__)
+
+
+def _require_embit() -> None:
+    if bip32 is None or p2tr is None or not NETWORKS:
+        raise RuntimeError("embit is required for Taproot key derivation")
 
 
 class KeyManager:
@@ -89,8 +97,9 @@ class KeyManager:
         Path: m/86'/coin_type'/0'/0/derivation_index
         Returns: (bech32m_address, script_pubkey_hex)
         """
+        _require_embit()
         network = NETWORKS["main"] if self.bitcoin_network == "mainnet" else NETWORKS["regtest"]
-        if self.bitcoin_network == "testnet":
+        if self.bitcoin_network in {"testnet", "signet"}:
             network = NETWORKS["test"]
         
         root = bip32.HDKey.from_seed(seed, version=network["xprv"])

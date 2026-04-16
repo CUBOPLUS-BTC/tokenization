@@ -221,14 +221,12 @@ class TestOnchainDepositAddress:
             patch("services.wallet.main.get_or_create_wallet", AsyncMock(return_value=fake_wallet)),
             patch("services.wallet.main.get_bitcoin_rpc") as mock_get_rpc,
             patch("services.wallet.main.get_next_derivation_index", AsyncMock(return_value=1)),
-            patch("services.wallet.main.save_wallet_address") as mock_save,
-            patch("services.wallet.main.get_wallet_address_by_address", AsyncMock(return_value=None)),
-            patch("services.wallet.main.mark_address_imported", AsyncMock()),
+            patch("services.wallet.main.save_wallet_address", AsyncMock()) as mock_save,
         ):
             mock_rpc = AsyncMock()
-            mock_rpc._call = AsyncMock(return_value={"descriptor": "chksum_desc"})
+            mock_rpc.getdescriptorinfo = AsyncMock(return_value={"descriptor": "addr(bcrt1ptest)#abcd"})
+            mock_rpc.importdescriptors = AsyncMock(return_value=[{"success": True}])
             mock_get_rpc.return_value = mock_rpc
-            mock_save.return_value = {"id": str(uuid.uuid4())}
             
             resp = app_client.post(
                 "/wallet/onchain/address",
@@ -239,6 +237,8 @@ class TestOnchainDepositAddress:
         body = resp.json()
         assert body["type"] == "taproot"
         assert body["address"].startswith("bcrt1p")
+        mock_save.assert_awaited_once()
+        assert mock_save.await_args.kwargs["imported_to_node"] is True
 
 
 class TestOnchainFees:
@@ -272,6 +272,7 @@ class TestOnchainFees:
         assert body["high"]["sat_per_vb"] == 25
         assert body["medium"]["sat_per_vb"] == 10
         assert body["low"]["sat_per_vb"] == 5
+        assert body["high"]["source"] == "bitcoin_rpc"
 
 
 class TestOnchainWithdrawal:
@@ -302,6 +303,9 @@ class TestOnchainWithdrawal:
             patch("services.wallet.main.time.time", return_value=now),
             patch("services.wallet.main.get_user_by_id", AsyncMock(return_value=fake_user)),
             patch("services.wallet.main.get_or_create_wallet", AsyncMock(return_value=fake_wallet)),
+            patch("services.wallet.main._create_real_onchain_address", AsyncMock(return_value="bcrt1pchangeaddress")),
+            patch("services.wallet.main.reserve_onchain_balance", AsyncMock(return_value=True)),
+            patch("services.wallet.main.release_onchain_balance", AsyncMock()) as release_funds,
             patch("services.wallet.main.create_onchain_withdrawal", AsyncMock(return_value=created_row)),
             patch("services.wallet.main.record_audit_event", audit_mock),
             patch("services.wallet.main.get_bitcoin_rpc") as mock_get_rpc,
@@ -340,6 +344,7 @@ class TestOnchainWithdrawal:
         assert body["amount_sat"] == 100_000
         assert body["fee_sat"] == 705
         assert body["status"] == "pending"
+        release_funds.assert_not_awaited()
         audit_mock.assert_awaited_once_with(
             ANY,
             settings=settings,
@@ -414,6 +419,61 @@ class TestTransactionHistory:
         assert len(body["transactions"]) == 1
         assert body["transactions"][0]["type"] == "withdrawal"
         assert body["transactions"][0]["amount_sat"] == 90_000
+
+    def test_history_exposes_tx_hashes_and_payment_hashes(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user()
+        fake_wallet = _make_fake_wallet(fake_user.id)
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        now = datetime.now(tz=timezone.utc)
+        rows = [
+            {
+                "id": uuid.uuid4(),
+                "wallet_id": fake_wallet.id,
+                "type": "withdrawal",
+                "amount_sat": 120_000,
+                "direction": "out",
+                "status": "pending",
+                "txid": "a" * 64,
+                "ln_payment_hash": None,
+                "description": "On-chain withdrawal",
+                "created_at": now,
+                "confirmed_at": None,
+                "fee_sat": 500,
+            },
+            {
+                "id": uuid.uuid4(),
+                "wallet_id": fake_wallet.id,
+                "type": "ln_send",
+                "amount_sat": 21_000,
+                "direction": "out",
+                "status": "confirmed",
+                "txid": None,
+                "ln_payment_hash": "b" * 64,
+                "description": "Lightning payment",
+                "created_at": now - timedelta(minutes=1),
+                "confirmed_at": now - timedelta(minutes=1),
+                "fee_sat": 50,
+            },
+        ]
+
+        with (
+            patch("services.wallet.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.wallet.main.get_or_create_wallet", AsyncMock(return_value=fake_wallet)),
+            patch("services.wallet.main.list_wallet_transactions", AsyncMock(return_value=rows)),
+        ):
+            resp = app_client.get(
+                "/wallet/transactions",
+                headers=_auth_headers(access_token),
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()["transactions"]
+        assert body[0]["txHash"] == "a" * 64
+        assert body[0]["paymentHash"] is None
+        assert body[0]["fee_sat"] == 500
+        assert body[1]["txHash"] is None
+        assert body[1]["paymentHash"] == "b" * 64
 
     def test_history_supports_cursor_pagination(self, client):
         app_client, _, settings = client
@@ -532,13 +592,12 @@ class TestCustodyAndOnRamp:
             patch("services.wallet.main.record_audit_event", audit_mock),
             patch("services.wallet.main.get_next_derivation_index", AsyncMock(return_value=1)),
             patch("services.wallet.main.get_bitcoin_rpc") as mock_get_rpc,
-            patch("services.wallet.main.save_wallet_address") as mock_save,
-            patch("services.wallet.main.mark_address_imported", AsyncMock()),
+            patch("services.wallet.main.save_wallet_address", AsyncMock()) as mock_save,
         ):
             mock_rpc = AsyncMock()
-            mock_rpc._call = AsyncMock(return_value={"descriptor": "test"})
+            mock_rpc.getdescriptorinfo = AsyncMock(return_value={"descriptor": "addr(bcrt1ptest)#abcd"})
+            mock_rpc.importdescriptors = AsyncMock(return_value=[{"success": True}])
             mock_get_rpc.return_value = mock_rpc
-            mock_save.return_value = {"id": str(uuid.uuid4())}
 
             resp = app_client.post(
                 "/wallet/fiat/onramp/session",
@@ -573,13 +632,12 @@ class TestCustodyAndOnRamp:
             patch("services.wallet.main.get_kyc_status", AsyncMock(return_value=_make_kyc_row("pending"))),
             patch("services.wallet.main.get_next_derivation_index", AsyncMock(return_value=1)),
             patch("services.wallet.main.get_bitcoin_rpc") as mock_get_rpc,
-            patch("services.wallet.main.save_wallet_address") as mock_save,
-            patch("services.wallet.main.mark_address_imported", AsyncMock()),
+            patch("services.wallet.main.save_wallet_address", AsyncMock()) as mock_save,
         ):
             mock_rpc = AsyncMock()
-            mock_rpc._call = AsyncMock(return_value={"descriptor": "test"})
+            mock_rpc.getdescriptorinfo = AsyncMock(return_value={"descriptor": "addr(bcrt1ptest)#abcd"})
+            mock_rpc.importdescriptors = AsyncMock(return_value=[{"success": True}])
             mock_get_rpc.return_value = mock_rpc
-            mock_save.return_value = {"id": str(uuid.uuid4())}
 
             resp = app_client.post(
                 "/wallet/fiat/onramp/session",
@@ -596,3 +654,23 @@ class TestCustodyAndOnRamp:
 
         assert resp.status_code == 409
         assert resp.json()["error"]["code"] == "provider_kyc_required"
+
+
+class TestQrRendering:
+    def test_wallet_qr_endpoint_returns_png(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user()
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+
+        with (
+            patch("services.wallet.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.wallet.main._render_qr_png", return_value=b"\x89PNG\r\n\x1a\nqr"),
+        ):
+            resp = app_client.get(
+                "/wallet/qr?value=lnbc1example",
+                headers=_auth_headers(access_token),
+            )
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/png"
+        assert resp.content.startswith(b"\x89PNG\r\n\x1a\n")
