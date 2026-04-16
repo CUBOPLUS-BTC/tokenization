@@ -127,6 +127,11 @@ class AuthenticatedPrincipal:
 
 
 def _make_async_url(sync_url: str) -> str:
+    if sync_url.startswith("postgresql+asyncpg://"):
+        return sync_url
+    for prefix in ("postgresql+", "postgres+"):
+        if sync_url.startswith(prefix):
+            return "postgresql+asyncpg://" + sync_url.split("://", 1)[1]
     for prefix in ("postgresql://", "postgres://"):
         if sync_url.startswith(prefix):
             return "postgresql+asyncpg://" + sync_url[len(prefix):]

@@ -41,6 +41,11 @@ _engine: AsyncEngine | None = None
 
 def _make_async_url(sync_url: str) -> str:
     url = sync_url
+    if url.startswith("postgresql+asyncpg://"):
+        return url
+    for prefix in ("postgresql+", "postgres+"):
+        if url.startswith(prefix):
+            return "postgresql+asyncpg://" + url.split("://", 1)[1]
     for prefix in ("postgresql://", "postgres://"):
         if url.startswith(prefix):
             return "postgresql+asyncpg://" + url[len(prefix):]
