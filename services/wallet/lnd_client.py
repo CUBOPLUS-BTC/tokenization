@@ -76,6 +76,14 @@ class LNDClient:
         stub = self._get_stub()
         return stub.GetInfo(ln.GetInfoRequest())
 
+    def decode_pay_req(self, payment_request: str) -> ln.PayReq:
+        stub = self._get_stub()
+        return stub.DecodePayReq(ln.PayReqString(pay_req=payment_request))
+
+    def channel_balance(self) -> ln.ChannelBalanceResponse:
+        stub = self._get_stub()
+        return stub.ChannelBalance(ln.ChannelBalanceRequest())
+
     def __del__(self):
         if self._channel:
             self._channel.close()

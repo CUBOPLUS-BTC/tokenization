@@ -41,3 +41,16 @@ class Payment(BaseModel):
     fee_sats: int = 0
     failure_reason: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class Bolt11DecodeRequest(BaseModel):
+    payment_request: str
+
+class Bolt11DecodeResponse(BaseModel):
+    payment_hash: str
+    amount_sat: int
+    description: str
+    description_hash: str | None = None
+    timestamp: datetime
+    expiry: int
+    destination: str
+    is_expired: bool
