@@ -23,7 +23,7 @@ cp infra/.env.local.example infra/.env.local
 
 `infra/.env.local` is the runtime env file used by Docker Compose.
 
-By default, the local profile requires PostgreSQL, Redis, and Bitcoin Core. LND and Elements are marked optional via `LND_GRPC_REQUIRED=false` and `ELEMENTS_RPC_REQUIRED=false`, so the stack can report `ready` while Lightning/Liquid-specific flows remain degraded until you wire those services.
+By default, the local profile now launches a real regtest stack for PostgreSQL, Redis, Bitcoin Core, LND, and Elements. `LND_GRPC_REQUIRED=true` and `ELEMENTS_RPC_REQUIRED=true` in `infra/.env.local.example`, so local readiness only turns green when Lightning and Liquid dependencies are actually up.
 
 Run from repository root:
 
@@ -35,6 +35,9 @@ This starts:
 
 - `postgres` on `localhost:5432`
 - `redis` on `localhost:6379`
+- `bitcoind` on `localhost:18443`
+- `lnd` on `localhost:10009`
+- `elementsd` on `localhost:7041`
 - `wallet`, `tokenization`, `marketplace`, `education`, `nostr`
 - `gateway` on `localhost:8000`
 
@@ -57,16 +60,40 @@ docker compose -f infra/docker-compose.local.yml down -v
 - PostgreSQL readiness: container healthcheck with `pg_isready`
 - Redis readiness: container healthcheck with `redis-cli ping`
 - Bitcoin Core readiness: container healthcheck with `bitcoin-cli getblockchaininfo`
+- LND readiness: container healthcheck with `lncli getinfo`
+- Elements readiness: container healthcheck with `elements-cli getwalletinfo`
 
 ## Bitcoin Core (regtest)
 
-The local stack includes a pre-configured Bitcoin Core node running in `regtest` mode.
+The local stack includes a pre-configured Bitcoin Core node running in `regtest` mode with ZMQ block and transaction publishers enabled for LND.
 
 - **RPC Endpoint**: `localhost:18443`
 - **Default RPC User**: `local_rpc`
 - **Default RPC Password**: `local_rpc_password`
 
 The local profile template in `infra/.env.local.example` is aligned with these same regtest credentials.
+
+## LND (regtest)
+
+The compose profile includes an `lnd` service wired to the local `bitcoind` over JSON-RPC and ZMQ. For local development it uses `noseedbackup`, so the node self-initializes on first boot and persists its state in the `lnd_data` Docker volume.
+
+- **gRPC Endpoint**: `localhost:10009`
+- **TLS / Macaroon Mount for Python services**: `/run/secrets/lnd/...`
+
+The `wallet` service mounts the same LND volume read-only, so `services/wallet/lnd_client.py` connects to a real daemon instead of falling back to its local mock whenever the compose stack is running.
+
+## Elements (elementsregtest)
+
+The local profile also builds an `elementsd` container from the official Elements release binaries and wires it to the same `bitcoind` via mainchain RPC so peg-in and peg-out RPC flows can be exercised against a real sidechain daemon.
+
+- **RPC Endpoint**: `localhost:7041`
+- **Default RPC User**: `user`
+- **Default RPC Password**: `pass`
+- **Default Wallet Name**: `platform`
+
+On first boot, the container creates or loads the configured wallet and mines bootstrap blocks so issuance and Liquid wallet RPC methods have spendable local funds.
+
+For Lightning routing tests, remember this stack only launches a single LND node. Invoice creation and gRPC integration are real, but multi-hop payment tests still require an additional peer/channel topology.
 
 ### Mining Blocks
 
