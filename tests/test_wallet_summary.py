@@ -74,7 +74,9 @@ def test_get_wallet_summary_unauthorized(mock_env):
 @patch("services.wallet.main.get_token_balances_for_user")
 @patch("services.wallet.main.summarize_yield_for_user")
 @patch("services.wallet.main.accrue_pending_yield_for_user")
+@patch("services.wallet.main.sync_wallet_lightning_state")
 def test_get_wallet_summary_success(
+    mock_sync_lightning,
     mock_accrue_yield,
     mock_summarize_yield,
     mock_get_tokens,
@@ -129,7 +131,9 @@ def test_get_wallet_summary_success(
 
 @patch("services.wallet.main._engine")
 @patch("services.wallet.main.get_wallet_by_user_id")
+@patch("services.wallet.main.sync_wallet_lightning_state")
 def test_get_wallet_summary_not_found(
+    mock_sync_lightning,
     mock_get_wallet,
     mock_engine,
     client,
@@ -152,7 +156,9 @@ def test_get_wallet_summary_not_found(
 @patch("services.wallet.main.get_user_yield_accruals")
 @patch("services.wallet.main.summarize_yield_for_user")
 @patch("services.wallet.main.accrue_pending_yield_for_user")
+@patch("services.wallet.main.sync_wallet_lightning_state")
 def test_get_wallet_yield_summary_returns_breakdown(
+    mock_sync_lightning,
     mock_accrue_yield,
     mock_summarize_yield,
     mock_get_accruals,

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+from io import BytesIO
 import logging
 import os
 from pathlib import Path
@@ -19,9 +20,10 @@ import uuid
 import grpc
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Security, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 import uvicorn
 
@@ -52,25 +54,26 @@ from .db import (
     get_engine,
     get_or_create_wallet,
     get_token_balances_for_user,
+    get_transaction_by_payment_hash,
     get_user_by_id,
     get_wallet_by_user_id,
     list_wallet_transactions,
     get_next_derivation_index,
+    recompute_lightning_balance,
+    release_onchain_balance,
+    reserve_onchain_balance,
     save_wallet_address,
-    get_wallet_address_by_address,
-    mark_address_imported,
 )
 import asyncio
-from .reconciliation import reconciliation_loop, lightning_sync_loop
+from .reconciliation import reconciliation_loop, lightning_sync_loop, sync_wallet_lightning_state
 from .key_manager import KeyManager
-from .bitcoin_rpc import get_bitcoin_rpc
+from .bitcoin_rpc import BitcoinRPCError, get_bitcoin_rpc
 from .lnd_client import LNDClient
 from .schemas import (
     CustodyStatusResponse,
     FiatOnRampProviderStatus,
     FiatOnRampProvidersResponse,
     FiatOnRampSessionRequest,
-    FiatOnRampSessionResponse,
     FiatOnRampSessionResponse,
     OnchainAddressResponse,
     OnchainWithdrawalRequest,
@@ -90,6 +93,8 @@ from .schemas_lnd import (
     PaymentStatus,
     Bolt11DecodeRequest,
     Bolt11DecodeResponse,
+    RouteHintHop,
+    RouteHintOut,
 )
 from .schemas_wallet import (
     TokenBalance,
@@ -117,6 +122,9 @@ _TOTP_DIGITS = 6
 _TOTP_PERIOD_SECONDS = 30
 _bearer_scheme = HTTPBearer(auto_error=False)
 _engine: AsyncEngine | Any | None = None
+_WITHDRAWAL_IDEMPOTENCY_TTL_SECONDS = 600
+_withdrawal_idempotency_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+_withdrawal_idempotency_inflight: set[tuple[str, str]] = set()
 
 
 @dataclass(frozen=True)
@@ -241,6 +249,97 @@ def _invalid_access_token_error() -> ContractError:
     )
 
 
+def _withdrawal_cache_key(wallet_id: str, idempotency_key: str) -> tuple[str, str]:
+    return wallet_id, idempotency_key.strip()[:128]
+
+
+def _get_cached_withdrawal_response(wallet_id: str, idempotency_key: str) -> dict[str, Any] | None:
+    cache_key = _withdrawal_cache_key(wallet_id, idempotency_key)
+    cached = _withdrawal_idempotency_cache.get(cache_key)
+    if cached is None:
+        return None
+
+    created_at, payload = cached
+    if time.time() - created_at > _WITHDRAWAL_IDEMPOTENCY_TTL_SECONDS:
+        _withdrawal_idempotency_cache.pop(cache_key, None)
+        return None
+
+    return payload
+
+
+def _mark_withdrawal_inflight(wallet_id: str, idempotency_key: str) -> bool:
+    cache_key = _withdrawal_cache_key(wallet_id, idempotency_key)
+    if cache_key in _withdrawal_idempotency_inflight:
+        return False
+    _withdrawal_idempotency_inflight.add(cache_key)
+    return True
+
+
+def _clear_withdrawal_inflight(wallet_id: str, idempotency_key: str) -> None:
+    _withdrawal_idempotency_inflight.discard(_withdrawal_cache_key(wallet_id, idempotency_key))
+
+
+def _store_cached_withdrawal_response(wallet_id: str, idempotency_key: str, payload: dict[str, Any]) -> None:
+    _withdrawal_idempotency_cache[_withdrawal_cache_key(wallet_id, idempotency_key)] = (time.time(), payload)
+
+
+def _infer_bolt11_network(payment_request: str) -> str:
+    lowered = payment_request.strip().lower()
+    if lowered.startswith("lnbcrt"):
+        return "regtest"
+    if lowered.startswith("lntb"):
+        return "signet" if settings.bitcoin_network == "signet" else "testnet"
+    if lowered.startswith("lnbc"):
+        return "mainnet"
+    return settings.bitcoin_network
+
+
+def _route_hints_from_pay_req(pay_req: Any) -> list[RouteHintOut]:
+    route_hints: list[RouteHintOut] = []
+    for route_hint in getattr(pay_req, "route_hints", []):
+        hops = [
+            RouteHintHop(
+                node_id=getattr(hop, "node_id", ""),
+                chan_id=str(getattr(hop, "chan_id", "")),
+                fee_base_msat=int(getattr(hop, "fee_base_msat", 0)),
+                fee_proportional_millionths=int(getattr(hop, "fee_proportional_millionths", 0)),
+                cltv_expiry_delta=int(getattr(hop, "cltv_expiry_delta", 0)),
+            )
+            for hop in getattr(route_hint, "hop_hints", [])
+        ]
+        route_hints.append(RouteHintOut(hops=hops))
+    return route_hints
+
+
+def _optional_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _render_qr_png(value: str, *, box_size: int = 8, border: int = 4) -> bytes:
+    try:
+        import qrcode
+    except ImportError as exc:
+        raise ContractError(
+            code="qr_render_unavailable",
+            message="QR rendering is unavailable on this deployment.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        ) from exc
+
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=box_size,
+        border=border,
+    )
+    qr.add_data(value)
+    qr.make(fit=True)
+
+    image = qr.make_image(fill_color="black", back_color="white")
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 async def _get_current_principal(
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer_scheme),
 ) -> AuthenticatedPrincipal:
@@ -290,23 +389,36 @@ async def _create_real_onchain_address(conn: AsyncConnection, wallet: sa.engine.
 
     idx = await get_next_derivation_index(conn, str(_row_value(wallet, "id")))
     address, script_pubkey = key_mgr.derive_taproot_address(seed, idx)
-    
+
     bitcoin_rpc = get_bitcoin_rpc(settings)
-    imported = False
     try:
-        desc = f"addr({address})"
-        desc_info = await bitcoin_rpc._call("getdescriptorinfo", desc)
-        chksum_desc = desc_info["descriptor"]
-        
-        await bitcoin_rpc.importdescriptors([{
-            "desc": chksum_desc,
-            "timestamp": "now",
-            "watchonly": True,
-            "label": f"wallet_{_row_value(wallet, 'id')}"
-        }])
-        imported = True
-    except Exception as exc:
-        logger.warning("Failed to import address %s to Bitcoin node: %s", address, exc)
+        descriptor_info = await bitcoin_rpc.getdescriptorinfo(f"addr({address})")
+        import_results = await bitcoin_rpc.importdescriptors(
+            [
+                {
+                    "desc": descriptor_info["descriptor"],
+                    "timestamp": "now",
+                    "active": False,
+                    "internal": False,
+                    "label": f"wallet_{_row_value(wallet, 'id')}",
+                }
+            ]
+        )
+    except BitcoinRPCError as exc:
+        logger.error("Failed to import address %s into Bitcoin Core: %s", address, exc)
+        raise ContractError(
+            code="bitcoin_rpc_unavailable",
+            message="Bitcoin Core could not register the deposit address.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        ) from exc
+
+    if not import_results or not import_results[0].get("success"):
+        logger.error("Bitcoin Core rejected deposit address import for %s: %s", address, import_results)
+        raise ContractError(
+            code="address_import_failed",
+            message="Bitcoin Core rejected the deposit address import.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
     await save_wallet_address(
         conn,
@@ -314,12 +426,9 @@ async def _create_real_onchain_address(conn: AsyncConnection, wallet: sa.engine.
         address=address,
         derivation_index=idx,
         script_pubkey=script_pubkey,
+        imported_to_node=True,
     )
-    if imported:
-        row = await get_wallet_address_by_address(conn, address)
-        if row:
-            await mark_address_imported(conn, str(_row_value(row, "id")))
-            
+
     return address
 
 def _generate_txid(*, wallet_id: str, address: str, amount_sat: int, fee_sat: int) -> str:
@@ -457,6 +566,12 @@ async def get_wallet_summary(user_id: str = Depends(get_current_user_id)):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Wallet not found for user",
             )
+
+        try:
+            await sync_wallet_lightning_state(conn, str(_row_value(wallet_row, "id")), lnd_client)
+            wallet_row = await get_wallet_by_user_id(conn, user_id) or wallet_row
+        except Exception as exc:
+            logger.warning("Wallet summary returned cached Lightning balance for user %s: %s", user_id, exc)
 
         await accrue_pending_yield_for_user(conn, user_id)
         await conn.commit()
@@ -694,17 +809,19 @@ async def create_invoice(
         resp = lnd_client.create_invoice(memo=req.memo or "", amount_sats=req.amount_sats)
 
         wallet = await get_wallet_by_user_id(conn, user_id)
-        if wallet:
-            await create_transaction(
-                conn,
-                wallet_id=_row_value(wallet, "id"),
-                type="ln_receive",
-                direction="in",
-                amount_sat=req.amount_sats,
-                status="pending",
-                ln_payment_hash=resp.r_hash.hex(),
-                description=req.memo,
-            )
+        if wallet is None:
+            wallet = await get_or_create_wallet(conn, user_id)
+
+        await create_transaction(
+            conn,
+            wallet_id=_row_value(wallet, "id"),
+            type="ln_receive",
+            direction="in",
+            amount_sat=req.amount_sats,
+            status="pending",
+            ln_payment_hash=resp.r_hash.hex(),
+            description=req.memo,
+        )
 
         record_business_event("wallet_invoice_create")
         return Invoice(
@@ -768,7 +885,9 @@ async def pay_invoice(
             status=db_status,
             ln_payment_hash=resp.payment_hash.hex(),
             description=f"Payment to {req.payment_request[:20]}...",
+            fee_sat=resp.payment_route.total_fees if resp.payment_route else 0,
         )
+        await sync_wallet_lightning_state(conn, str(_row_value(wallet, "id")), lnd_client)
         await record_audit_event(
             conn,
             settings=settings,
@@ -812,7 +931,27 @@ async def get_invoice(
     user_id: str = Depends(get_current_user_id),
 ):
     try:
+        async with _runtime_engine().connect() as conn:
+            wallet = await get_wallet_by_user_id(conn, user_id)
+            if wallet is None:
+                raise HTTPException(status_code=404, detail="Invoice not found")
+
+            invoice_row = await get_transaction_by_payment_hash(
+                conn,
+                wallet_id=_row_value(wallet, "id"),
+                payment_hash=r_hash,
+                tx_type="ln_receive",
+            )
+            if invoice_row is None:
+                raise HTTPException(status_code=404, detail="Invoice not found")
+
         ln_invoice = lnd_client.lookup_invoice(r_hash_str=r_hash)
+
+        async with _runtime_engine().connect() as conn:
+            try:
+                await sync_wallet_lightning_state(conn, str(_row_value(wallet, "id")), lnd_client)
+            except Exception as sync_exc:
+                logger.warning("Invoice lookup returned live state but could not refresh wallet Lightning cache: %s", sync_exc)
 
         status_map = {
             0: InvoiceStatus.OPEN,
@@ -848,24 +987,35 @@ async def decode_bolt11(
 ):
     try:
         req = lnd_client.decode_pay_req(payment_request=body.payment_request)
-        
+
         created_at = datetime.fromtimestamp(req.timestamp, tz=timezone.utc)
-        is_expired = (created_at + timedelta(seconds=req.expiry)) < datetime.now(timezone.utc)
+        expires_at = created_at + timedelta(seconds=req.expiry)
+        is_expired = expires_at < datetime.now(timezone.utc)
 
         record_business_event("wallet_bolt11_decode")
         return Bolt11DecodeResponse(
             payment_hash=req.payment_hash,
-            amount_sat=req.num_satoshis,
-            description=req.description,
-            description_hash=req.description_hash if req.description_hash else None,
+            amount_sat=req.num_satoshis or None,
+            amount_msat=req.num_msat or None,
+            description=_optional_str(req.description),
+            description_hash=_optional_str(req.description_hash),
             timestamp=created_at,
+            created_at=created_at,
             expiry=req.expiry,
-            destination=req.destination,
+            expires_at=expires_at,
+            destination=_optional_str(req.destination),
+            fallback_address=_optional_str(req.fallback_addr),
+            network=_infer_bolt11_network(body.payment_request),
+            route_hints=_route_hints_from_pay_req(req),
             is_expired=is_expired,
         )
     except grpc.RpcError as exc:
         logger.error("gRPC error decoding invoice: %s", exc)
-        raise HTTPException(status_code=400, detail="Invalid or unsupported invoice") from exc
+        raise ContractError(
+            code="invalid_bolt11",
+            message="Invalid or unsupported Lightning invoice.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+        ) from exc
     except Exception as exc:
         logger.error("Unexpected error decoding invoice: %s", exc)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
@@ -883,33 +1033,69 @@ async def decode_bolt11(
     response_model=FeeEstimateResponse,
     include_in_schema=False,
 )
-async def get_onchain_fees():
+async def get_onchain_fees(
+    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
     bitcoin_rpc = get_bitcoin_rpc(settings)
-    
-    async def _estimate(blocks: int, default_sat_vb: int) -> int:
+
+    async def _estimate(blocks: int, default_sat_vb: int) -> FeeEstimateLevel:
         try:
             res = await bitcoin_rpc.estimatesmartfee(blocks)
             btc_kvb = res.get("feerate", -1)
             if btc_kvb > 0:
                 sat_vb = int((btc_kvb * 100_000_000) / 1000)
-                return max(1, sat_vb)
+                return FeeEstimateLevel(
+                    sat_per_vb=max(1, sat_vb),
+                    target_blocks=blocks,
+                    source="bitcoin_rpc",
+                )
         except Exception as exc:
             logger.warning("Fee estimation failed for %s blocks: %s", blocks, exc)
-        return default_sat_vb
+        return FeeEstimateLevel(
+            sat_per_vb=default_sat_vb,
+            target_blocks=blocks,
+            source="fallback",
+        )
 
     # low = 12 blocks (~2 hrs), medium = 6 blocks (~1 hr), high = 2 blocks (~20 mins)
-    low_sat_vb, med_sat_vb, high_sat_vb = await asyncio.gather(
+    low_level, medium_level, high_level = await asyncio.gather(
         _estimate(12, 1),
         _estimate(6, 5),
         _estimate(2, 10)
     )
 
-    record_business_event("wallet_fee_estimate")
-    return FeeEstimateResponse(
-        low=FeeEstimateLevel(sat_per_vb=low_sat_vb, target_blocks=12),
-        medium=FeeEstimateLevel(sat_per_vb=med_sat_vb, target_blocks=6),
-        high=FeeEstimateLevel(sat_per_vb=high_sat_vb, target_blocks=2),
+    record_business_event(
+        "wallet_fee_estimate",
+        labels={
+            "used_fallback": any(level.source == "fallback" for level in (low_level, medium_level, high_level))
+        },
     )
+    return FeeEstimateResponse(
+        low=low_level,
+        medium=medium_level,
+        high=high_level,
+    )
+
+
+@app.get(
+    "/wallet/qr",
+    status_code=status.HTTP_200_OK,
+    summary="Render a PNG QR code for a wallet string payload",
+)
+@app.get(
+    "/qr",
+    status_code=status.HTTP_200_OK,
+    include_in_schema=False,
+)
+async def render_qr_code(
+    value: str = Query(min_length=1, max_length=4096),
+    box_size: int = Query(default=8, ge=1, le=20),
+    border: int = Query(default=4, ge=0, le=20),
+    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    payload = _render_qr_png(value, box_size=box_size, border=border)
+    record_business_event("wallet_qr_render")
+    return Response(content=payload, media_type="image/png")
 
 @app.post(
     "/wallet/onchain/address",
@@ -977,9 +1163,27 @@ async def withdraw_onchain(
             )
 
         wallet = await get_or_create_wallet(conn, principal.id)
+        wallet_id = str(_row_value(wallet, "id"))
+        idempotency_key = (request.headers.get("X-Idempotency-Key") or "").strip()
+        if idempotency_key:
+            cached = _get_cached_withdrawal_response(wallet_id, idempotency_key)
+            if cached is not None:
+                return cached
+            if not _mark_withdrawal_inflight(wallet_id, idempotency_key):
+                raise ContractError(
+                    code="duplicate_request_in_flight",
+                    message="A withdrawal with this idempotency key is already being processed.",
+                    status_code=status.HTTP_409_CONFLICT,
+                )
+
         fee_rate_btc_kvb = body.fee_rate_sat_vb / 100_000.0
         outputs = [{body.address: body.amount_sat / 100_000_000.0}]
-        options = {"feeRate": fee_rate_btc_kvb}
+        change_address = await _create_real_onchain_address(conn, wallet)
+        options = {
+            "feeRate": fee_rate_btc_kvb,
+            "includeWatching": True,
+            "changeAddress": change_address,
+        }
 
         bitcoin_rpc = get_bitcoin_rpc(settings)
         try:
@@ -987,6 +1191,8 @@ async def withdraw_onchain(
             psbt_str = funded["psbt"]
             fee_sat = int(funded["fee"] * 100_000_000)
         except Exception as exc:
+            if idempotency_key:
+                _clear_withdrawal_inflight(wallet_id, idempotency_key)
             logger.error("Failed to fund PSBT: %s", exc)
             raise ContractError(
                 code="insufficient_funds",
@@ -994,13 +1200,27 @@ async def withdraw_onchain(
                 status_code=status.HTTP_409_CONFLICT,
             ) from exc
 
+        total_cost_sat = body.amount_sat + fee_sat
+        reserved = await reserve_onchain_balance(
+            conn,
+            wallet_id=wallet_id,
+            total_cost_sat=total_cost_sat,
+        )
+        if not reserved:
+            if idempotency_key:
+                _clear_withdrawal_inflight(wallet_id, idempotency_key)
+            raise ContractError(
+                code="insufficient_funds",
+                message="Wallet balance is insufficient for this withdrawal and fee.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
         try:
             encrypted_seed = bytes(_row_value(wallet, "encrypted_seed", b""))
             key_mgr = KeyManager(settings.wallet_encryption_key, settings.bitcoin_network)
             seed = key_mgr.decrypt_seed(encrypted_seed)
 
             from common.db.metadata import wallet_addresses as wa_table
-            import sqlalchemy as sa
             result = await conn.execute(
                 sa.select(wa_table.c.script_pubkey, wa_table.c.derivation_index)
                 .where(wa_table.c.wallet_id == _row_value(wallet, "id"))
@@ -1013,7 +1233,7 @@ async def withdraw_onchain(
 
             psbt = PSBT.from_base64(psbt_str)
             network = NETWORKS["main"] if settings.bitcoin_network == "mainnet" else NETWORKS["regtest"]
-            if settings.bitcoin_network == "testnet":
+            if settings.bitcoin_network in {"testnet", "signet"}:
                 network = NETWORKS["test"]
             
             root = bip32.HDKey.from_seed(seed, version=network["xprv"])
@@ -1033,7 +1253,7 @@ async def withdraw_onchain(
                 inp.taproot_bip32_derivations[derived.key.get_public_key()] = (
                     [],
                     DerivationPath(
-                        root.child(0).fingerprint,
+                        getattr(root, "my_fingerprint", root.child(0).fingerprint),
                         [86 | 0x80000000, coin_type | 0x80000000, 0x80000000, 0, idx]
                     )
                 )
@@ -1048,6 +1268,13 @@ async def withdraw_onchain(
             txid = await bitcoin_rpc.sendrawtransaction(finalized["hex"])
 
         except Exception as exc:
+            await release_onchain_balance(
+                conn,
+                wallet_id=wallet_id,
+                total_cost_sat=total_cost_sat,
+            )
+            if idempotency_key:
+                _clear_withdrawal_inflight(wallet_id, idempotency_key)
             logger.error("Failed to sign/broadcast PSBT: %s", exc)
             raise ContractError(
                 code="transaction_failed",
@@ -1055,15 +1282,15 @@ async def withdraw_onchain(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             ) from exc
 
-        row = await create_onchain_withdrawal(
-            conn,
-            wallet_id=str(_row_value(wallet, "id")),
-            amount_sat=body.amount_sat,
-            fee_sat=fee_sat,
-            txid=txid,
-            description=f"On-chain withdrawal to {body.address}",
-        )
-        if row is not None:
+        try:
+            row = await create_onchain_withdrawal(
+                conn,
+                wallet_id=wallet_id,
+                amount_sat=body.amount_sat,
+                fee_sat=fee_sat,
+                txid=txid,
+                description=f"On-chain withdrawal to {body.address}",
+            )
             await record_audit_event(
                 conn,
                 settings=settings,
@@ -1079,22 +1306,22 @@ async def withdraw_onchain(
                     "address_tail": body.address[-8:],
                 },
             )
-
-    if row is None:
-        record_business_event("wallet_onchain_withdrawal", outcome="failure")
-        raise ContractError(
-            code="insufficient_funds",
-            message="Wallet balance is insufficient for this withdrawal and fee.",
-            status_code=status.HTTP_409_CONFLICT,
-        )
+        except Exception:
+            if idempotency_key:
+                _clear_withdrawal_inflight(wallet_id, idempotency_key)
+            raise
 
     record_business_event("wallet_onchain_withdrawal")
-    return OnchainWithdrawalResponse(
+    response_payload = OnchainWithdrawalResponse(
         txid=txid,
         amount_sat=body.amount_sat,
         fee_sat=fee_sat,
         status=_row_value(row, "status"),
     ).model_dump()
+    if idempotency_key:
+        _store_cached_withdrawal_response(wallet_id, idempotency_key, response_payload)
+        _clear_withdrawal_inflight(wallet_id, idempotency_key)
+    return response_payload
 
 
 @app.get(

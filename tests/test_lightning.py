@@ -110,11 +110,13 @@ def test_create_invoice_success(
 @patch("services.wallet.main.lnd_client")
 @patch("services.wallet.main.get_wallet_by_user_id")
 @patch("services.wallet.main.create_transaction")
+@patch("services.wallet.main.sync_wallet_lightning_state")
 @patch("services.wallet.main.get_db_conn")
 @patch("services.wallet.auth.get_user_2fa_secret")
 def test_pay_invoice_success_no_2fa(
     mock_get_2fa,
     mock_get_db,
+    mock_sync_lightning,
     mock_create_tx,
     mock_get_wallet,
     mock_lnd,
@@ -186,9 +188,11 @@ def test_pay_invoice_requires_2fa(
 @patch("services.wallet.main.lnd_client")
 @patch("services.wallet.main.get_wallet_by_user_id")
 @patch("services.wallet.main.create_transaction")
+@patch("services.wallet.main.sync_wallet_lightning_state")
 @patch("services.wallet.main.get_db_conn")
 def test_pay_invoice_with_valid_2fa(
     mock_get_db,
+    mock_sync_lightning,
     mock_create_tx,
     mock_get_wallet,
     mock_lnd,
@@ -199,9 +203,6 @@ def test_pay_invoice_with_valid_2fa(
 ):
     """Should succeed if valid 2FA code is provided."""
     # Mock 2FA (enabled for user)
-    mock_get_2fa.return_value = AsyncMock(return_value="JBSWY3DPEHPK3PXP")() # Works with the way require_2fa is written
-    # Actually require_2fa calls get_user_2fa_secret(conn, user_id)
-    # Using patch directly on the function is better
     mock_get_2fa.return_value = "JBSWY3DPEHPK3PXP"
     
     mock_totp = MagicMock()

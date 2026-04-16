@@ -91,6 +91,21 @@ async def get_wallet_by_user_id(
     return result.fetchone()
 
 
+async def get_wallet_by_id(
+    conn: AsyncConnection,
+    wallet_id: str | uuid.UUID,
+) -> sa.engine.Row | None:
+    result = await conn.execute(
+        sa.select(wallets_table).where(wallets_table.c.id == _as_uuid(wallet_id))
+    )
+    return result.fetchone()
+
+
+async def list_wallets(conn: AsyncConnection) -> list[sa.engine.Row]:
+    result = await conn.execute(sa.select(wallets_table))
+    return list(result.fetchall())
+
+
 async def get_or_create_wallet(
     conn: AsyncConnection,
     user_id: str,
@@ -189,6 +204,7 @@ async def create_transaction(
     txid: str | None = None,
     ln_payment_hash: str | None = None,
     description: str | None = None,
+    fee_sat: int | None = None,
     confirmed_at: datetime | None = None,
 ) -> sa.engine.Row:
     result = await conn.execute(
@@ -203,6 +219,7 @@ async def create_transaction(
             txid=txid,
             ln_payment_hash=ln_payment_hash,
             description=description,
+            fee_sat=fee_sat,
             created_at=_utc_now(),
             confirmed_at=confirmed_at,
         )
@@ -232,6 +249,111 @@ async def update_transaction_status(
     await conn.commit()
 
 
+async def update_transaction_status_by_txid(
+    conn: AsyncConnection,
+    *,
+    wallet_id: str | uuid.UUID,
+    txid: str,
+    status: str,
+    confirmed_at: datetime | None = None,
+) -> None:
+    values: dict[str, Any] = {"status": status}
+    if confirmed_at is not None:
+        values["confirmed_at"] = confirmed_at
+
+    await conn.execute(
+        sa.update(transactions_table)
+        .where(transactions_table.c.wallet_id == _as_uuid(wallet_id))
+        .where(transactions_table.c.txid == txid)
+        .values(**values)
+    )
+    await conn.commit()
+
+
+async def get_transaction_by_payment_hash(
+    conn: AsyncConnection,
+    *,
+    wallet_id: str | uuid.UUID,
+    payment_hash: str,
+    tx_type: str | None = None,
+) -> sa.engine.Row | None:
+    stmt = sa.select(transactions_table).where(
+        transactions_table.c.wallet_id == _as_uuid(wallet_id),
+        transactions_table.c.ln_payment_hash == payment_hash,
+    )
+    if tx_type is not None:
+        stmt = stmt.where(transactions_table.c.type == tx_type)
+
+    result = await conn.execute(stmt)
+    return result.fetchone()
+
+
+async def list_pending_lightning_receives(
+    conn: AsyncConnection,
+    wallet_id: str | uuid.UUID,
+) -> list[sa.engine.Row]:
+    result = await conn.execute(
+        sa.select(transactions_table)
+        .where(transactions_table.c.wallet_id == _as_uuid(wallet_id))
+        .where(transactions_table.c.type == "ln_receive")
+        .where(transactions_table.c.status == "pending")
+        .where(transactions_table.c.ln_payment_hash.is_not(None))
+    )
+    return list(result.fetchall())
+
+
+async def list_pending_onchain_withdrawals(conn: AsyncConnection) -> list[sa.engine.Row]:
+    result = await conn.execute(
+        sa.select(transactions_table)
+        .where(transactions_table.c.type == "withdrawal")
+        .where(transactions_table.c.status == "pending")
+        .where(transactions_table.c.txid.is_not(None))
+    )
+    return list(result.fetchall())
+
+
+async def reserve_onchain_balance(
+    conn: AsyncConnection,
+    *,
+    wallet_id: str | uuid.UUID,
+    total_cost_sat: int,
+) -> bool:
+    now = _utc_now()
+    result = await conn.execute(
+        sa.update(wallets_table)
+        .where(wallets_table.c.id == _as_uuid(wallet_id))
+        .where(wallets_table.c.onchain_balance_sat >= total_cost_sat)
+        .values(
+            onchain_balance_sat=wallets_table.c.onchain_balance_sat - total_cost_sat,
+            updated_at=now,
+        )
+        .returning(wallets_table.c.id)
+    )
+    reserved = result.fetchone() is not None
+    if reserved:
+        await conn.commit()
+    else:
+        await conn.rollback()
+    return reserved
+
+
+async def release_onchain_balance(
+    conn: AsyncConnection,
+    *,
+    wallet_id: str | uuid.UUID,
+    total_cost_sat: int,
+) -> None:
+    await conn.execute(
+        sa.update(wallets_table)
+        .where(wallets_table.c.id == _as_uuid(wallet_id))
+        .values(
+            onchain_balance_sat=wallets_table.c.onchain_balance_sat + total_cost_sat,
+            updated_at=_utc_now(),
+        )
+    )
+    await conn.commit()
+
+
 async def create_onchain_withdrawal(
     conn: AsyncConnection,
     *,
@@ -240,44 +362,18 @@ async def create_onchain_withdrawal(
     fee_sat: int,
     txid: str,
     description: str | None,
-) -> sa.engine.Row | None:
-    wallet_uuid = _as_uuid(wallet_id)
-    now = _utc_now()
-    total_cost = amount_sat + fee_sat
-
-    updated_wallet = await conn.execute(
-        sa.update(wallets_table)
-        .where(wallets_table.c.id == wallet_uuid)
-        .where(wallets_table.c.onchain_balance_sat >= total_cost)
-        .values(
-            onchain_balance_sat=wallets_table.c.onchain_balance_sat - total_cost,
-            updated_at=now,
-        )
-        .returning(wallets_table.c.id)
+) -> sa.engine.Row:
+    return await create_transaction(
+        conn,
+        wallet_id=wallet_id,
+        type="withdrawal",
+        amount_sat=amount_sat,
+        direction="out",
+        status="pending",
+        txid=txid,
+        description=description,
+        fee_sat=fee_sat,
     )
-    if updated_wallet.fetchone() is None:
-        await conn.rollback()
-        return None
-
-    result = await conn.execute(
-        sa.insert(transactions_table)
-        .values(
-            id=uuid.uuid4(),
-            wallet_id=wallet_uuid,
-            type="withdrawal",
-            amount_sat=amount_sat,
-            direction="out",
-            status="pending",
-            txid=txid,
-            description=description,
-            created_at=now,
-        )
-        .returning(transactions_table)
-    )
-    row = result.fetchone()
-    await conn.commit()
-    assert row is not None
-    return row
 
 
 async def list_wallet_transactions(
@@ -291,6 +387,7 @@ async def list_wallet_transactions(
     )
     return list(result.fetchall())
 
+
 async def get_next_derivation_index(
     conn: AsyncConnection,
     wallet_id: str | uuid.UUID,
@@ -302,6 +399,7 @@ async def get_next_derivation_index(
     max_index = result.scalar()
     return 0 if max_index is None else max_index + 1
 
+
 async def save_wallet_address(
     conn: AsyncConnection,
     *,
@@ -309,6 +407,7 @@ async def save_wallet_address(
     address: str,
     derivation_index: int,
     script_pubkey: str,
+    imported_to_node: bool = False,
 ) -> sa.engine.Row:
     now = _utc_now()
     result = await conn.execute(
@@ -319,7 +418,7 @@ async def save_wallet_address(
             address=address,
             derivation_index=derivation_index,
             script_pubkey=script_pubkey,
-            imported_to_node=False,
+            imported_to_node=imported_to_node,
             created_at=now,
         )
         .returning(wallet_addresses_table)
@@ -329,6 +428,15 @@ async def save_wallet_address(
     assert row is not None
     return row
 
+
+async def list_imported_wallet_addresses(conn: AsyncConnection) -> list[sa.engine.Row]:
+    result = await conn.execute(
+        sa.select(wallet_addresses_table)
+        .where(wallet_addresses_table.c.imported_to_node.is_(True))
+    )
+    return list(result.fetchall())
+
+
 async def get_wallet_address_by_address(
     conn: AsyncConnection,
     address: str,
@@ -337,6 +445,7 @@ async def get_wallet_address_by_address(
         sa.select(wallet_addresses_table).where(wallet_addresses_table.c.address == address)
     )
     return result.fetchone()
+
 
 async def mark_address_imported(
     conn: AsyncConnection,
@@ -349,6 +458,7 @@ async def mark_address_imported(
     )
     await conn.commit()
 
+
 async def update_lightning_balance(
     conn: AsyncConnection,
     wallet_id: str | uuid.UUID,
@@ -357,7 +467,52 @@ async def update_lightning_balance(
     await conn.execute(
         sa.update(wallets_table)
         .where(wallets_table.c.id == _as_uuid(wallet_id))
-        .values(lightning_balance_sat=balance_sat)
+        .values(lightning_balance_sat=max(0, balance_sat), updated_at=_utc_now())
     )
     await conn.commit()
+
+
+async def recompute_lightning_balance(
+    conn: AsyncConnection,
+    wallet_id: str | uuid.UUID,
+) -> int:
+    stmt = sa.select(
+        sa.func.coalesce(
+            sa.func.sum(
+                sa.case(
+                    (
+                        sa.and_(
+                            transactions_table.c.type == "ln_receive",
+                            transactions_table.c.status == "confirmed",
+                        ),
+                        transactions_table.c.amount_sat,
+                    ),
+                    else_=0,
+                )
+            ),
+            0,
+        ).label("incoming_sat"),
+        sa.func.coalesce(
+            sa.func.sum(
+                sa.case(
+                    (
+                        sa.and_(
+                            transactions_table.c.type == "ln_send",
+                            transactions_table.c.status == "confirmed",
+                        ),
+                        transactions_table.c.amount_sat,
+                    ),
+                    else_=0,
+                )
+            ),
+            0,
+        ).label("outgoing_sat"),
+    ).where(transactions_table.c.wallet_id == _as_uuid(wallet_id))
+    result = await conn.execute(stmt)
+    row = result.fetchone()
+    incoming_sat = int(row.incoming_sat if row is not None else 0)
+    outgoing_sat = int(row.outgoing_sat if row is not None else 0)
+    balance_sat = max(0, incoming_sat - outgoing_sat)
+    await update_lightning_balance(conn, wallet_id, balance_sat)
+    return balance_sat
 

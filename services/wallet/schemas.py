@@ -39,6 +39,18 @@ class OnchainAddressResponse(BaseModel):
     type: Literal["taproot"]
 
 
+class FeeEstimateLevel(BaseModel):
+    sat_per_vb: int = Field(ge=1)
+    target_blocks: int = Field(ge=1)
+    source: Literal["bitcoin_rpc", "fallback"] = "bitcoin_rpc"
+
+
+class FeeEstimateResponse(BaseModel):
+    low: FeeEstimateLevel
+    medium: FeeEstimateLevel
+    high: FeeEstimateLevel
+
+
 class OnchainWithdrawalResponse(BaseModel):
     txid: str
     amount_sat: int
@@ -131,27 +143,3 @@ class FiatOnRampSessionResponse(BaseModel):
     expires_at: datetime
     disclaimer: str
     compliance_action: Literal["review_terms", "complete_kyc"]
-
-class OnchainAddressResponse(BaseModel):
-    address: str
-    type: str
-
-class FeeEstimateLevel(BaseModel):
-    sat_per_vb: int
-    target_blocks: int
-
-class FeeEstimateResponse(BaseModel):
-    low: FeeEstimateLevel
-    medium: FeeEstimateLevel
-    high: FeeEstimateLevel
-
-class OnchainWithdrawalRequest(BaseModel):
-    address: str
-    amount_sat: int
-    fee_rate_sat_vb: int
-
-class OnchainWithdrawalResponse(BaseModel):
-    txid: str
-    amount_sat: int
-    fee_sat: int
-    status: str

@@ -124,3 +124,12 @@ def test_derive_taproot_address(key_manager):
     assert address.startswith("bcrt1p")
     assert len(spk) == 68 # 34 bytes hex = 0x5120 + 32-byte pubkey
     assert spk.startswith("5120")
+
+def test_derive_taproot_address_signet_uses_test_prefix(encryption_key):
+    km_signet = KeyManager(encryption_key=encryption_key, bitcoin_network="signet")
+    seed = b"fedcba9876543210" * 4
+    address, spk = km_signet.derive_taproot_address(seed, 0)
+
+    assert address.startswith("tb1p")
+    assert len(spk) == 68
+    assert spk.startswith("5120")

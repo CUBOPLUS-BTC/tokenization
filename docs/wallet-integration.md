@@ -1,6 +1,6 @@
 # Wallet Service Integration Guide
 
-This document describes the wallet service as it is currently implemented in `services/wallet`, with explicit notes where the broader platform specification describes intended behavior that has not yet been fully realized.
+This document describes the wallet service as it is currently implemented in `services/wallet`, with explicit notes where there are still architectural tradeoffs or contract differences that integrators should understand.
 
 ## 1. Service Overview
 
@@ -41,10 +41,10 @@ Within the broader tokenization platform, the wallet service is the user's monet
 | --- | --- | --- |
 | Wallet summary | Returns balances, token valuations, and accrued yield from shared tables | Full user portfolio view |
 | Yield accrual | Triggered on `GET /wallet` and `GET /wallet/yield/summary` | Ongoing yield accounting for token holders |
-| On-chain receive | Generates a random network-prefixed address-like string | Deterministic user deposit address generation |
-| On-chain withdraw | Deducts DB balance and records a synthetic txid | Real Bitcoin transaction creation and confirmation tracking |
-| Lightning | Uses LND gRPC for invoice creation, payment, and invoice lookup | Real Lightning integration |
-| Fiat on-ramp | Lists providers and returns a hosted checkout handoff URL | Full fiat-to-BTC delivery into the user's wallet |
+| On-chain receive | Derives deterministic BIP-86 Taproot addresses from the user's seed and imports them into Bitcoin Core as watch-only descriptors | Deterministic user deposit address generation |
+| On-chain withdraw | Builds a funded PSBT through Bitcoin Core, signs with the user's seed, broadcasts a real Bitcoin transaction, and tracks confirmation state | Real Bitcoin transaction creation and confirmation tracking |
+| Lightning | Uses LND gRPC for invoice creation, payment, invoice lookup, BOLT11 decoding, and per-wallet settlement refresh | Real Lightning integration |
+| Fiat on-ramp | Lists providers, creates a hosted checkout handoff, and returns a monitored deposit address that feeds normal on-chain reconciliation | Full fiat-to-BTC delivery into the user's wallet |
 | Custody | Stores a custody envelope and exposes custody posture | Secure custody abstraction with software or HSM backing |
 | Taproot Assets | Only readiness checks are wired today | Future wallet-side asset sync or transfer handling |
 
@@ -85,8 +85,8 @@ The wallet service relies on both other platform services and shared infrastruct
 | Dependency | Purpose | Interaction type | Current implementation |
 | --- | --- | --- | --- |
 | PostgreSQL | Source of truth for wallet and shared platform data | Direct database dependency | Used heavily for wallet rows, transaction history, token balances, yield, users, KYC, and pricing joins |
-| LND | Lightning invoice, pay, and lookup | Direct gRPC integration | `services/wallet/lnd_client.py` establishes a TLS + macaroon gRPC channel |
-| Bitcoin Core | Intended on-chain dependency | Infrastructure dependency and readiness check | Checked in readiness, but not used for actual address derivation or withdrawal broadcast today |
+| LND | Lightning invoice, pay, lookup, decode, and settlement refresh | Direct gRPC integration | `services/wallet/lnd_client.py` establishes a TLS + macaroon gRPC channel and wallet balance sync uses invoice/payment state from LND |
+| Bitcoin Core | On-chain descriptor import, UTXO scanning, fee estimation, PSBT funding/finalization, broadcast, and confirmation lookup | Direct RPC integration plus readiness check | Wallet imports deposit addresses with descriptors, scans imported addresses with `listunspent`, estimates fees with `estimatesmartfee`, creates funded PSBTs, finalizes/broadcasts withdrawals, and refreshes withdrawal confirmations |
 | tapd | Intended Taproot Assets dependency | Infrastructure dependency and readiness check | Checked in readiness only; no wallet-side RPC calls currently exist |
 | Redis | Platform dependency | Infrastructure dependency and readiness check | Checked in readiness; wallet does not currently publish or consume Redis events |
 | Hosted on-ramp providers | External fiat checkout flows | External redirect integration | Session creation returns provider-hosted checkout URLs |
@@ -107,8 +107,10 @@ All table definitions live in `services/common/db/metadata.py`, and migrations a
 
 | Table | Ownership | Purpose in wallet service | Important fields and constraints | Relationships |
 | --- | --- | --- | --- | --- |
-| `wallets` | Wallet-owned | Primary wallet record for each user | `id` UUID PK; `user_id` UUID unique FK to `users`; `onchain_balance_sat >= 0`; `lightning_balance_sat >= 0`; `encrypted_seed` required; `derivation_path` required | One-to-one with `users`; referenced by `transactions` |
-| `transactions` | Wallet-owned | Immutable wallet transaction ledger returned by history endpoints | `type` constrained to `deposit`, `withdrawal`, `ln_send`, `ln_receive`, `escrow_lock`, `escrow_release`, `fee`; `direction` constrained to `in` or `out`; `status` constrained to `pending`, `confirmed`, `failed`; `amount_sat > 0` | Many-to-one to `wallets` via `wallet_id` |
+| `wallets` | Wallet-owned | Primary wallet record for each user | `id` UUID PK; `user_id` UUID unique FK to `users`; `onchain_balance_sat >= 0`; `lightning_balance_sat >= 0`; `encrypted_seed` required; `derivation_path` required | One-to-one with `users`; referenced by `transactions`, `wallet_addresses`, and `onchain_deposits` |
+| `transactions` | Wallet-owned | Immutable wallet transaction ledger returned by history endpoints | `type` constrained to `deposit`, `withdrawal`, `ln_send`, `ln_receive`, `escrow_lock`, `escrow_release`, `fee`; `direction` constrained to `in` or `out`; `status` constrained to `pending`, `confirmed`, `failed`; `amount_sat > 0`; `fee_sat` optionally stores the paid network or Lightning fee | Many-to-one to `wallets` via `wallet_id` |
+| `wallet_addresses` | Wallet-owned | Derived Taproot addresses tracked for deposit detection and withdrawal input/change matching | Unique `address`; unique `(wallet_id, derivation_index)`; `script_pubkey` required; `imported_to_node` indicates Bitcoin Core descriptor import success | Many-to-one to `wallets`; referenced by `onchain_deposits` |
+| `onchain_deposits` | Wallet-owned | UTXO-level reconciliation state for detected deposits | Unique `(txid, vout)`; `amount_sat > 0`; `status` constrained to `pending`, `confirmed`, `credited`; `credited_at` records balance credit time | Many-to-one to `wallets` and `wallet_addresses` |
 | `yield_accruals` | Shared, wallet-driven | Snapshot ledger for token yield summaries | `annual_rate_pct > 0`; `quantity_held > 0`; `reference_price_sat > 0`; `amount_sat > 0`; `accrued_to > accrued_from` | FKs to `users` and `tokens`; populated by shared incentives logic invoked by wallet endpoints |
 
 ### Shared tables read by the wallet service
@@ -135,8 +137,22 @@ All table definitions live in `services/common/db/metadata.py`, and migrations a
 #### `transactions`
 
 - Used for on-chain withdrawal records, Lightning receive records, and Lightning send records.
-- Response schemas intentionally omit `txid` and `ln_payment_hash`, even though those fields exist in the database.
+- API responses now surface `txHash`, `paymentHash`, and `fee_sat` so frontend clients can render real identifiers and fees.
 - Transaction types `escrow_lock`, `escrow_release`, and `fee` are supported by schema and constraints, but the wallet service does not currently create those rows itself.
+
+#### `wallet_addresses`
+
+- A new row is written each time the wallet derives a fresh on-chain address.
+- Each address is derived from the custody-unsealed user seed using BIP-86 and stored with its scriptPubKey.
+- `imported_to_node` is set only after Bitcoin Core accepts the `addr(...)` descriptor import, so the service does not hand out unmonitored deposit addresses.
+- The same table is also used when withdrawals need to match watched UTXOs back to local derivation indices for PSBT signing.
+
+#### `onchain_deposits`
+
+- This table tracks detected deposit UTXOs at `(txid, vout)` granularity to prevent double-crediting.
+- Deposits are discovered by a background reconciliation loop that polls Bitcoin Core for imported addresses.
+- The service credits `wallets.onchain_balance_sat` only once the configured confirmation threshold is reached: `1` for regtest, `3` for testnet/signet, and `6` for mainnet.
+- Once credited, a corresponding `deposit` row is inserted into `transactions` with the real `txid`.
 
 #### `token_balances`
 
@@ -173,6 +189,7 @@ All table definitions live in `services/common/db/metadata.py`, and migrations a
 | `20260415_1030_0009_add_kyc_verifications.py` | Adds `kyc_verifications`, which the wallet service uses for hosted on-ramp eligibility |
 | `20260415_1200_0010_add_referrals_yield_and_advanced_orders.py` | Adds `yield_accruals`, enabling wallet yield summaries |
 | `20260415_1600_0011_normalize_late_check_constraint_names.py` | Normalizes the late-added constraint names on `kyc_verifications` and `yield_accruals` |
+| `20260416_1200_0012_add_wallet_onchain.py` | Adds `wallet_addresses`, `onchain_deposits`, and `transactions.fee_sat` to support real on-chain reconciliation and fee visibility |
 
 ### Assumptions and limitations
 
@@ -309,7 +326,7 @@ All table definitions live in `services/common/db/metadata.py`, and migrations a
   - `404` with `{"detail": "Wallet not found for user"}` when no wallet row exists.
   - `422` with the platform `error` object when request validation fails.
 
-**Important implementation note:** this endpoint does not lazily create a wallet. It fails with `404` if the wallet record does not already exist.
+**Important implementation note:** this endpoint still does not lazily create a wallet. It fails with `404` if the wallet record does not already exist, but when the wallet does exist it performs a best-effort Lightning settlement refresh before returning the cached `lightning_balance_sat`.
 
 #### `GET /wallet/yield/summary`
 
@@ -376,7 +393,10 @@ All table definitions live in `services/common/db/metadata.py`, and migrations a
       "direction": "out",
       "status": "confirmed",
       "description": "On-chain withdrawal",
-      "created_at": "2026-04-15T12:00:00Z"
+      "created_at": "2026-04-15T12:00:00Z",
+      "txHash": "64_hex_chars_or_null",
+      "paymentHash": "64_hex_chars_or_null",
+      "fee_sat": 705
     }
   ],
   "next_cursor": "uuid_or_null"
@@ -507,7 +527,7 @@ All table definitions live in `services/common/db/metadata.py`, and migrations a
   - `409` with platform `error.code = provider_kyc_required`.
   - `422` with platform codes such as `unsupported_fiat_currency`, `unsupported_country`, `fiat_amount_out_of_range`, `invalid_return_url`, or `invalid_cancel_url`.
 
-**Current implementation vs intended behavior:** the service does create a hosted handoff session, but it does not yet implement the later deposit reconciliation that would credit the purchased BTC back into `wallets.onchain_balance_sat`.
+**Current implementation note:** the service returns a real, monitored BIP-86 deposit address for the hosted handoff. If the provider settles BTC to that address, the normal on-chain reconciliation loop is responsible for crediting `wallets.onchain_balance_sat` once the transaction reaches the network-specific confirmation threshold.
 
 ### 4.4 Lightning endpoints
 
@@ -547,7 +567,7 @@ All table definitions live in `services/common/db/metadata.py`, and migrations a
   - `500` with `{"detail": "Internal server error"}` for unexpected failures.
   - `422` with the platform `error` object for validation failures.
 
-**Important implementation note:** if the user does not already have a wallet row, the invoice is still created at LND level, but no wallet transaction row is recorded.
+**Important implementation note:** if the user does not already have a wallet row, the service lazily creates it before recording the pending `ln_receive` transaction so later invoice-settlement refresh can update both history and `lightning_balance_sat`.
 
 #### `GET /lightning/invoices/{r_hash}`
 
@@ -564,7 +584,47 @@ All table definitions live in `services/common/db/metadata.py`, and migrations a
   - `503` with `{"detail": "Lightning service unavailable"}`.
   - `500` with `{"detail": "Internal server error"}`.
 
-**Security note:** the current handler authenticates the caller but does not scope invoice lookup to invoices created by that user.
+**Security note:** invoice lookup is scoped to invoices previously recorded for the authenticated wallet. Unknown hashes return `404` even if LND knows about them.
+
+#### `POST /lightning/decode`
+
+- Purpose: decode a BOLT11 invoice for frontend validation and display.
+- Authentication: Bearer JWT via `Authorization` header.
+- Authorization: any authenticated user.
+- Query parameters: none.
+- Request body schema:
+
+```json
+{
+  "payment_request": "lnbc1..."
+}
+```
+
+- Response schema:
+
+```json
+{
+  "payment_hash": "hex_hash",
+  "amount_sat": 1000,
+  "amount_msat": 1000000,
+  "description": "Invoice memo or null",
+  "description_hash": null,
+  "timestamp": "2026-04-15T12:00:00Z",
+  "created_at": "2026-04-15T12:00:00Z",
+  "expiry": 3600,
+  "expires_at": "2026-04-15T13:00:00Z",
+  "destination": "03abcdef...",
+  "fallback_address": null,
+  "network": "regtest|testnet|signet|mainnet",
+  "route_hints": [],
+  "is_expired": false
+}
+```
+
+- Possible error responses:
+  - `400` with platform `error.code = invalid_bolt11` for malformed or unsupported invoices.
+  - `401` or `403` with `{"detail": ...}` when the JWT is missing or invalid.
+  - `500` with `{"detail": "Internal server error"}`.
 
 #### `POST /lightning/payments`
 
@@ -605,6 +665,44 @@ All table definitions live in `services/common/db/metadata.py`, and migrations a
 
 **Important implementation note:** an LND payment failure does not raise a non-2xx HTTP error. The endpoint still returns `200` with `status = FAILED` and `failure_reason`, while also recording a failed transaction row and firing a CRITICAL alert.
 
+#### `GET /wallet/onchain/fees`
+
+- Purpose: return low/medium/high fee suggestions in sat/vB for on-chain sending UX.
+- Authentication: Bearer JWT via `Authorization` header.
+- Authorization: any authenticated user.
+- Query parameters: none.
+- Request body: none.
+- Response schema:
+
+```json
+{
+  "low": {"sat_per_vb": 1, "target_blocks": 12, "source": "bitcoin_rpc|fallback"},
+  "medium": {"sat_per_vb": 5, "target_blocks": 6, "source": "bitcoin_rpc|fallback"},
+  "high": {"sat_per_vb": 10, "target_blocks": 2, "source": "bitcoin_rpc|fallback"}
+}
+```
+
+- Possible error responses:
+  - `401` with platform `error.code = authentication_required` for missing credentials.
+  - `401` with platform `error.code = invalid_token` for invalid tokens or deleted users.
+
+#### `GET /wallet/qr`
+
+- Purpose: render a PNG QR code for a wallet-facing string such as a deposit address or BOLT11 invoice.
+- Authentication: Bearer JWT via `Authorization` header.
+- Authorization: any authenticated user.
+- Query parameters:
+  - `value`: required string payload to encode.
+  - `box_size`: optional integer from `1` to `20`, default `8`.
+  - `border`: optional integer from `0` to `20`, default `4`.
+- Request body: none.
+- Response schema:
+  - `200 image/png` containing the rendered QR code.
+- Possible error responses:
+  - `401` with platform `error.code = authentication_required` for missing credentials.
+  - `401` with platform `error.code = invalid_token` for invalid tokens or deleted users.
+  - `503` with platform `error.code = qr_render_unavailable` when the QR dependency is unavailable on the deployment.
+
 ### 4.5 On-chain endpoints
 
 #### `POST /wallet/onchain/address`
@@ -629,7 +727,7 @@ All table definitions live in `services/common/db/metadata.py`, and migrations a
 
 **Legacy alias:** `POST /onchain/address` behaves identically and is hidden from the OpenAPI schema.
 
-**Current implementation vs intended behavior:** the address is randomly generated with the right network prefix and character set, but it is not derived from the stored seed or registered with Bitcoin Core/LND.
+**Current implementation note:** each request derives the next BIP-86 Taproot address from the wallet seed, imports the resulting `addr(...)` descriptor into Bitcoin Core, persists the derived scriptPubKey, and returns the imported address only after the node accepts the descriptor.
 
 #### `POST /wallet/onchain/withdraw`
 
@@ -674,7 +772,7 @@ All table definitions live in `services/common/db/metadata.py`, and migrations a
 
 **Legacy alias:** `POST /onchain/withdraw` behaves identically and is hidden from the OpenAPI schema.
 
-**Current implementation vs intended behavior:** the service creates a synthetic txid and deducts database balance, but it does not broadcast a real Bitcoin transaction.
+**Current implementation note:** the service derives a fresh change address for the same wallet, asks Bitcoin Core to fund a PSBT using watched wallet UTXOs, reserves the corresponding DB balance, signs the PSBT with the user's seed, finalizes and broadcasts the real transaction, and later updates the `transactions.status` from `pending` to `confirmed` via Bitcoin Core confirmation refresh. `X-Idempotency-Key` is supported as a best-effort single-instance safeguard against accidental duplicate submits.
 
 ### 4.6 Spec-to-implementation differences that affect integrations
 
@@ -764,7 +862,22 @@ Example response:
 }
 ```
 
-**Workflow note:** today this address is a placeholder string, not a deterministic address derived from the wallet seed. Do not treat it as proof of completed deposit monitoring.
+**Workflow note:** this address is a real BIP-86 Taproot address derived from the wallet seed and imported into Bitcoin Core for monitoring. Balance credit still depends on the background reconciliation loop and the configured confirmation threshold.
+
+### Example: fetch on-chain fee suggestions
+
+```bash
+curl -X GET "http://localhost:8001/wallet/onchain/fees" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}"
+```
+
+### Example: render a QR code for a deposit address or invoice
+
+```bash
+curl -X GET "http://localhost:8001/wallet/qr?value=bcrt1p0n2s9x..." \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  --output wallet-qr.png
+```
 
 ### Example: submit an on-chain withdrawal
 
@@ -942,7 +1055,7 @@ window.location.assign(session.handoff_url);
 
 1. Call `POST /wallet/onchain/address` for a deposit destination.
 2. Display the address or QR code to the user.
-3. Refresh the wallet summary later, but do not assume the current implementation will auto-credit deposits.
+3. Refresh the wallet summary later; confirmed deposits are credited by the background reconciliation loop once the network-specific threshold is reached.
 
 #### Hosted fiat on-ramp workflow
 
@@ -950,7 +1063,7 @@ window.location.assign(session.handoff_url);
 2. Confirm the user's KYC posture before presenting providers that require KYC.
 3. Call `POST /wallet/fiat/onramp/session`.
 4. Redirect the user to `handoff_url`.
-5. After return, refresh wallet data and show provider-completion guidance, but understand that current deposit reconciliation is incomplete.
+5. After return, refresh wallet data and show provider-completion guidance; if the provider sent BTC to the returned address, the normal on-chain reconciliation loop will eventually credit it.
 
 ## 6. Frontend Integration Recommendations
 
@@ -968,8 +1081,11 @@ window.location.assign(session.handoff_url);
 - Yield details: lazy-load `GET /wallet/yield/summary` only when the user opens the yield detail screen.
 - Transaction history: implement cursor-based infinite scroll for `GET /wallet/transactions`.
 - Receive screen: call `POST /wallet/onchain/address`, then render QR and address copy actions.
+- Receive screen: call `GET /wallet/qr` with the returned deposit address or Lightning invoice when the UI wants a backend-rendered PNG.
 - Send on-chain screen: validate address and amount client-side, prompt for 2FA code, then call `POST /wallet/onchain/withdraw`.
+- Send on-chain screen: fetch `GET /wallet/onchain/fees` before submit to prefill low/medium/high fee choices.
 - Lightning receive screen: create an invoice and poll `GET /lightning/invoices/{r_hash}` until settled or canceled.
+- Lightning pay screen: optionally call `POST /lightning/decode` before submit to pre-validate the BOLT11 payload and display amount/expiry metadata.
 - Lightning pay screen: submit the BOLT11 string, detect whether the user has 2FA enabled in broader account settings, and collect `X-2FA-Code` when required.
 - Fiat on-ramp screen: list providers, display compliance notices, confirm KYC readiness, then redirect the user with the returned `handoff_url`.
 
@@ -982,6 +1098,7 @@ window.location.assign(session.handoff_url);
 - Poll invoice status rather than assuming real-time updates. There is no wallet WebSocket or SSE stream.
 - Handle both `error.code/message` and `detail` response formats.
 - Treat `POST /lightning/payments` returning `200` with `status = FAILED` as a business failure, not a success.
+- Send `X-Idempotency-Key` on on-chain withdrawals when the frontend may retry the request after uncertain network failures.
 
 ### Caching guidance
 
@@ -1002,12 +1119,12 @@ window.location.assign(session.handoff_url);
 - Display provider disclaimers and compliance notices exactly as returned.
 - Mask or abbreviate txids, hashes, and deposit addresses in the UI where practical.
 - Use HTTPS for all frontend-to-gateway communication.
-- Avoid presenting a Lightning invoice lookup tool that accepts arbitrary hashes from end users until backend ownership scoping is clarified.
+- Avoid presenting an arbitrary-hash invoice lookup tool for support or debug UX; the backend intentionally resolves only invoices already recorded for the authenticated wallet.
 
 ### Frontend anti-patterns to avoid
 
 - Do not infer that on-ramp provider `state = ready` means the user is KYC-cleared; the session-creation endpoint remains authoritative.
-- Do not assume a successful `POST /wallet/onchain/address` means deposit monitoring is active.
+- Do not assume a successful `POST /wallet/onchain/address` means funds are instantly credited; credit still depends on the reconciliation loop and confirmations.
 - Do not auto-retry withdrawal or payment POSTs after transient network failures without idempotency protection.
 - Do not treat `GET /wallet` as a pure read with no side effects; it may insert yield accrual rows.
 - Do not assume all errors follow the platform `error` contract today.
@@ -1016,14 +1133,16 @@ window.location.assign(session.handoff_url);
 
 | File | Role | Notes |
 | --- | --- | --- |
-| `services/wallet/main.py` | FastAPI app, routing, auth orchestration, on-chain helpers, Lightning handlers, on-ramp handlers | Most request orchestration lives here; it also contains placeholder address and txid generation logic |
-| `services/wallet/db.py` | Async DB helpers | Handles wallet creation, token pricing query, transaction inserts, and history listing |
+| `services/wallet/main.py` | FastAPI app, routing, auth orchestration, on-chain helpers, Lightning handlers, fee/QR helpers, and on-ramp handlers | Most request orchestration lives here, including descriptor import, PSBT signing/broadcast, best-effort idempotency, and BOLT11 decode rendering |
+| `services/wallet/db.py` | Async DB helpers | Handles wallet creation, token pricing query, reservation/release of on-chain balance, transaction inserts, and cached Lightning balance recomputation |
 | `services/wallet/auth.py` | Lightweight JWT and 2FA dependencies | Used by wallet summary and Lightning routes |
 | `services/wallet/schemas.py` | Pydantic models for on-chain, transaction history, custody, and on-ramp APIs | Defines request and response models for non-Lightning wallet APIs |
 | `services/wallet/schemas_wallet.py` | Pydantic models for wallet summary and yield responses | Used by `GET /wallet` and `GET /wallet/yield/summary` |
-| `services/wallet/schemas_lnd.py` | Pydantic models for Lightning invoice and payment APIs | Defines `Invoice`, `Payment`, and their request shapes |
+| `services/wallet/schemas_lnd.py` | Pydantic models for Lightning invoice, payment, and decode APIs | Defines `Invoice`, `Payment`, decode route hints, and BOLT11 response shapes |
+| `services/wallet/bitcoin_rpc.py` | Bitcoin Core RPC adapter | Wraps descriptor import, UTXO scans, fee estimation, PSBT funding/finalization, broadcast, and transaction lookups |
 | `services/wallet/lnd_client.py` | LND gRPC adapter | Encapsulates TLS + macaroon setup and the three wallet Lightning RPCs |
-| `services/wallet/key_manager.py` | Seed generation/encryption wrapper around shared custody | Present in the service, but not currently used by the runtime request path |
+| `services/wallet/key_manager.py` | Seed generation/encryption and Taproot derivation wrapper around shared custody | Used at runtime to derive BIP-86 addresses and sign PSBT inputs |
+| `services/wallet/reconciliation.py` | Background reconciliation loops | Polls Bitcoin Core for deposit/withdrawal updates and refreshes per-wallet Lightning settlement state from LND |
 
 ### Where the business logic lives
 
@@ -1037,7 +1156,7 @@ window.location.assign(session.handoff_url);
 
 - Core wallet domain orchestration: `main.py` and `db.py`.
 - Shared cross-domain business logic: `common.incentives`, `common.onramp`, and `common.custody`.
-- External integration adapter: `lnd_client.py`.
+- External integration adapters: `bitcoin_rpc.py` and `lnd_client.py`.
 - Infrastructure concerns: `common.config`, `common.security`, `common.metrics`, `common.alerting`, and `common.audit`.
 
 ### Notable implementation detail
@@ -1079,8 +1198,8 @@ The wallet service loads the shared `Settings` model, so it requires more config
 | Dependency | Used actively by handlers | Used by readiness only | Notes |
 | --- | --- | --- | --- |
 | PostgreSQL | Yes | Yes | Primary persistence layer |
-| LND | Yes | Yes | Active Lightning integration |
-| Bitcoin Core | No | Yes | No current broadcast or address derivation flow |
+| LND | Yes | Yes | Active Lightning integration for invoice create/pay/lookup/decode and settlement refresh |
+| Bitcoin Core | Yes | Yes | Active on-chain integration for descriptor import, UTXO scanning, fee estimation, PSBT funding/finalization, broadcast, and confirmation refresh |
 | tapd | No | Yes | No wallet-side tapd RPC integration today |
 | Redis | No | Yes | No wallet-side event streaming or caching logic today |
 
@@ -1096,8 +1215,14 @@ The wallet service loads the shared `Settings` model, so it requires more config
   - `wallet_fiat_onramp_session`
   - `wallet_invoice_create`
   - `wallet_payment`
+  - `wallet_bolt11_decode`
+  - `wallet_fee_estimate`
+  - `wallet_qr_render`
+  - `wallet_lightning_balance_sync`
   - `wallet_onchain_address_create`
+  - `wallet_onchain_deposit`
   - `wallet_onchain_withdrawal`
+  - `wallet_onchain_withdrawal_confirmed`
 - Audit events are recorded for:
   - `wallet.fiat_onramp_session`
   - `wallet.lightning.pay`
@@ -1112,12 +1237,10 @@ The wallet service loads the shared `Settings` model, so it requires more config
 - Write endpoints are rate-limited, and sensitive paths have stricter per-path limits.
 - Sensitive log values are redacted by `SensitiveDataFilter`.
 - In non-local profiles, software custody requires file-backed wallet encryption secrets, and HSM mode requires file-backed wrapping and signing keys.
-- The current implementation still contains financial-risk placeholders:
-  - random deposit-address generation,
-  - synthetic txid creation,
-  - invoice lookup not scoped to a user's own invoices,
-  - no deposit reconciliation,
-  - no Lightning balance synchronization into `wallets.lightning_balance_sat`.
+- Remaining operational tradeoffs to understand:
+  - withdrawal idempotency is best-effort and process-local via `X-Idempotency-Key`; it is not a distributed guarantee across multiple wallet replicas,
+  - the per-wallet Lightning balance is a settled wallet ledger derived from LND-backed invoice/payment state, not a direct partition of a shared node's channel balances,
+  - change outputs currently use the wallet's next tracked Taproot address so they remain signable and monitorable within the current schema.
 
 ## 9. Example End-to-End Flow
 
@@ -1142,8 +1265,8 @@ This flow shows how wallet depends on auth for identity, tokenization for asset 
 5. Wallet validates the user, lazily creates a wallet if needed, checks KYC status, and delegates session creation to `common.onramp`.
 6. The service records an audit event and returns a hosted `handoff_url` plus a deposit address.
 7. The frontend redirects the user to the provider's hosted checkout.
-8. Intended next step: BTC is delivered to the generated wallet address and later reflected in wallet balance.
-9. Current implementation gap: the service does not yet reconcile the resulting deposit back into `wallets.onchain_balance_sat`.
+8. BTC is delivered to the generated wallet address.
+9. The on-chain reconciliation loop detects the deposit and credits `wallets.onchain_balance_sat` once the confirmation policy is satisfied.
 
 ## 10. Open Questions / Assumptions
 
@@ -1151,15 +1274,14 @@ This flow shows how wallet depends on auth for identity, tokenization for asset 
 - **Assumption:** frontend traffic should usually go through the gateway, even though direct-service URLs are clearer for local examples.
 - **Open question:** should the public contract use the spec routes `POST /wallet/lightning/invoice` and `POST /wallet/lightning/pay`, or the implemented routes `POST /lightning/invoices` and `POST /lightning/payments`?
 - **Open question:** should `GET /wallet` lazily create wallets the same way `GET /wallet/custody`, `POST /wallet/onchain/address`, and `GET /wallet/transactions` do?
-- **Open question:** what service or background worker is responsible for reconciling incoming on-chain deposits and updating `wallets.onchain_balance_sat`?
-- **Open question:** should Lightning channel balances be synchronized from LND into `wallets.lightning_balance_sat`, and if so, on what cadence?
-- **Open question:** should invoice lookup be scoped to the authenticated user's own invoices rather than any hash the caller provides?
+- **Assumption:** the wallet service itself owns on-chain deposit reconciliation through its background loop and imported-address set.
+- **Open question:** should the platform evolve from the current per-wallet settled Lightning ledger model to a stronger per-user channel-accounting model if multiple users share one LND node?
 - **Open question:** is tapd intended to become an active runtime dependency for wallet balance synchronization, or remain a tokenization-only concern?
 - **Open question:** should provider state in `GET /wallet/fiat/onramp/providers` reflect KYC readiness instead of always returning `ready`?
-- **Assumption:** the current placeholder on-chain address generation and synthetic txid creation are transitional implementation steps, not the final intended custody design.
+- **Assumption:** on-ramp providers will deliver BTC to the returned deposit address so standard on-chain reconciliation can credit the wallet without provider-specific postback logic.
 
 ## Integration Summary
 
-For frontend teams, the wallet service is the API surface for balances, transaction history, Lightning actions, hosted fiat funding flows, and custody posture. Integrate against the live route shapes from `services/wallet/main.py`, handle both `error` and `detail` failure bodies, poll for Lightning state changes, and avoid treating deposit-address creation or on-ramp session creation as proof of completed balance reconciliation.
+For frontend teams, the wallet service is the API surface for balances, transaction history, Lightning actions, hosted fiat funding flows, custody posture, fee suggestions, and backend-rendered QR PNGs. Integrate against the live route shapes from `services/wallet/main.py`, handle both `error` and `detail` failure bodies, poll for Lightning and on-chain state changes, and use `X-Idempotency-Key` when retrying withdrawals under uncertain network conditions.
 
-For backend teams, the wallet service currently acts as an orchestration layer over shared persistence, shared incentives/on-ramp/custody modules, and LND. If you extend it, keep the separation between wallet-owned tables and shared platform tables explicit, reconcile the documented API contract with the implemented Lightning routes, and prioritize closing the current gaps around deterministic address derivation, actual Bitcoin transaction broadcasting, deposit reconciliation, and balance synchronization.
+For backend teams, the wallet service now acts as an orchestration layer over shared persistence, shared incentives/on-ramp/custody modules, Bitcoin Core, and LND. If you extend it, keep the separation between wallet-owned tables and shared platform tables explicit, reconcile the documented API contract with the implemented Lightning routes, and be explicit about the remaining tradeoffs around distributed withdrawal idempotency and per-user Lightning accounting on shared nodes.
