@@ -1,5 +1,7 @@
 # Wallet Service Integration Guide
 
+> Migration notice: this guide predates the Liquid wallet cutover. The live implementation derives confidential Liquid receive addresses, reconciles against Elements, and signs/broadcasts Liquid PSET withdrawals.
+
 This document describes the wallet service as it is currently implemented in `services/wallet`, with explicit notes where there are still architectural tradeoffs or contract differences that integrators should understand.
 
 ## 1. Service Overview

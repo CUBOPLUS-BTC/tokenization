@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 class TokenBalance(BaseModel):
     token_id: UUID
+    liquid_asset_id: str
     asset_name: str
     symbol: str | None = None
     balance: int

@@ -40,10 +40,10 @@ services:
   wallet:
     image: python:3.11-slim
     restart: unless-stopped
-    working_dir: /app/services/wallet
+    working_dir: /app
     command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8001"
+      sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
+      uvicorn services.wallet.main:app --host 0.0.0.0 --port 8001"
     env_file:
       - ./.env.beta
     volumes:
@@ -195,6 +195,9 @@ services:
 volumes:
   beta_postgres_data:
   beta_redis_data:
+  prometheus_data:
+  alertmanager_data:
+  grafana_data:
 
 networks:
   beta:

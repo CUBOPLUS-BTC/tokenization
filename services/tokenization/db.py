@@ -80,7 +80,7 @@ async def get_asset_by_id(
         sa.select(
             assets_table,
             tokens_table.c.id.label("token_id"),
-            tokens_table.c.taproot_asset_id,
+            tokens_table.c.liquid_asset_id,
             tokens_table.c.total_supply,
             tokens_table.c.circulating_supply,
             tokens_table.c.unit_price_sat,
@@ -192,7 +192,7 @@ async def create_asset_token(
     *,
     asset_id: str | uuid.UUID,
     owner_id: str | uuid.UUID,
-    taproot_asset_id: str,
+    liquid_asset_id: str,
     total_supply: int,
     circulating_supply: int,
     unit_price_sat: int,
@@ -221,7 +221,7 @@ async def create_asset_token(
             sa.insert(tokens_table).values(
                 id=token_id,
                 asset_id=_as_uuid(asset_id),
-                taproot_asset_id=taproot_asset_id,
+                liquid_asset_id=liquid_asset_id,
                 total_supply=total_supply,
                 circulating_supply=circulating_supply,
                 unit_price_sat=unit_price_sat,

@@ -44,16 +44,22 @@ class Settings(BaseSettings):
     bitcoin_rpc_password: str | None = None
     bitcoin_rpc_password_file: str | None = None
     bitcoin_network: str
+    bitcoin_rpc_required: bool = True
+
+    elements_rpc_host: str = "localhost"
+    elements_rpc_port: int = 7041
+    elements_rpc_user: str = "user"
+    elements_rpc_password: str | None = None
+    elements_rpc_password_file: str | None = None
+    elements_network: str = "elementsregtest"
+    elements_wallet_name: str = ""
+    elements_rpc_required: bool | None = None
 
     lnd_grpc_host: str
     lnd_grpc_port: int
     lnd_macaroon_path: str
     lnd_tls_cert_path: str
-
-    tapd_grpc_host: str
-    tapd_grpc_port: int
-    tapd_macaroon_path: str
-    tapd_tls_cert_path: str
+    lnd_grpc_required: bool | None = None
 
     nostr_relays: str
     nostr_private_key: str | None = None
@@ -86,10 +92,24 @@ class Settings(BaseSettings):
     # KYC: trade value threshold (sats) above which KYC verification is required.
     # Set to 0 to disable enforcement.  Default 10 000 000 sats (~0.1 BTC).
     kyc_trade_threshold_sat: int = 10_000_000
+    marketplace_escrow_watch_interval_seconds: int = 30
+    marketplace_escrow_fee_reserve_sat: int = 5_000
 
     @property
     def nostr_relay_list(self) -> list[str]:
         return [relay.strip() for relay in self.nostr_relays.split(",") if relay.strip()]
+
+    @property
+    def resolved_elements_rpc_required(self) -> bool:
+        if self.elements_rpc_required is not None:
+            return self.elements_rpc_required
+        return self.env_profile != "local"
+
+    @property
+    def resolved_lnd_grpc_required(self) -> bool:
+        if self.lnd_grpc_required is not None:
+            return self.lnd_grpc_required
+        return self.env_profile != "local"
 
     @staticmethod
     def _resolve_secret(secret_value: str | None, file_path: str | None) -> str | None:
@@ -115,6 +135,7 @@ class Settings(BaseSettings):
     def _hydrate_secrets_and_validate(self) -> Settings:
         self.postgres_password = self._resolve_secret(self.postgres_password, self.postgres_password_file)
         self.bitcoin_rpc_password = self._resolve_secret(self.bitcoin_rpc_password, self.bitcoin_rpc_password_file)
+        self.elements_rpc_password = self._resolve_secret(self.elements_rpc_password, self.elements_rpc_password_file)
         self.jwt_secret = self._resolve_secret(self.jwt_secret, self.jwt_secret_file)
         self.openai_api_key = self._resolve_secret(self.openai_api_key, self.openai_api_key_file)
         self.wallet_encryption_key = self._resolve_secret(self.wallet_encryption_key, self.wallet_encryption_key_file)
@@ -147,6 +168,9 @@ class Settings(BaseSettings):
 
         if self.bitcoin_network.lower() not in {"mainnet", "testnet", "signet", "regtest"}:
             raise ValueError("bitcoin_network must be one of: mainnet, testnet, signet, regtest")
+
+        if self.elements_network.lower() not in {"liquidv1", "liquidtestnet", "elementsregtest"}:
+            raise ValueError("elements_network must be one of: liquidv1, liquidtestnet, elementsregtest")
 
         return self
 

@@ -12,7 +12,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -40,20 +40,25 @@ services:
     image: python:3.11-slim
     container_name: tokenization-wallet
     restart: unless-stopped
-    working_dir: /app/services/wallet
+    working_dir: /app
     command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8001"
+      sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
+      uvicorn services.wallet.main:app --host 0.0.0.0 --port 8001"
     env_file:
       - ./.env.local
     volumes:
       - ../:/app
+      - lnd_data:/run/secrets/lnd:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
       bitcoind:
+        condition: service_healthy
+      lnd:
+        condition: service_healthy
+      elementsd:
         condition: service_healthy
     ports:
       - "8001:8001"
@@ -98,6 +103,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      elementsd:
         condition: service_healthy
     ports:
       - "8002:8002"
@@ -214,6 +221,62 @@ services:
     networks:
       - platform
 
+  lnd:
+    image: lightninglabs/lnd:v0.20.0-beta
+    container_name: tokenization-lnd
+    restart: unless-stopped
+    command:
+      - --lnddir=/data/lnd
+      - --configfile=/etc/lnd/lnd.conf
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    volumes:
+      - ./lnd/lnd.conf:/etc/lnd/lnd.conf:ro
+      - lnd_data:/data/lnd
+    ports:
+      - "10009:10009"
+      - "9735:9735"
+    healthcheck:
+      test: ["CMD", "lncli", "--network=regtest", "--rpcserver=localhost:10009", "--tlscertpath=/data/lnd/tls.cert", "--macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon", "getinfo"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    networks:
+      - platform
+
+  elementsd:
+    build:
+      context: ./elements
+      dockerfile: Dockerfile
+    container_name: tokenization-elementsd
+    restart: unless-stopped
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    environment:
+      ELEMENTS_CONF_FILE: /etc/elements/elements.conf
+      ELEMENTS_DATA_DIR: /data/elements
+      ELEMENTS_NETWORK: elementsregtest
+      ELEMENTS_RPC_USER: user
+      ELEMENTS_RPC_PASSWORD: pass
+      ELEMENTS_RPC_PORT: "7041"
+      ELEMENTS_WALLET_NAME: platform
+    volumes:
+      - ./elements/elements.conf:/etc/elements/elements.conf:ro
+      - elements_data:/data/elements
+    ports:
+      - "7041:7041"
+    healthcheck:
+      test: ["CMD", "elements-cli", "-chain=elementsregtest", "-rpcuser=user", "-rpcpassword=pass", "-rpcport=7041", "-rpcwallet=platform", "getwalletinfo"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 25s
+    networks:
+      - platform
+
   gateway:
     build:
       context: ../services/gateway
@@ -237,6 +300,8 @@ volumes:
   postgres_data:
   redis_data:
   bitcoin_data:
+  lnd_data:
+  elements_data:
 
 networks:
   platform:

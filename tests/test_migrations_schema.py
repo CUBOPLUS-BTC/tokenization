@@ -477,6 +477,7 @@ def test_escrows_schema_matches_spec(inspector: sa.Inspector) -> None:
     assert columns["platform_pubkey"]["nullable"] is False
     assert columns["locked_amount_sat"]["nullable"] is False
     assert columns["status"]["default"] is not None
+    assert columns["refund_txid"]["nullable"] is True
     assert columns["expires_at"]["nullable"] is False
     assert columns["created_at"]["default"] is not None
     assert columns["updated_at"]["default"] is not None

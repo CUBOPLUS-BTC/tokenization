@@ -1,5 +1,7 @@
 # AGENT.md
 
+> Migration notice: the live runtime has been migrated from Taproot Assets / tapd to Liquid / Elements. Remaining Taproot or tapd references in this document are historical unless they explicitly describe legacy behavior.
+
 Operational manual for AI coding agents and human engineers working on the RWA Tokenization Platform.
 
 ---

@@ -28,21 +28,58 @@ class OnchainWithdrawalRequest(BaseModel):
     @classmethod
     def _validate_address_prefix(cls, value: str) -> str:
         lowered = value.lower()
-        valid_prefixes = ("bc1", "tb1", "bcrt1")
+        valid_prefixes = ("lq1", "tlq1", "el1", "ex1", "tex1", "ert1")
         if not lowered.startswith(valid_prefixes):
-            raise ValueError("Address must be a bech32 on-chain Bitcoin address")
+            raise ValueError("Address must be a Liquid confidential or unconfidential address")
         return lowered
 
 
 class OnchainAddressResponse(BaseModel):
     address: str
-    type: Literal["taproot"]
+    unconfidential_address: str
+    type: Literal["liquid_confidential"]
+
+
+class PegInAddressResponse(BaseModel):
+    mainchain_address: str
+    claim_script: str
+
+
+class PegInClaimRequest(BaseModel):
+    raw_transaction: str = Field(min_length=1)
+    txout_proof: str = Field(min_length=1)
+    claim_script: str = Field(min_length=1)
+
+
+class PegInClaimResponse(BaseModel):
+    txid: str
+    status: Literal["pending", "confirmed", "failed"]
+
+
+class PegOutRequest(BaseModel):
+    mainchain_address: str = Field(min_length=14, max_length=90)
+    amount_sat: int = Field(ge=1)
+
+    @field_validator("mainchain_address")
+    @classmethod
+    def _validate_mainchain_address(cls, value: str) -> str:
+        lowered = value.lower()
+        valid_prefixes = ("bc1", "tb1", "bcrt1")
+        if not lowered.startswith(valid_prefixes):
+            raise ValueError("Address must be a bech32 mainchain Bitcoin address")
+        return lowered
+
+
+class PegOutResponse(BaseModel):
+    txid: str
+    amount_sat: int
+    status: Literal["pending", "confirmed", "failed"]
 
 
 class FeeEstimateLevel(BaseModel):
     sat_per_vb: int = Field(ge=1)
     target_blocks: int = Field(ge=1)
-    source: Literal["bitcoin_rpc", "fallback"] = "bitcoin_rpc"
+    source: Literal["bitcoin_rpc", "elements_rpc", "fallback"] = "elements_rpc"
 
 
 class FeeEstimateResponse(BaseModel):

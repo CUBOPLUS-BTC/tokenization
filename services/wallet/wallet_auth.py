@@ -16,8 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from common import get_settings
 
-os.environ.setdefault("TAPD_MACAROON_PATH", "")
-os.environ.setdefault("TAPD_TLS_CERT_PATH", "")
+os.environ.setdefault("ELEMENTS_RPC_HOST", "localhost")
+os.environ.setdefault("ELEMENTS_RPC_PORT", "7041")
+os.environ.setdefault("ELEMENTS_RPC_USER", "user")
+os.environ.setdefault("ELEMENTS_RPC_PASSWORD", "pass")
+os.environ.setdefault("ELEMENTS_NETWORK", "elementsregtest")
 
 settings = get_settings(service_name="wallet", default_port=8001)
 _bearer_scheme = HTTPBearer()

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field, model_validator
 OrderSide = Literal["buy", "sell"]
 OrderType = Literal["limit", "stop_limit"]
 OrderStatus = Literal["open", "partially_filled", "filled", "cancelled"]
-TradeStatus = Literal["pending", "escrowed", "settled", "disputed"]
-EscrowStatus = Literal["created", "funded", "released", "refunded", "disputed"]
+TradeStatus = Literal["pending", "escrowed", "settled", "disputed", "cancelled"]
+EscrowStatus = Literal["created", "funded", "inspection_pending", "released", "refunded", "disputed", "expired"]
 DisputeStatus = Literal["open", "resolved"]
 DisputeResolution = Literal["refund", "release"]
 
@@ -103,8 +103,10 @@ class EscrowOut(BaseModel):
     locked_amount_sat: int
     funding_txid: str | None = None
     release_txid: str | None = None
+    refund_txid: str | None = None
     status: EscrowStatus
     expires_at: datetime
+    settlement_metadata: dict[str, Any] | None = None
 
 
 class EscrowResponse(BaseModel):
@@ -112,7 +114,7 @@ class EscrowResponse(BaseModel):
 
 
 class EscrowSignRequest(BaseModel):
-    partial_signature: str = Field(min_length=1)
+    pset: str | None = Field(default=None, min_length=1)
 
 
 class DisputeOpenRequest(BaseModel):
@@ -121,6 +123,7 @@ class DisputeOpenRequest(BaseModel):
 
 class DisputeResolveRequest(BaseModel):
     resolution: DisputeResolution
+    pset: str | None = Field(default=None, min_length=1)
 
 
 class DisputeOut(BaseModel):

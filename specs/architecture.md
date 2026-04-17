@@ -1,5 +1,7 @@
 # Architecture Specification
 
+> Migration notice: this architecture spec still contains Taproot / tapd-era diagrams and dependency descriptions. The live runtime now uses Elements / Liquid for issuance, wallet on-chain flows, and marketplace settlement.
+
 ## 1. High-Level System Architecture
 
 ```

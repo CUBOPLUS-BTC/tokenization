@@ -6,6 +6,8 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hmac
+import hashlib
 import logging
 from pathlib import Path
 import sys
@@ -13,12 +15,15 @@ import time
 from typing import Any
 import uuid
 
+from embit import ec
+from embit.liquid.pset import PSET
 from fastapi import Depends, FastAPI, Query, Request, Security, WebSocket, WebSocketDisconnect, status
 from fastapi import Header
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 import uvicorn
 
@@ -31,23 +36,25 @@ from common import (
     InternalEventBus,
     RedisStreamFeed,
     RedisStreamMirror,
+    build_platform_signer,
     decode_resume_token,
     encode_resume_token,
     get_readiness_payload,
     get_settings,
     install_http_security,
     record_audit_event,
-    build_platform_signer,
 )
+from common.db.metadata import wallet_addresses as wallet_addresses_table
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
-from marketplace.bitcoin_rpc import BitcoinRPCClient, BitcoinRPCError, FundingObservation
+from marketplace.escrow import derive_private_key
 from marketplace.db import (
     activate_triggered_orders,
     cancel_order,
     create_order,
     create_trade_escrow,
+    expire_unfunded_escrow,
     find_best_match,
     get_reference_price_for_token,
     get_dispute_by_trade_id,
@@ -62,13 +69,18 @@ from marketplace.db import (
     get_trade_volume_24h,
     get_user_by_id,
     get_wallet_by_user_id,
+    list_escrows_by_status,
     list_orders,
     list_trades,
     mark_escrow_funded,
     open_dispute,
     process_escrow_signature,
+    record_escrow_signature,
+    resolve_escrow_signing_material,
     resolve_dispute,
+    update_escrow_settlement_metadata,
 )
+from marketplace.liquid_rpc import ElementsRPCError, FundingObservation, get_liquid_rpc
 from auth.kyc_db import get_kyc_status, is_kyc_verified
 from marketplace.schemas import (
     CancelOrderResponse,
@@ -89,6 +101,7 @@ from marketplace.schemas import (
     TradeListResponse,
     TradeOut,
 )
+from wallet.key_manager import KeyManager
 
 
 settings = get_settings(service_name="marketplace", default_port=8003)
@@ -100,16 +113,12 @@ _event_bus = InternalEventBus()
 _event_bus.subscribe("trade.matched", RedisStreamMirror(settings.redis_url))
 _event_bus.subscribe("escrow.funded", RedisStreamMirror(settings.redis_url))
 _realtime_feed = RedisStreamFeed(settings.redis_url)
+_event_bus.subscribe("escrow.expired", RedisStreamMirror(settings.redis_url))
 _event_bus.subscribe("escrow.released", RedisStreamMirror(settings.redis_url))
 configure_alerting(settings)
-_bitcoin_rpc_client = (
-    BitcoinRPCClient(
-        host=settings.bitcoin_rpc_host,
-        port=settings.bitcoin_rpc_port,
-        username=settings.bitcoin_rpc_user,
-        password=settings.bitcoin_rpc_password,
-    )
-    if settings.bitcoin_rpc_password
+_liquid_rpc_client = (
+    get_liquid_rpc(settings)
+    if settings.elements_rpc_password
     else None
 )
 
@@ -130,6 +139,11 @@ class AuthenticatedPrincipal:
 
 def _make_async_url(sync_url: str) -> str:
     url = sync_url
+    if url.startswith("postgresql+asyncpg://"):
+        return url
+    for prefix in ("postgresql+", "postgres+"):
+        if url.startswith(prefix):
+            return "postgresql+asyncpg://" + url.split("://", 1)[1]
     for prefix in ("postgresql://", "postgres://"):
         if url.startswith(prefix):
             return "postgresql+asyncpg://" + url[len(prefix):]
@@ -146,7 +160,18 @@ def _runtime_engine() -> AsyncEngine | object:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     engine = _runtime_engine()
+    stop_event = asyncio.Event()
+    watcher_task: asyncio.Task[None] | None = None
+    if _liquid_rpc_client is not None:
+        watcher_task = asyncio.create_task(_escrow_watcher_loop(stop_event))
     yield
+    stop_event.set()
+    if watcher_task is not None:
+        watcher_task.cancel()
+        try:
+            await watcher_task
+        except asyncio.CancelledError:
+            pass
     await engine.dispose()
 
 
@@ -221,6 +246,8 @@ def _trade_out(row: object) -> TradeOut:
 
 
 def _escrow_out(row: object) -> EscrowOut:
+    settlement_metadata = dict(_row_value(row, "settlement_metadata") or {})
+    settlement_metadata.pop("blinding_private_key", None)
     return EscrowOut(
         id=_row_value(row, "id"),
         trade_id=_row_value(row, "trade_id"),
@@ -228,8 +255,10 @@ def _escrow_out(row: object) -> EscrowOut:
         locked_amount_sat=int(_row_value(row, "locked_amount_sat", 0)),
         funding_txid=_row_value(row, "funding_txid"),
         release_txid=_row_value(row, "release_txid"),
+        refund_txid=_row_value(row, "refund_txid"),
         status=_row_value(row, "status"),
         expires_at=_row_value(row, "expires_at"),
+        settlement_metadata=settlement_metadata or None,
     )
 
 
@@ -267,6 +296,47 @@ def _isoformat(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat().replace("+00:00", "Z")
+
+
+def _system_request(path: str, *, method: str = "POST") -> Request:
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": method,
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode("utf-8"),
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 0),
+            "server": ("marketplace", settings.service_port),
+        }
+    )
+
+
+def _sats_to_btc(value_sat: int) -> float:
+    return value_sat / 100_000_000.0
+
+
+def _signature_bucket(collected_signatures: dict | None, *, path: str) -> dict[str, dict[str, Any]]:
+    return dict((collected_signatures or {}).get(path) or {})
+
+
+def _signature_record(
+    *,
+    signer_role: str,
+    actor_id: str | None,
+    signature_fingerprint: str,
+    source: str,
+) -> dict[str, Any]:
+    return {
+        "role": signer_role,
+        "actor_id": actor_id,
+        "signature": signature_fingerprint,
+        "source": source,
+        "signed_at": _utc_now_iso(),
+    }
 
 
 def _build_page(rows: list[object], *, cursor: str | None, limit: int, label: str) -> tuple[list[object], str | None]:
@@ -350,6 +420,25 @@ async def _publish_escrow_funded(
     }
     record_business_event("escrow_fund")
     await _event_bus.publish("escrow.funded", payload)
+
+
+async def _publish_escrow_expired(
+    trade_row: object,
+    *,
+    escrow_row: object,
+    buy_order: object,
+    sell_order: object,
+) -> None:
+    payload = {
+        "event": "escrow_expired",
+        "trade_id": str(_row_value(trade_row, "id")),
+        "escrow_id": str(_row_value(escrow_row, "id")),
+        "buyer_id": str(_row_value(buy_order, "user_id")),
+        "seller_id": str(_row_value(sell_order, "user_id")),
+        "status": _row_value(escrow_row, "status"),
+    }
+    record_business_event("escrow_expire")
+    await _event_bus.publish("escrow.expired", payload)
 
 
 def _token_not_found_error() -> ContractError:
@@ -531,19 +620,6 @@ async def _check_2fa(conn: object, user_id: str, code: str | None) -> None:
         )
 
 
-def _validate_hex_signature(value: str) -> None:
-    """Ensure partial_signature is a non-empty hex string."""
-    try:
-        if not value or bytes.fromhex(value) == b"":
-            raise ValueError
-    except ValueError:
-        raise ContractError(
-            code="invalid_signature",
-            message="partial_signature must be a non-empty hex string.",
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        )
-
-
 def _derive_platform_release_signature(escrow_id: uuid.UUID, trade_id: uuid.UUID) -> str:
     """Derive a deterministic platform counter-signature for escrow release."""
     msg = f"escrow-release:{escrow_id}:{trade_id}".encode()
@@ -598,15 +674,17 @@ async def _record_settlement_failure(
 
 
 async def _scan_escrow_funding(escrow_row: object) -> FundingObservation | None:
-    if _bitcoin_rpc_client is None:
+    if _liquid_rpc_client is None:
         return None
 
     try:
-        return await asyncio.to_thread(
-            _bitcoin_rpc_client.scan_address,
-            str(_row_value(escrow_row, "multisig_address", "")),
+        settlement_metadata = _row_value(escrow_row, "settlement_metadata") or {}
+        address = str(
+            settlement_metadata.get("unconfidential_address")
+            or _row_value(escrow_row, "multisig_address", "")
         )
-    except BitcoinRPCError:
+        return await _liquid_rpc_client.scan_address(address)
+    except ElementsRPCError:
         logger.exception("Escrow funding check failed for trade %s", _row_value(escrow_row, "trade_id"))
         await _record_settlement_failure(
             stage="escrow_funding_scan",
@@ -617,39 +695,332 @@ async def _scan_escrow_funding(escrow_row: object) -> FundingObservation | None:
         return None
 
 
-async def _refresh_escrow_funding(
+async def _register_escrow_watch_address(escrow_row: object) -> None:
+    if _liquid_rpc_client is None:
+        return
+
+    settlement_metadata = _row_value(escrow_row, "settlement_metadata") or {}
+    blinding_private_key = settlement_metadata.get("blinding_private_key")
+
+    try:
+        await _liquid_rpc_client.importaddress(
+            str(_row_value(escrow_row, "multisig_address", "")),
+            label=f"escrow_{_row_value(escrow_row, 'id')}",
+            rescan=False,
+        )
+        if blinding_private_key:
+            await _liquid_rpc_client.importblindingkey(
+                str(_row_value(escrow_row, "multisig_address", "")),
+                str(blinding_private_key),
+            )
+    except ElementsRPCError as exc:
+        logger.exception("Failed to import escrow address %s into Elements", _row_value(escrow_row, "id"))
+        await _record_settlement_failure(
+            stage="escrow_watch_import",
+            detail=f"Elements rejected escrow watch address import for trade {_row_value(escrow_row, 'trade_id')}: {exc}",
+            trade_id=str(_row_value(escrow_row, "trade_id")),
+            escrow_id=str(_row_value(escrow_row, "id")),
+        )
+
+
+def _merge_pset_inputs(base_pset: PSET, signed_pset: PSET) -> PSET:
+    for index, input_scope in enumerate(base_pset.inputs):
+        if index < len(signed_pset.inputs):
+            input_scope.update(signed_pset.inputs[index])
+    return base_pset
+
+
+async def _ensure_wallet_settlement_address(
+    conn: object,
+    *,
+    user_id: str,
+    metadata_key: str,
+    settlement_metadata: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    existing_address = settlement_metadata.get(metadata_key)
+    if isinstance(existing_address, str) and existing_address:
+        return existing_address, settlement_metadata
+
+    wallet_row = await get_wallet_by_user_id(conn, user_id)
+    if wallet_row is None:
+        raise ContractError(
+            code="wallet_not_found",
+            message="Wallet not found for user.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    if not settings.wallet_encryption_key:
+        raise ContractError(
+            code="wallet_seed_error",
+            message="Wallet encryption key is unavailable for settlement address derivation.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    encrypted_seed = bytes(_row_value(wallet_row, "encrypted_seed", b""))
+    key_mgr = KeyManager(
+        settings.wallet_encryption_key,
+        settings.bitcoin_network,
+        elements_network=settings.elements_network,
+    )
+    try:
+        seed = key_mgr.decrypt_seed(encrypted_seed)
+    except Exception as exc:
+        raise ContractError(
+            code="wallet_seed_error",
+            message="Failed to decrypt wallet seed.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        ) from exc
+
+    result = await conn.execute(
+        sa.select(sa.func.max(wallet_addresses_table.c.derivation_index))
+        .where(wallet_addresses_table.c.wallet_id == _row_value(wallet_row, "id"))
+    )
+    next_index = result.scalar_one_or_none()
+    derived = key_mgr.derive_liquid_address(seed, 0 if next_index is None else int(next_index) + 1)
+
+    if _liquid_rpc_client is not None:
+        try:
+            await _liquid_rpc_client.importaddress(
+                derived.confidential_address,
+                label=f"wallet_{_row_value(wallet_row, 'id')}",
+                rescan=False,
+            )
+            await _liquid_rpc_client.importblindingkey(
+                derived.confidential_address,
+                derived.blinding_private_key,
+            )
+        except ElementsRPCError as exc:
+            raise ContractError(
+                code="elements_rpc_unavailable",
+                message="Elements could not register the settlement address.",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            ) from exc
+
+    await conn.execute(
+        sa.insert(wallet_addresses_table).values(
+            id=uuid.uuid4(),
+            wallet_id=_row_value(wallet_row, "id"),
+            address=derived.confidential_address,
+            derivation_index=0 if next_index is None else int(next_index) + 1,
+            script_pubkey=derived.script_pubkey,
+            imported_to_node=True,
+            created_at=datetime.now(tz=timezone.utc),
+        )
+    )
+    await conn.commit()
+
+    updated_metadata = dict(settlement_metadata)
+    updated_metadata[metadata_key] = derived.confidential_address
+    return derived.confidential_address, updated_metadata
+
+
+async def _prepare_escrow_transaction_pset(
     conn: object,
     *,
     trade_row: object,
     escrow_row: object,
-) -> tuple[object, object, bool]:
-    if _row_value(escrow_row, "status") != "created" or _row_value(escrow_row, "funding_txid") is not None:
-        return trade_row, escrow_row, False
+    payout_mode: str,
+) -> object:
+    if _liquid_rpc_client is None:
+        return escrow_row
 
-    observation = await _scan_escrow_funding(escrow_row)
-    if observation is None:
-        return trade_row, escrow_row, False
+    settlement_metadata = dict(_row_value(escrow_row, "settlement_metadata") or {})
+    status_value = str(_row_value(escrow_row, "status") or "")
+    metadata_key = f"{payout_mode}_unsigned_pset"
+    if settlement_metadata.get(metadata_key):
+        return escrow_row
 
-    locked_amount_sat = int(_row_value(escrow_row, "locked_amount_sat", 0))
-    if observation.total_amount_sat < locked_amount_sat:
-        expires_at = _row_value(escrow_row, "expires_at")
-        if isinstance(expires_at, datetime):
-            expiry = expires_at if expires_at.tzinfo is not None else expires_at.replace(tzinfo=timezone.utc)
-            if expiry <= datetime.now(tz=timezone.utc):
-                await _record_settlement_failure(
-                    stage="escrow_funding_timeout",
-                    detail=f"Escrow funding expired for trade {_row_value(trade_row, 'id')}.",
-                    trade_id=str(_row_value(trade_row, "id")),
-                    escrow_id=str(_row_value(escrow_row, "id")),
-                )
-        return trade_row, escrow_row, False
+    funding_inputs = list(settlement_metadata.get("funding_inputs") or [])
+    if not funding_inputs:
+        return escrow_row
 
-    updated_trade_row, updated_escrow_row = await mark_escrow_funded(
+    from embit import script as embit_script
+    from embit.liquid.transaction import LSIGHASH
+
+    buy_order = await get_order_by_id(conn, _row_value(trade_row, "buy_order_id"))
+    sell_order = await get_order_by_id(conn, _row_value(trade_row, "sell_order_id"))
+    if buy_order is None or sell_order is None:
+        raise ContractError(
+            code="trade_not_found",
+            message="Trade not found.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    buyer_refund_address, settlement_metadata = await _ensure_wallet_settlement_address(
         conn,
-        trade_id=_row_value(trade_row, "id"),
-        funding_txid=observation.txid,
+        user_id=str(_row_value(buy_order, "user_id")),
+        metadata_key="buyer_refund_address",
+        settlement_metadata=settlement_metadata,
     )
-    return updated_trade_row, updated_escrow_row, True
+    seller_payout_address, settlement_metadata = await _ensure_wallet_settlement_address(
+        conn,
+        user_id=str(_row_value(sell_order, "user_id")),
+        metadata_key="seller_payout_address",
+        settlement_metadata=settlement_metadata,
+    )
+
+    outputs: list[dict[str, float]] = []
+    if payout_mode == "release":
+        if status_value not in {"funded", "inspection_pending", "disputed"}:
+            return escrow_row
+
+        seller_payout_sat = int(settlement_metadata.get("seller_payout_amount_sat") or _row_value(trade_row, "total_sat", 0))
+        outputs.append({seller_payout_address: _sats_to_btc(seller_payout_sat)})
+        marketplace_fee_sat = int(settlement_metadata.get("marketplace_fee_amount_sat") or _row_value(trade_row, "fee_sat", 0))
+        if marketplace_fee_sat > 0:
+            treasury_fee_address = settlement_metadata.get("treasury_fee_address")
+            if not treasury_fee_address:
+                treasury_fee_address = await _liquid_rpc_client.getnewaddress(
+                    label=f"escrow_fee_{_row_value(escrow_row, 'id')}",
+                    address_type="bech32",
+                )
+                settlement_metadata["treasury_fee_address"] = treasury_fee_address
+            outputs.append({str(treasury_fee_address): _sats_to_btc(marketplace_fee_sat)})
+    else:
+        if status_value != "disputed":
+            return escrow_row
+        refund_amount_sat = int(_row_value(trade_row, "total_sat", 0)) + int(_row_value(trade_row, "fee_sat", 0))
+        outputs.append({buyer_refund_address: _sats_to_btc(refund_amount_sat)})
+
+    funded = await _liquid_rpc_client.walletcreatefundedpsbt(
+        [{"txid": entry["txid"], "vout": int(entry["vout"])} for entry in funding_inputs],
+        outputs,
+        {
+            "includeWatching": True,
+            "changeAddress": buyer_refund_address,
+            "add_inputs": False,
+        },
+    )
+
+    pset = PSET.from_string(str(funded["psbt"]))
+    target_script_pubkey = str(settlement_metadata.get("script_pubkey") or "")
+    witness_script = embit_script.Script(bytes.fromhex(str(settlement_metadata.get("witness_script") or "")))
+    escrow_input_count = 0
+    for input_scope in pset.inputs:
+        utxo = input_scope.utxo
+        if utxo is None:
+            continue
+        if utxo.script_pubkey.data.hex() != target_script_pubkey:
+            continue
+        input_scope.witness_script = witness_script
+        input_scope.sighash_type = LSIGHASH.ALL
+        escrow_input_count += 1
+
+    if escrow_input_count == 0:
+        raise ContractError(
+            code="settlement_pset_invalid",
+            message="Settlement PSET did not include the expected escrow inputs.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    settlement_metadata.update(
+        {
+            metadata_key: pset.to_string(),
+            f"{payout_mode}_estimated_fee_sat": int(float(funded.get("fee", 0)) * 100_000_000),
+        }
+    )
+    return await update_escrow_settlement_metadata(
+        conn,
+        escrow_id=_row_value(escrow_row, "id"),
+        settlement_metadata=settlement_metadata,
+    )
+
+
+async def _watch_escrows_once() -> None:
+    async with _runtime_engine().connect() as conn:
+        escrow_rows = await list_escrows_by_status(conn, statuses=("created",))
+        for escrow_row in escrow_rows:
+            try:
+                trade_row = await get_trade_by_id(conn, _row_value(escrow_row, "trade_id"))
+                if trade_row is None:
+                    continue
+
+                buy_order = await get_order_by_id(conn, _row_value(trade_row, "buy_order_id"))
+                sell_order = await get_order_by_id(conn, _row_value(trade_row, "sell_order_id"))
+                if buy_order is None or sell_order is None:
+                    continue
+
+                expires_at = _row_value(escrow_row, "expires_at")
+                if isinstance(expires_at, datetime):
+                    expiry = expires_at if expires_at.tzinfo is not None else expires_at.replace(tzinfo=timezone.utc)
+                    if expiry <= datetime.now(tz=timezone.utc):
+                        await _record_settlement_failure(
+                            stage="escrow_funding_timeout",
+                            detail=f"Escrow funding expired for trade {_row_value(trade_row, 'id')}.",
+                            trade_id=str(_row_value(trade_row, "id")),
+                            escrow_id=str(_row_value(escrow_row, "id")),
+                        )
+                        updated_trade_row, updated_escrow_row = await expire_unfunded_escrow(
+                            conn,
+                            trade_row=trade_row,
+                            escrow_row=escrow_row,
+                            buy_order=buy_order,
+                            sell_order=sell_order,
+                        )
+                        await record_audit_event(
+                            conn,
+                            settings=settings,
+                            request=_system_request(f"/internal/escrows/{_row_value(trade_row, 'id')}/expire"),
+                            action="marketplace.escrow.expire",
+                            actor_role="system",
+                            target_type="escrow",
+                            target_id=_row_value(updated_escrow_row, "id"),
+                            metadata={"trade_id": str(_row_value(updated_trade_row, "id"))},
+                        )
+                        await _publish_escrow_expired(
+                            updated_trade_row,
+                            escrow_row=updated_escrow_row,
+                            buy_order=buy_order,
+                            sell_order=sell_order,
+                        )
+                        continue
+
+                observation = await _scan_escrow_funding(escrow_row)
+                if observation is None or observation.total_amount_sat < int(_row_value(escrow_row, "locked_amount_sat", 0)):
+                    continue
+
+                try:
+                    updated_trade_row, updated_escrow_row = await mark_escrow_funded(
+                        conn,
+                        trade_id=_row_value(trade_row, "id"),
+                        funding_txid=observation.txid,
+                        settlement_metadata_update={
+                            "funding_inputs": observation.utxos,
+                            "funding_total_amount_sat": observation.total_amount_sat,
+                            "funded_at": _utc_now_iso(),
+                        },
+                    )
+                except LookupError:
+                    continue
+
+                await _prepare_escrow_transaction_pset(
+                    conn,
+                    trade_row=updated_trade_row,
+                    escrow_row=updated_escrow_row,
+                    payout_mode="release",
+                )
+                await _publish_escrow_funded(
+                    updated_trade_row,
+                    escrow_row=updated_escrow_row,
+                    buy_order=buy_order,
+                    sell_order=sell_order,
+                )
+            except Exception:
+                logger.exception("Escrow watcher failed for trade %s", _row_value(escrow_row, "trade_id"))
+
+
+async def _escrow_watcher_loop(stop_event: asyncio.Event) -> None:
+    interval = max(int(settings.marketplace_escrow_watch_interval_seconds), 1)
+    while not stop_event.is_set():
+        try:
+            await _watch_escrows_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Escrow watcher iteration failed")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            continue
 
 
 app = FastAPI(title="Marketplace Service", lifespan=_lifespan)
@@ -826,6 +1197,20 @@ def _notification_message(principal_id: str, *, topic: str, payload: dict[str, A
                 "status": payload.get("status"),
                 "trade_status": payload.get("trade_status"),
                 "settled_at": payload.get("settled_at"),
+            },
+        }
+
+    if topic == "escrow.expired":
+        participant_ids = {payload.get("buyer_id"), payload.get("seller_id")}
+        if principal_id not in participant_ids:
+            return None
+
+        return {
+            "event": "escrow_expired",
+            "data": {
+                "trade_id": payload.get("trade_id"),
+                "escrow_id": payload.get("escrow_id"),
+                "status": payload.get("status"),
             },
         }
 
@@ -1057,6 +1442,10 @@ async def place_order(
 
     for trade_row, escrow_row, buy_order, sell_order in published_trades:
         try:
+            await _register_escrow_watch_address(escrow_row)
+        except Exception:
+            logger.exception("Escrow watch registration failed for trade %s", _row_value(trade_row, "id"))
+        try:
             await _publish_trade_matched(
                 trade_row,
                 escrow_row=escrow_row,
@@ -1215,23 +1604,6 @@ async def get_escrow_details(
         if escrow_row is None:
             raise _escrow_not_found_error()
 
-        trade_row, escrow_row, funding_persisted = await _refresh_escrow_funding(
-            conn,
-            trade_row=trade_row,
-            escrow_row=escrow_row,
-        )
-
-    if funding_persisted:
-        try:
-            await _publish_escrow_funded(
-                trade_row,
-                escrow_row=escrow_row,
-                buy_order=buy_order,
-                sell_order=sell_order,
-            )
-        except Exception:
-            logger.exception("Escrow funded event publish failed for trade %s", trade_id)
-
     return EscrowResponse(escrow=_escrow_out(escrow_row)).model_dump(mode="json")
 
 
@@ -1243,8 +1615,6 @@ async def sign_escrow_release(
     x_2fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
-    _validate_hex_signature(body.partial_signature)
-
     async with _runtime_engine().connect() as conn:
         trade_row = await get_trade_by_id(conn, trade_id)
         if trade_row is None:
@@ -1273,30 +1643,135 @@ async def sign_escrow_release(
         if escrow_row is None:
             raise _escrow_not_found_error()
 
-        if _row_value(escrow_row, "status") != "funded":
+        escrow_status = str(_row_value(escrow_row, "status") or "")
+        if escrow_status not in {"funded", "inspection_pending"}:
             raise ContractError(
                 code="escrow_state_conflict",
-                message="Escrow must be in funded status before signatures can be submitted.",
+                message="Escrow must be funded and awaiting participant approval before signatures can be submitted.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        if escrow_status == "funded" and signer_role != "seller":
+            raise ContractError(
+                code="escrow_state_conflict",
+                message="The seller must acknowledge delivery before buyer approval can be submitted.",
                 status_code=status.HTTP_409_CONFLICT,
             )
 
         await _check_2fa(conn, principal.id, x_2fa_code)
-
-        platform_sig = _derive_platform_release_signature(
-            _row_value(escrow_row, "id"),
-            trade_id,
-        )
-
-        trade_row, escrow_row = await process_escrow_signature(
+        escrow_row = await _prepare_escrow_transaction_pset(
             conn,
-            escrow_row=escrow_row,
             trade_row=trade_row,
-            buy_order=buy_order,
-            sell_order=sell_order,
-            signer_role=signer_role,
-            signature=body.partial_signature,
-            platform_signature=platform_sig,
+            escrow_row=escrow_row,
+            payout_mode="release",
         )
+
+        settlement_metadata = dict(_row_value(escrow_row, "settlement_metadata") or {})
+        unsigned_pset = settlement_metadata.get("release_unsigned_pset")
+        if not unsigned_pset:
+            raise ContractError(
+                code="settlement_pset_missing",
+                message="Escrow settlement PSET is not available yet.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        if _liquid_rpc_client is None:
+            raise ContractError(
+                code="elements_rpc_unavailable",
+                message="Elements RPC is unavailable for escrow settlement.",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        collected_signatures = dict(_row_value(escrow_row, "collected_signatures") or {})
+        release_signatures = _signature_bucket(collected_signatures, path="release")
+        if signer_role in release_signatures:
+            raise ContractError(
+                code="signature_already_recorded",
+                message="This participant has already signed the release transaction.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        if signer_role == "buyer" and "seller" not in release_signatures:
+            raise ContractError(
+                code="escrow_state_conflict",
+                message="Buyer approval is only available after the seller has signed for delivery.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        base_pset = settlement_metadata.get("release_signed_pset") or unsigned_pset
+        pset = PSET.from_string(str(base_pset))
+        if body.pset is not None:
+            submitted_pset = PSET.from_string(body.pset)
+            pset = _merge_pset_inputs(pset, submitted_pset)
+
+        signer_material = await resolve_escrow_signing_material(conn, principal.id)
+        if signer_material is None and body.pset is None:
+            raise ContractError(
+                code="signed_pset_required",
+                message="A signer-supplied PSET is required for this escrow participant.",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        signature_source = "pset_upload" if body.pset is not None else "custodial_wallet"
+        if signer_material is not None:
+            pset.sign_with(derive_private_key(signer_material))
+        signature_fingerprint = hashlib.sha256(pset.to_string().encode("utf-8")).hexdigest()
+        signature_record = _signature_record(
+            signer_role=signer_role,
+            actor_id=principal.id,
+            signature_fingerprint=signature_fingerprint,
+            source=signature_source,
+        )
+        release_signatures[signer_role] = signature_record
+        collected_signatures["release"] = release_signatures
+        settlement_metadata["release_signed_pset"] = pset.to_string()
+        settlement_metadata["release_last_signed_by"] = signer_role
+
+        if {"buyer", "seller"}.issubset(release_signatures):
+            from embit.liquid.finalizer import finalize_psbt
+
+            processed = await _liquid_rpc_client.walletprocesspsbt(pset.to_string(), sign=False)
+            final_pset = PSET.from_string(str(processed.get("psbt") or pset.to_string()))
+            finalized_tx = finalize_psbt(final_pset)
+            if finalized_tx is None:
+                raise ContractError(
+                    code="settlement_pset_incomplete",
+                    message="Escrow settlement PSET is incomplete after both participants signed.",
+                    status_code=status.HTTP_409_CONFLICT,
+                )
+
+            txid = await _liquid_rpc_client.sendrawtransaction(finalized_tx.serialize().hex())
+            settlement_metadata.update(
+                {
+                    "release_signed_pset": final_pset.to_string(),
+                    "broadcast_at": _utc_now_iso(),
+                    "release_txid": txid,
+                }
+            )
+            try:
+                trade_row, escrow_row = await process_escrow_signature(
+                    conn,
+                    escrow_row=escrow_row,
+                    trade_row=trade_row,
+                    buy_order=buy_order,
+                    sell_order=sell_order,
+                    collected_signatures=collected_signatures,
+                    release_txid=txid,
+                    settlement_metadata=settlement_metadata,
+                )
+            except Exception as exc:
+                await _record_settlement_failure(
+                    stage="escrow_release_persist",
+                    detail=f"Escrow release broadcast for trade {trade_id} succeeded but DB persistence failed: {exc}",
+                    trade_id=str(trade_id),
+                    escrow_id=str(_row_value(escrow_row, 'id')),
+                )
+                raise
+        else:
+            escrow_row = await record_escrow_signature(
+                conn,
+                escrow_row=escrow_row,
+                signer_role=signer_role,
+                signature_path="release",
+                signature_record=signature_record,
+                settlement_metadata=settlement_metadata,
+            )
         await record_audit_event(
             conn,
             settings=settings,
@@ -1401,7 +1876,7 @@ async def notification_stream(websocket: WebSocket):
         try:
             resume_from = decode_resume_token(
                 auth_payload.get("resume_token"),
-                allowed_topics={"trade.matched", "escrow.funded", "escrow.released", "ai.evaluation.complete"},
+                allowed_topics={"trade.matched", "escrow.funded", "escrow.expired", "escrow.released", "ai.evaluation.complete"},
             )
         except ValueError as exc:
             raise _invalid_resume_token_error() from exc
@@ -1411,7 +1886,7 @@ async def notification_stream(websocket: WebSocket):
 
     try:
         async for stream_event in _realtime_feed.listen(
-            ["trade.matched", "escrow.funded", "escrow.released", "ai.evaluation.complete"],
+            ["trade.matched", "escrow.funded", "escrow.expired", "escrow.released", "ai.evaluation.complete"],
             resume_from=resume_from or None,
         ):
             message = _notification_message(
@@ -1549,12 +2024,115 @@ async def resolve_trade_dispute(
                 status_code=status.HTTP_409_CONFLICT,
             )
 
+        buy_order = await get_order_by_id(conn, _row_value(trade_row, "buy_order_id"))
+        sell_order = await get_order_by_id(conn, _row_value(trade_row, "sell_order_id"))
+        if buy_order is None or sell_order is None:
+            raise _trade_not_found_error()
+
+        escrow_row = await get_escrow_by_trade_id(conn, trade_id)
+        if escrow_row is None or _row_value(escrow_row, "status") != "disputed":
+            raise _escrow_not_found_error()
+        if _liquid_rpc_client is None:
+            raise ContractError(
+                code="elements_rpc_unavailable",
+                message="Elements RPC is unavailable for dispute resolution.",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        payout_mode = "release" if body.resolution == "release" else "refund"
+        escrow_row = await _prepare_escrow_transaction_pset(
+            conn,
+            trade_row=trade_row,
+            escrow_row=escrow_row,
+            payout_mode=payout_mode,
+        )
+
+        settlement_metadata = dict(_row_value(escrow_row, "settlement_metadata") or {})
+        unsigned_pset = settlement_metadata.get(f"{payout_mode}_unsigned_pset")
+        if not unsigned_pset:
+            raise ContractError(
+                code="settlement_pset_missing",
+                message="Settlement PSET is not available for this dispute resolution path.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        participant_role = "seller" if body.resolution == "release" else "buyer"
+        participant_id = str(
+            _row_value(sell_order, "user_id") if participant_role == "seller" else _row_value(buy_order, "user_id")
+        )
+        collected_signatures = dict(_row_value(escrow_row, "collected_signatures") or {})
+        path_signatures = _signature_bucket(collected_signatures, path=payout_mode)
+
+        pset = PSET.from_string(str(settlement_metadata.get(f"{payout_mode}_signed_pset") or unsigned_pset))
+        if body.pset is not None:
+            pset = _merge_pset_inputs(pset, PSET.from_string(body.pset))
+
+        participant_source = "pset_upload" if body.pset is not None else "custodial_resolution"
+        if participant_role not in path_signatures:
+            signer_material = await resolve_escrow_signing_material(conn, participant_id)
+            if signer_material is None and body.pset is None:
+                raise ContractError(
+                    code="signed_pset_required",
+                    message="A participant-signed PSET is required for this dispute resolution path.",
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                )
+            if signer_material is not None:
+                pset.sign_with(derive_private_key(signer_material))
+            path_signatures[participant_role] = _signature_record(
+                signer_role=participant_role,
+                actor_id=participant_id,
+                signature_fingerprint=hashlib.sha256(pset.to_string().encode("utf-8")).hexdigest(),
+                source=participant_source,
+            )
+
+        platform_signer = build_platform_signer(settings)
+        platform_private_key = platform_signer.private_key()
+        if not platform_private_key:
+            raise ContractError(
+                code="platform_signer_unavailable",
+                message="Platform signer private key is unavailable for dispute resolution.",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        pset.sign_with(ec.PrivateKey(bytes.fromhex(platform_private_key)))
+        path_signatures["platform"] = _signature_record(
+            signer_role="platform",
+            actor_id=principal.id,
+            signature_fingerprint=hashlib.sha256(pset.to_string().encode("utf-8")).hexdigest(),
+            source="platform_resolution",
+        )
+        collected_signatures[payout_mode] = path_signatures
+
+        from embit.liquid.finalizer import finalize_psbt
+
+        processed = await _liquid_rpc_client.walletprocesspsbt(pset.to_string(), sign=False)
+        final_pset = PSET.from_string(str(processed.get("psbt") or pset.to_string()))
+        finalized_tx = finalize_psbt(final_pset)
+        if finalized_tx is None:
+            raise ContractError(
+                code="settlement_pset_incomplete",
+                message="Dispute resolution PSET is incomplete after the required signatures were applied.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        txid = await _liquid_rpc_client.sendrawtransaction(finalized_tx.serialize().hex())
+        settlement_metadata.update(
+            {
+                "resolution": body.resolution,
+                f"{payout_mode}_signed_pset": final_pset.to_string(),
+                f"{payout_mode}_broadcast_at": _utc_now_iso(),
+                f"{payout_mode}_txid": txid,
+            }
+        )
+
         try:
             dispute_row, _trade_row, _escrow_row = await resolve_dispute(
                 conn,
                 trade_id=trade_id,
                 resolved_by=principal.id,
                 resolution=body.resolution,
+                resolution_txid=txid,
+                collected_signatures=collected_signatures,
+                settlement_metadata=settlement_metadata,
             )
         except LookupError as exc:
             raise ContractError(

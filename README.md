@@ -1,4 +1,4 @@
-# RWA Tokenization Platform on Bitcoin
+# RWA Tokenization Platform on Bitcoin and Liquid
 
 Platform for tokenization of real-world assets (RWA) on Bitcoin, with a focus on social impact.
 
@@ -20,7 +20,7 @@ The complete design is documented in [specs/](specs), including architecture, AP
 - Backend: Python 3.11+, FastAPI
 - Frontend: React 18 + TypeScript + Tailwind CSS
 - Database: PostgreSQL + Redis
-- Blockchain infra: Bitcoin Core + LND + Taproot Assets
+- Blockchain infra: Bitcoin Core + LND + Elements / Liquid
 - Infrastructure: Docker + CI/CD on GitHub Actions
 
 ## Key Documentation
@@ -34,7 +34,7 @@ The complete design is documented in [specs/](specs), including architecture, AP
 
 ## Local Infrastructure Startup
 
-Core local dependencies (PostgreSQL + Redis) and platform services are orchestrated with Docker Compose:
+The local profile now boots the full platform stack, including Bitcoin Core on `regtest`, LND wired to `bitcoind` over RPC + ZMQ, and an `elementsregtest` node wired back to the same Bitcoin node for Liquid-style RPC flows:
 
 ```bash
 docker compose -f infra/docker-compose.local.yml up -d
@@ -44,6 +44,8 @@ Quick checks:
 
 - Gateway health: `http://localhost:8000/health`
 - Wallet health via gateway: `http://localhost:8000/v1/wallet/health`
+- LND gRPC: `localhost:10009`
+- Elements RPC: `localhost:7041`
 
 Shutdown:
 
@@ -66,6 +68,8 @@ cp infra/.env.local.example infra/.env.local
 ```
 
 For local Docker Compose, defaults in `infra/.env.local` target internal service names (`postgres`, `redis`, and service hostnames) so all services can connect through shared configuration.
+
+The local template now treats Lightning and Elements as required dependencies, matching the real stack that `infra/docker-compose.local.yml` launches by default.
 
 Do not commit real `.env` files or plaintext secrets.
 

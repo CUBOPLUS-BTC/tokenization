@@ -163,10 +163,10 @@ scrape_configs:
         labels:
           environment: production
           service: lnd
-      - targets: ["prod-tapd.internal:10029"]
+      - targets: ["prod-elementsd.internal:7041"]
         labels:
           environment: production
-          service: tapd
+          service: elementsd
       - targets: ["beta-postgres.internal:5432"]
         labels:
           environment: beta
@@ -183,10 +183,10 @@ scrape_configs:
         labels:
           environment: beta
           service: lnd
-      - targets: ["beta-tapd.internal:10029"]
+      - targets: ["beta-elementsd.internal:7041"]
         labels:
           environment: beta
-          service: tapd
+          service: elementsd
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target

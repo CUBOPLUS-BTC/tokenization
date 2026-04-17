@@ -12,8 +12,17 @@ import uuid
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+try:
+    from embit import ec
+except ImportError:
+    ec = None
+
 
 logger = logging.getLogger(__name__)
+_SECP256K1_ORDER = int(
+    "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+    16,
+)
 
 CustodyBackendName = Literal["software", "hsm"]
 
@@ -89,6 +98,27 @@ def _digest_label(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()[:16]
 
 
+def _platform_secret_bytes(secret: str | bytes) -> bytes:
+    if isinstance(secret, bytes):
+        material = secret
+    else:
+        try:
+            candidate = bytes.fromhex(secret)
+        except ValueError:
+            candidate = secret.encode("utf-8")
+        material = candidate if len(candidate) == 32 else hashlib.sha256(candidate).digest()
+
+    if len(material) != 32:
+        material = hashlib.sha256(material).digest()
+    scalar = (int.from_bytes(material, "big") % (_SECP256K1_ORDER - 1)) + 1
+    return scalar.to_bytes(32, "big")
+
+
+def _platform_message_hash(*, purpose: str, message: bytes) -> bytes:
+    scoped_message = purpose.encode("utf-8") + b":" + message
+    return hashlib.sha256(scoped_message).digest()
+
+
 def _envelope_bytes(payload: dict[str, object]) -> bytes:
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
@@ -139,9 +169,9 @@ class WalletCustodyBackend:
     def unseal_seed(self, encrypted_seed: bytes) -> bytes:
         raise NotImplementedError
 
-    def get_derivation_path(self, account_index: int = 0, *, bitcoin_network: str) -> str:
-        coin_type = "0" if bitcoin_network.lower() == "mainnet" else "1"
-        return f"m/86'/{coin_type}'/{account_index}'"
+    def get_derivation_path(self, account_index: int = 0, *, liquid_network: str) -> str:
+        coin_type = "1776" if liquid_network.lower() == "liquidv1" else "1"
+        return f"m/44'/{coin_type}'/{account_index}'"
 
 
 class SoftwareWalletCustody(WalletCustodyBackend):
@@ -236,32 +266,63 @@ class PlatformSigner:
     def sign(self, *, purpose: str, message: bytes) -> str:
         raise NotImplementedError
 
+    def public_key(self) -> str:
+        raise NotImplementedError
+
+    def private_key(self):
+        raise NotImplementedError
+
 
 class SoftwarePlatformSigner(PlatformSigner):
     backend_name: CustodyBackendName = "software"
 
     def __init__(self, secret: str | bytes) -> None:
-        if isinstance(secret, bytes):
-            self._secret = secret
-        else:
-            self._secret = secret.encode("utf-8")
+        if ec is None:
+            raise CustodyError(
+                code="platform_signer_unavailable",
+                message="embit is required for secp256k1 platform signing.",
+                backend="software",
+            )
+
+        self._secret = _platform_secret_bytes(secret)
+        self._key = ec.PrivateKey(self._secret)
         self.key_reference = f"sw-signer:{_digest_label(self._secret)}"
 
     def sign(self, *, purpose: str, message: bytes) -> str:
-        scoped_message = purpose.encode("utf-8") + b":" + message
-        return hmac.new(self._secret, scoped_message, hashlib.sha256).hexdigest()
+        digest = _platform_message_hash(purpose=purpose, message=message)
+        return self._key.schnorr_sign(digest).to_string()
+
+    def public_key(self) -> str:
+        return self._key.get_public_key().sec().hex()
+
+    def private_key(self):
+        return self._secret.hex()
 
 
 class HsmCompatiblePlatformSigner(PlatformSigner):
     backend_name: CustodyBackendName = "hsm"
 
     def __init__(self, *, signing_key: str | bytes, key_label: str) -> None:
+        if ec is None:
+            raise CustodyError(
+                code="platform_signer_unavailable",
+                message="embit is required for secp256k1 platform signing.",
+                backend="hsm",
+            )
+
         self._secret = _normalize_hex_key(signing_key, label="custody_hsm_signing_key")
+        self._key = ec.PrivateKey(self._secret)
         self.key_reference = key_label.strip() or "hsm:platform-signer"
 
     def sign(self, *, purpose: str, message: bytes) -> str:
-        scoped_message = purpose.encode("utf-8") + b":" + message
-        return hmac.new(self._secret, scoped_message, hashlib.sha256).hexdigest()
+        digest = _platform_message_hash(purpose=purpose, message=message)
+        return self._key.schnorr_sign(digest).to_string()
+
+    def public_key(self) -> str:
+        return self._key.get_public_key().sec().hex()
+
+    def private_key(self):
+        return self._secret.hex()
 
 
 def build_wallet_custody(settings: object) -> WalletCustodyBackend:
@@ -364,6 +425,5 @@ def derive_wallet_escrow_material(
 
 def derive_platform_signing_material(settings: object, *, purpose: str) -> bytes:
     signer = build_platform_signer(settings)
-    message = f"pubkey:{purpose}:{signer.key_reference}".encode("utf-8")
-    digest = signer.sign(purpose=purpose, message=message)
-    return digest.encode("utf-8")
+    message = f"pubkey:{purpose}:{signer.public_key()}:{signer.key_reference}".encode("utf-8")
+    return _platform_message_hash(purpose=purpose, message=message)

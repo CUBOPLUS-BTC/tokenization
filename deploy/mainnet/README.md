@@ -33,7 +33,7 @@ All checks must pass before deployment begins.
 - [ ] `BITCOIN_NETWORK` is set to `mainnet` in `infra/.env.mainnet`.
 - [ ] Database migrations have been tested against a production-schema clone.
 - [ ] Docker images are built from a tagged release (e.g. `v1.0.0-rc.1`).
-- [ ] Node infrastructure (bitcoind, LND, tapd) is fully synced on mainnet.
+- [ ] Node infrastructure (bitcoind, LND, Elements) is fully synced on mainnet.
 - [ ] KYC verification thresholds are configured in `KYC_TRADE_THRESHOLD_SAT`.
 - [ ] Backup and disaster-recovery plan is documented and tested.
 - [ ] DNS and TLS certificates for the production domain are provisioned.
@@ -71,7 +71,7 @@ All checks must pass before deployment begins.
 - [ ] Metrics: Prometheus scrape targets are UP.
 - [ ] Alertmanager: production receivers are routing correctly.
 - [ ] Bitcoin Core: block height matches public explorers.
-- [ ] LND + tapd: channels and assets visible on mainnet.
+- [ ] LND + Elements: channels and assets visible on mainnet.
 
 ### 2.4 Rollback Procedure
 
@@ -113,8 +113,7 @@ files, or CI logs.
 | Bitcoin RPC password | `BITCOIN_RPC_PASSWORD_FILE` | `/run/secrets/bitcoin_rpc_password` |
 | LND admin macaroon | `LND_MACAROON_PATH` | `/run/secrets/lnd_admin_macaroon` |
 | LND TLS cert | `LND_TLS_CERT_PATH` | `/run/secrets/lnd_tls_cert` |
-| tapd admin macaroon | `TAPD_MACAROON_PATH` | `/run/secrets/tapd_admin_macaroon` |
-| tapd TLS cert | `TAPD_TLS_CERT_PATH` | `/run/secrets/tapd_tls_cert` |
+| Elements RPC password | `ELEMENTS_RPC_PASSWORD_FILE` | `/run/secrets/elements_rpc_password` |
 | JWT signing secret | `JWT_SECRET_FILE` | `/run/secrets/jwt_secret` |
 | Wallet encryption key | `WALLET_ENCRYPTION_KEY_FILE` | `/run/secrets/wallet_encryption_key` |
 | OpenAI API key | `OPENAI_API_KEY_FILE` | `/run/secrets/openai_api_key` |

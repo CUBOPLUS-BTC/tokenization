@@ -134,6 +134,11 @@ configure_alerting(settings)
 def _make_async_url(sync_url: str) -> str:
     """Convert a standard postgres:// URL to asyncpg driver URL."""
     url = sync_url
+    if url.startswith("postgresql+asyncpg://"):
+        return url
+    for prefix in ("postgresql+", "postgres+"):
+        if url.startswith(prefix):
+            return "postgresql+asyncpg://" + url.split("://", 1)[1]
     for prefix in ("postgresql://", "postgres://"):
         if url.startswith(prefix):
             return "postgresql+asyncpg://" + url[len(prefix):]

@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common import get_settings
+from common import build_platform_signer
 from common.custody import derive_platform_signing_material, derive_wallet_escrow_material
 from common.db.metadata import escrows as escrows_table
 from common.db.metadata import nostr_identities as nostr_identities_table
@@ -24,12 +25,13 @@ from common.db.metadata import trades as trades_table
 from common.db.metadata import users as users_table
 from common.db.metadata import wallets as wallets_table
 from common.db.metadata import disputes as disputes_table
-from marketplace.escrow import compress_xonly_pubkey, derive_compressed_pubkey, generate_2of3_multisig_address
+from marketplace.escrow import build_liquid_2of3_escrow, compress_xonly_pubkey, derive_compressed_pubkey
 
 
 _OPEN_ORDER_STATUSES = ("open", "partially_filled")
 _ESCROW_EXPIRATION = timedelta(hours=24)
 settings = get_settings(service_name="marketplace", default_port=8003)
+_ESCROW_FEE_RESERVE_SAT = max(int(settings.marketplace_escrow_fee_reserve_sat), 0)
 
 
 def _as_uuid(value: str | uuid.UUID) -> uuid.UUID:
@@ -358,6 +360,19 @@ async def get_escrow_by_trade_id(
     return result.fetchone()
 
 
+async def list_escrows_by_status(
+    conn: AsyncConnection,
+    *,
+    statuses: tuple[str, ...],
+) -> list[sa.engine.Row]:
+    result = await conn.execute(
+        sa.select(escrows_table)
+        .where(escrows_table.c.status.in_(statuses))
+        .order_by(escrows_table.c.created_at.asc(), escrows_table.c.id.asc())
+    )
+    return list(result.fetchall())
+
+
 async def cancel_order(
     conn: AsyncConnection,
     *,
@@ -631,10 +646,41 @@ async def apply_order_fill(
     )
 
 
-def _platform_escrow_pubkey() -> str:
-    return derive_compressed_pubkey(
-        derive_platform_signing_material(settings, purpose="escrow-pubkey")
+async def revert_order_fill(
+    conn: AsyncConnection,
+    *,
+    order_row: object,
+    quantity: int,
+) -> None:
+    if quantity <= 0:
+        raise ValueError("quantity_must_be_positive")
+
+    current_filled = int(_row_value(order_row, "filled_quantity", 0))
+    new_filled = max(current_filled - quantity, 0)
+    if new_filled == 0:
+        new_status = "open"
+    elif new_filled < int(_row_value(order_row, "quantity", 0)):
+        new_status = "partially_filled"
+    else:
+        new_status = "filled"
+
+    await conn.execute(
+        sa.update(orders_table)
+        .where(orders_table.c.id == _row_value(order_row, "id"))
+        .values(
+            filled_quantity=new_filled,
+            status=new_status,
+            updated_at=_utc_now(),
+        )
     )
+
+
+def _platform_escrow_pubkey() -> str:
+    signer = build_platform_signer(settings)
+    public_key = signer.public_key()
+    if not public_key:
+        raise RuntimeError("platform_signer_public_key_unavailable")
+    return public_key
 
 
 async def _resolve_escrow_pubkey(
@@ -663,6 +709,70 @@ async def _resolve_escrow_pubkey(
     return derive_compressed_pubkey(seed_material)
 
 
+async def resolve_escrow_signing_material(
+    conn: AsyncConnection,
+    user_id: str | uuid.UUID,
+) -> bytes | None:
+    nostr_identity = await get_nostr_identity_by_user_id(conn, user_id)
+    if nostr_identity is not None:
+        return None
+
+    wallet_row = await get_wallet_by_user_id(conn, user_id)
+    if wallet_row is None:
+        raise LookupError("wallet_not_found")
+
+    seed_bytes = bytes(_row_value(wallet_row, "encrypted_seed", b""))
+    if not seed_bytes:
+        raise LookupError("wallet_not_found")
+
+    derivation_path = str(_row_value(wallet_row, "derivation_path", ""))
+    return derive_wallet_escrow_material(
+        user_id=_as_uuid(user_id),
+        derivation_path=derivation_path,
+        encrypted_seed=seed_bytes,
+    )
+
+
+async def update_escrow_settlement_metadata(
+    conn: AsyncConnection,
+    *,
+    escrow_id: str | uuid.UUID,
+    settlement_metadata: dict,
+) -> sa.engine.Row:
+    result = await conn.execute(
+        sa.update(escrows_table)
+        .where(escrows_table.c.id == _as_uuid(escrow_id))
+        .values(settlement_metadata=settlement_metadata, updated_at=_utc_now())
+        .returning(escrows_table)
+    )
+    row = result.fetchone()
+    if row is None:
+        raise LookupError("escrow_not_found")
+    await conn.commit()
+    return row
+
+
+def _merge_settlement_metadata(existing: dict | None, updates: dict | None) -> dict:
+    merged = dict(existing or {})
+    if updates:
+        merged.update(updates)
+    return merged
+
+
+def _updated_signature_payload(
+    existing: dict | None,
+    *,
+    signature_path: str,
+    signer_role: str,
+    signature_record: dict,
+) -> dict:
+    payload = dict(existing or {})
+    path_payload = dict(payload.get(signature_path) or {})
+    path_payload[signer_role] = signature_record
+    payload[signature_path] = path_payload
+    return payload
+
+
 async def create_trade_escrow(
     conn: AsyncConnection,
     *,
@@ -683,14 +793,17 @@ async def create_trade_escrow(
     seller_id = _row_value(sell_order, "user_id")
     token_id = _row_value(buy_order, "token_id")
     total_sat = quantity * price_sat
+    locked_amount_sat = total_sat + int(fee_sat) + _ESCROW_FEE_RESERVE_SAT
     now = _utc_now()
+    trade_id = uuid.uuid4()
 
     buyer_pubkey = await _resolve_escrow_pubkey(conn, buyer_id)
     seller_pubkey = await _resolve_escrow_pubkey(conn, seller_id)
     platform_pubkey = _platform_escrow_pubkey()
-    multisig_address = generate_2of3_multisig_address(
+    escrow_details = build_liquid_2of3_escrow(
         (buyer_pubkey, seller_pubkey, platform_pubkey),
-        settings.bitcoin_network,
+        settings.elements_network,
+        blinding_seed=derive_platform_signing_material(settings, purpose=f"escrow-blinding:{trade_id}"),
     )
 
     try:
@@ -701,7 +814,7 @@ async def create_trade_escrow(
         trade_result = await conn.execute(
             sa.insert(trades_table)
             .values(
-                id=uuid.uuid4(),
+                id=trade_id,
                 buy_order_id=_row_value(buy_order, "id"),
                 sell_order_id=_row_value(sell_order, "id"),
                 token_id=token_id,
@@ -723,14 +836,26 @@ async def create_trade_escrow(
             .values(
                 id=uuid.uuid4(),
                 trade_id=_row_value(trade_row, "id"),
-                multisig_address=multisig_address,
+                multisig_address=escrow_details.confidential_address,
                 buyer_pubkey=buyer_pubkey,
                 seller_pubkey=seller_pubkey,
                 platform_pubkey=platform_pubkey,
-                locked_amount_sat=total_sat,
+                locked_amount_sat=locked_amount_sat,
                 funding_txid=None,
                 release_txid=None,
+                refund_txid=None,
                 status="created",
+                settlement_metadata={
+                    "unconfidential_address": escrow_details.unconfidential_address,
+                    "witness_script": escrow_details.witness_script_hex,
+                    "script_pubkey": escrow_details.script_pubkey_hex,
+                    "blinding_pubkey": escrow_details.blinding_pubkey,
+                    "blinding_private_key": escrow_details.blinding_private_key,
+                    "seller_payout_amount_sat": total_sat,
+                    "marketplace_fee_amount_sat": int(fee_sat),
+                    "fee_reserve_sat": _ESCROW_FEE_RESERVE_SAT,
+                    "funding_amount_sat": locked_amount_sat,
+                },
                 expires_at=now + _ESCROW_EXPIRATION,
                 created_at=now,
                 updated_at=now,
@@ -816,8 +941,10 @@ async def mark_escrow_funded(
     *,
     trade_id: str | uuid.UUID,
     funding_txid: str,
+    settlement_metadata_update: dict | None = None,
 ) -> tuple[sa.engine.Row, sa.engine.Row]:
     now = _utc_now()
+    settlement_metadata = settlement_metadata_update or {}
 
     try:
         escrow_result = await conn.execute(
@@ -827,6 +954,7 @@ async def mark_escrow_funded(
             .values(
                 funding_txid=funding_txid,
                 status="funded",
+                settlement_metadata=escrows_table.c.settlement_metadata.op("||")(sa.cast(settlement_metadata, sa.JSON)),
                 updated_at=now,
             )
             .returning(escrows_table)
@@ -853,7 +981,52 @@ async def mark_escrow_funded(
     return trade_row, escrow_row
 
 
-_SIGNATURE_THRESHOLD = 2
+async def record_escrow_signature(
+    conn: AsyncConnection,
+    *,
+    escrow_row: object,
+    signer_role: str,
+    signature_path: str,
+    signature_record: dict,
+    settlement_metadata: dict | None = None,
+) -> sa.engine.Row:
+    escrow_id = _as_uuid(_row_value(escrow_row, "id"))
+    now = _utc_now()
+    existing_signatures = _row_value(escrow_row, "collected_signatures") or {}
+    updated_signatures = _updated_signature_payload(
+        existing_signatures,
+        signature_path=signature_path,
+        signer_role=signer_role,
+        signature_record=signature_record,
+    )
+    updated_metadata = _merge_settlement_metadata(
+        _row_value(escrow_row, "settlement_metadata") or {},
+        settlement_metadata,
+    )
+    next_status = "inspection_pending" if _row_value(escrow_row, "status") == "funded" else _row_value(escrow_row, "status")
+
+    try:
+        escrow_result = await conn.execute(
+            sa.update(escrows_table)
+            .where(escrows_table.c.id == escrow_id)
+            .where(escrows_table.c.status.in_(("funded", "inspection_pending")))
+            .values(
+                collected_signatures=updated_signatures,
+                settlement_metadata=updated_metadata,
+                status=next_status,
+                updated_at=now,
+            )
+            .returning(escrows_table)
+        )
+        escrow_row = escrow_result.fetchone()
+        if escrow_row is None:
+            raise LookupError("escrow_not_found_or_state_conflict")
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+
+    return escrow_row
 
 
 async def process_escrow_signature(
@@ -863,90 +1036,53 @@ async def process_escrow_signature(
     trade_row: object,
     buy_order: object,
     sell_order: object,
-    signer_role: str,
-    signature: str,
-    platform_signature: str,
+    collected_signatures: dict,
+    release_txid: str,
+    settlement_metadata: dict | None = None,
 ) -> tuple[sa.engine.Row, sa.engine.Row]:
-    """Record a party's signature and the platform counter-signature.
-
-    If the 2-of-3 threshold is satisfied the escrow is released and the
-    trade is settled atomically: buyer receives tokens, seller is credited
-    with the sale proceeds, and the buyer's wallet is debited.
-
-    Returns ``(trade_row, escrow_row)`` reflecting the final state.
-    """
     escrow_id = _as_uuid(_row_value(escrow_row, "id"))
     trade_id = _as_uuid(_row_value(trade_row, "id"))
     now = _utc_now()
-
-    existing: dict = _row_value(escrow_row, "collected_signatures") or {}
-    updated_sigs = dict(existing)
-    updated_sigs[signer_role] = signature
-    updated_sigs["platform"] = platform_signature
-
-    threshold_met = len(updated_sigs) >= _SIGNATURE_THRESHOLD
+    updated_metadata = _merge_settlement_metadata(
+        _row_value(escrow_row, "settlement_metadata") or {},
+        settlement_metadata,
+    )
 
     try:
-        if threshold_met:
-            release_txid = _generate_release_txid(escrow_id, trade_id)
-
-            escrow_result = await conn.execute(
-                sa.update(escrows_table)
-                .where(escrows_table.c.id == escrow_id)
-                .where(escrows_table.c.status == "funded")
-                .values(
-                    collected_signatures=updated_sigs,
-                    release_txid=release_txid,
-                    status="released",
-                    updated_at=now,
-                )
-                .returning(escrows_table)
+        escrow_result = await conn.execute(
+            sa.update(escrows_table)
+            .where(escrows_table.c.id == escrow_id)
+            .where(escrows_table.c.status.in_(("inspection_pending", "disputed")))
+            .values(
+                collected_signatures=collected_signatures,
+                settlement_metadata=updated_metadata,
+                release_txid=release_txid,
+                status="released",
+                updated_at=now,
             )
-            escrow_row = escrow_result.fetchone()
-            if escrow_row is None:
-                raise LookupError("escrow_not_found_or_state_conflict")
+            .returning(escrows_table)
+        )
+        escrow_row = escrow_result.fetchone()
+        if escrow_row is None:
+            raise LookupError("escrow_not_found_or_state_conflict")
 
-            trade_result = await conn.execute(
-                sa.update(trades_table)
-                .where(trades_table.c.id == trade_id)
-                .values(status="settled", settled_at=now)
-                .returning(trades_table)
-            )
-            trade_row = trade_result.fetchone()
-            if trade_row is None:
-                raise LookupError("trade_not_found")
+        trade_result = await conn.execute(
+            sa.update(trades_table)
+            .where(trades_table.c.id == trade_id)
+            .values(status="settled", settled_at=now)
+            .returning(trades_table)
+        )
+        trade_row = trade_result.fetchone()
+        if trade_row is None:
+            raise LookupError("trade_not_found")
 
-            buyer_id = _row_value(buy_order, "user_id")
-            seller_id = _row_value(sell_order, "user_id")
-            token_id = _row_value(trade_row, "token_id")
-            quantity = int(_row_value(trade_row, "quantity", 0))
-            total_sat = int(_row_value(trade_row, "total_sat", 0))
-            fee_sat = int(_row_value(trade_row, "fee_sat", 0))
-
-            buyer_wallet = await get_wallet_by_user_id(conn, buyer_id)
-            seller_wallet = await get_wallet_by_user_id(conn, seller_id)
-            if buyer_wallet is None or seller_wallet is None:
-                raise LookupError("wallet_not_found")
-
-            await debit_wallet_balance(conn, wallet_row=buyer_wallet, amount_sat=total_sat + fee_sat)
-            await credit_wallet_balance(conn, wallet_row=seller_wallet, amount_sat=total_sat)
-            await increment_token_balance(conn, user_id=buyer_id, token_id=token_id, quantity=quantity)
-            await record_trade_fee_income(conn, trade_row=trade_row)
-        else:
-            escrow_result = await conn.execute(
-                sa.update(escrows_table)
-                .where(escrows_table.c.id == escrow_id)
-                .where(escrows_table.c.status == "funded")
-                .values(
-                    collected_signatures=updated_sigs,
-                    updated_at=now,
-                )
-                .returning(escrows_table)
-            )
-            escrow_row = escrow_result.fetchone()
-            if escrow_row is None:
-                raise LookupError("escrow_not_found_or_state_conflict")
-
+        await increment_token_balance(
+            conn,
+            user_id=_row_value(buy_order, "user_id"),
+            token_id=_row_value(trade_row, "token_id"),
+            quantity=int(_row_value(trade_row, "quantity", 0)),
+        )
+        await record_trade_fee_income(conn, trade_row=trade_row)
         await conn.commit()
     except Exception:
         await conn.rollback()
@@ -955,12 +1091,66 @@ async def process_escrow_signature(
     return trade_row, escrow_row
 
 
-def _generate_release_txid(escrow_id: uuid.UUID, trade_id: uuid.UUID) -> str:
-    import hashlib
-    import time as _time
+async def expire_unfunded_escrow(
+    conn: AsyncConnection,
+    *,
+    trade_row: object,
+    escrow_row: object,
+    buy_order: object,
+    sell_order: object,
+) -> tuple[sa.engine.Row, sa.engine.Row]:
+    if _row_value(escrow_row, "status") != "created":
+        raise LookupError("escrow_not_expirable")
 
-    payload = f"release:{escrow_id}:{trade_id}:{_time.time_ns()}".encode()
-    return hashlib.sha256(payload).hexdigest()
+    now = _utc_now()
+    quantity = int(_row_value(trade_row, "quantity", 0))
+    settlement_metadata = _merge_settlement_metadata(
+        _row_value(escrow_row, "settlement_metadata") or {},
+        {"expired_at": now.isoformat().replace("+00:00", "Z")},
+    )
+
+    try:
+        await increment_token_balance(
+            conn,
+            user_id=_row_value(sell_order, "user_id"),
+            token_id=_row_value(trade_row, "token_id"),
+            quantity=quantity,
+        )
+        await revert_order_fill(conn, order_row=buy_order, quantity=quantity)
+        await revert_order_fill(conn, order_row=sell_order, quantity=quantity)
+
+        escrow_result = await conn.execute(
+            sa.update(escrows_table)
+            .where(escrows_table.c.id == _as_uuid(_row_value(escrow_row, "id")))
+            .where(escrows_table.c.status == "created")
+            .values(
+                status="expired",
+                settlement_metadata=settlement_metadata,
+                updated_at=now,
+            )
+            .returning(escrows_table)
+        )
+        updated_escrow = escrow_result.fetchone()
+        if updated_escrow is None:
+            raise LookupError("escrow_not_found_or_state_conflict")
+
+        trade_result = await conn.execute(
+            sa.update(trades_table)
+            .where(trades_table.c.id == _as_uuid(_row_value(trade_row, "id")))
+            .where(trades_table.c.status == "pending")
+            .values(status="cancelled")
+            .returning(trades_table)
+        )
+        updated_trade = trade_result.fetchone()
+        if updated_trade is None:
+            raise LookupError("trade_not_found_or_state_conflict")
+
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+
+    return updated_trade, updated_escrow
 
 
 async def get_dispute_by_trade_id(
@@ -1042,15 +1232,18 @@ async def resolve_dispute(
     trade_id: str | uuid.UUID,
     resolved_by: str | uuid.UUID,
     resolution: str,
+    resolution_txid: str,
+    collected_signatures: dict,
+    settlement_metadata: dict | None = None,
 ) -> tuple[sa.engine.Row, sa.engine.Row, sa.engine.Row]:
     """Resolve an open dispute.
 
     ``resolution`` must be ``'release'`` or ``'refund'``.
 
-    * ``release``: debit buyer wallet, credit seller wallet, transfer tokens to
-      buyer, set escrow to ``released``, trade to ``settled``.
+    * ``release``: transfer tokens to buyer, set escrow to ``released``,
+      trade to ``settled``, and persist the Liquid release txid.
     * ``refund``: return locked tokens to seller, set escrow to ``refunded``,
-      trade to ``settled``.
+      trade to ``cancelled``, and persist the Liquid refund txid.
 
     Returns ``(dispute_row, trade_row, escrow_row)`` reflecting the final state.
     """
@@ -1093,47 +1286,53 @@ async def resolve_dispute(
         if buy_order is None or sell_order is None:
             raise LookupError("orders_not_found")
 
-        buyer_id = _row_value(buy_order, "user_id")
         seller_id = _row_value(sell_order, "user_id")
         token_id = _row_value(trade_row, "token_id")
         quantity = int(_row_value(trade_row, "quantity", 0))
-        total_sat = int(_row_value(trade_row, "total_sat", 0))
-        fee_sat = int(_row_value(trade_row, "fee_sat", 0))
+        updated_metadata = _merge_settlement_metadata(
+            _row_value(escrow_row, "settlement_metadata") or {},
+            settlement_metadata,
+        )
 
         if resolution == "release":
-            # Transfer value: buyer pays sats, seller delivers tokens to buyer
-            buyer_wallet = await get_wallet_by_user_id(conn, buyer_id)
-            seller_wallet = await get_wallet_by_user_id(conn, seller_id)
-            if buyer_wallet is None or seller_wallet is None:
-                raise LookupError("wallet_not_found")
-
-            await debit_wallet_balance(conn, wallet_row=buyer_wallet, amount_sat=total_sat + fee_sat)
-            await credit_wallet_balance(conn, wallet_row=seller_wallet, amount_sat=total_sat)
-            await increment_token_balance(conn, user_id=buyer_id, token_id=token_id, quantity=quantity)
-
+            await increment_token_balance(
+                conn,
+                user_id=_row_value(buy_order, "user_id"),
+                token_id=token_id,
+                quantity=quantity,
+            )
             new_escrow_status = "released"
+            trade_status = "settled"
         else:
-            # Refund: return locked tokens to seller (tokens were decremented at escrow creation)
             await increment_token_balance(conn, user_id=seller_id, token_id=token_id, quantity=quantity)
             new_escrow_status = "refunded"
+            trade_status = "cancelled"
 
-        # Update escrow status
         escrow_update_result = await conn.execute(
             sa.update(escrows_table)
             .where(escrows_table.c.trade_id == trade_id_uuid)
             .where(escrows_table.c.status == "disputed")
-            .values(status=new_escrow_status, updated_at=now)
+            .values(
+                status=new_escrow_status,
+                release_txid=resolution_txid if resolution == "release" else escrows_table.c.release_txid,
+                refund_txid=resolution_txid if resolution == "refund" else escrows_table.c.refund_txid,
+                collected_signatures=collected_signatures,
+                settlement_metadata=updated_metadata,
+                updated_at=now,
+            )
             .returning(escrows_table)
         )
         escrow_row = escrow_update_result.fetchone()
         if escrow_row is None:
             raise LookupError("escrow_update_failed")
 
-        # Update trade status
         trade_update_result = await conn.execute(
             sa.update(trades_table)
             .where(trades_table.c.id == trade_id_uuid)
-            .values(status="settled", settled_at=now)
+            .values(
+                status=trade_status,
+                settled_at=now if trade_status == "settled" else None,
+            )
             .returning(trades_table)
         )
         trade_row = trade_update_result.fetchone()
@@ -1142,7 +1341,6 @@ async def resolve_dispute(
         if resolution == "release":
             await record_trade_fee_income(conn, trade_row=trade_row)
 
-        # Resolve the dispute record
         dispute_update_result = await conn.execute(
             sa.update(disputes_table)
             .where(disputes_table.c.trade_id == trade_id_uuid)

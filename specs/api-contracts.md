@@ -1,5 +1,7 @@
 # API Contracts Specification
 
+> Migration notice: portions of this spec still describe Taproot-era contracts. The current runtime uses Liquid / Elements semantics, including `liquid_asset_id`, confidential Liquid addresses, and PSET-based settlement flows.
+
 ## 1. General Conventions
 
 | Property         | Value                                                   |
@@ -860,14 +862,28 @@ Authorization: Bearer <token>
   "escrow": {
     "id": "uuid",
     "trade_id": "uuid",
-    "multisig_address": "bc1p...",
-    "locked_amount_sat": 1000000,
+    "multisig_address": "lq1...",
+    "locked_amount_sat": 1005000,
     "funding_txid": "hex_txid",
+    "release_txid": null,
+    "refund_txid": null,
     "status": "funded",
-    "expires_at": "2026-04-08T13:30:00Z"
+    "expires_at": "2026-04-08T13:30:00Z",
+    "settlement_metadata": {
+      "seller_payout_amount_sat": 1000000,
+      "marketplace_fee_amount_sat": 0,
+      "fee_reserve_sat": 5000,
+      "buyer_refund_address": "el1...",
+      "seller_payout_address": "el1..."
+    }
   }
 }
 ```
+
+Notes:
+- `locked_amount_sat` is the exact buyer funding amount for the escrow address.
+- The marketplace funding watcher updates `funding_txid` automatically; reads do not trigger funding detection.
+- `status` progresses through `created` -> `funded` -> `inspection_pending` -> `released`, with `refunded`, `disputed`, and `expired` as exception paths.
 
 ### 5.7 Sign Escrow Release
 
@@ -880,7 +896,7 @@ X-2FA-Code: 123456 (required)
 **Request Body:**
 ```json
 {
-  "partial_signature": "hex_signature"
+  "pset": "cHNldP8B..."
 }
 ```
 
@@ -889,16 +905,22 @@ X-2FA-Code: 123456 (required)
 {
   "escrow": {
     "id": "uuid",
-    "status": "released",
-    "release_txid": "hex_txid"
+    "status": "inspection_pending",
+    "release_txid": null
   }
 }
 ```
 
+Signing policy:
+- Happy path release requires `seller + buyer`.
+- The seller signs first while the escrow is `funded`, which moves the escrow to `inspection_pending`.
+- The buyer signs second after delivery verification. The release transaction only broadcasts after both participant signatures are present.
+- The platform key is not used on the happy path.
+
 ### 5.8 Dispute Trade
 
 ```
-POST /escrows/{trade_id}/dispute
+POST /trades/{trade_id}/dispute
 Authorization: Bearer <token>
 ```
 
@@ -1037,21 +1059,25 @@ Role: admin
 ### 7.3 Resolve Dispute
 
 ```
-POST /admin/escrows/{trade_id}/resolve
+POST /trades/{trade_id}/dispute/resolve
 Authorization: Bearer <token>
 Role: admin
-X-2FA-Code: 123456 (required)
 ```
 
 **Request Body:**
 ```json
 {
-  "resolution": "refund_buyer",
-  "notes": "Seller failed to provide documentation within 48 hours."
+  "resolution": "refund",
+  "pset": "cHNldP8B..."
 }
 ```
 
-**Resolution options**: `refund_buyer`, `release_to_seller`
+**Resolution options**: `refund`, `release`
+
+Dispute settlement policy:
+- `release` uses `seller + platform`.
+- `refund` uses `buyer + platform`.
+- The dispute endpoint builds and broadcasts a real Liquid settlement transaction, then persists `release_txid` or `refund_txid` on the escrow record.
 
 ### 7.4 Create Course
 

@@ -1,5 +1,7 @@
 # Database Schema Specification
 
+> Migration notice: this schema spec predates the Liquid migration in Alembic `0013`. The live schema now uses `tokens.liquid_asset_id`, a Liquid wallet derivation default, and escrow settlement metadata for PSET flows.
+
 ## 1. Overview
 
 - **RDBMS**: PostgreSQL 15+
@@ -241,8 +243,8 @@ Executed trades between two parties.
 | `quantity`        | `BIGINT`       | NOT NULL                       | Units exchanged                      |
 | `price_sat`       | `BIGINT`       | NOT NULL                       | Execution price per unit             |
 | `total_sat`       | `BIGINT`       | NOT NULL                       | Total sats exchanged (qty × price)   |
-| `fee_sat`         | `BIGINT`       | NOT NULL                       | Platform fee deducted                |
-| `status`          | `VARCHAR(20)`  | NOT NULL, DEFAULT 'pending'    | `pending`, `escrowed`, `settled`, `disputed` |
+| `fee_sat`         | `BIGINT`       | NOT NULL                       | Platform fee routed on release       |
+| `status`          | `VARCHAR(20)`  | NOT NULL, DEFAULT 'pending'    | `pending`, `escrowed`, `settled`, `disputed`, `cancelled` |
 | `created_at`      | `TIMESTAMPTZ`  | DEFAULT NOW()                  |                                      |
 | `settled_at`      | `TIMESTAMPTZ`  | nullable                       |                                      |
 
@@ -258,15 +260,23 @@ Multisig 2-of-3 escrow for each trade.
 | :------------------ | :------------- | :----------------------------- | :--------------------------------- |
 | `id`                | `UUID`         | PK                             |                                    |
 | `trade_id`          | `UUID`         | FK → trades.id, UNIQUE, NOT NULL |                                   |
-| `multisig_address`  | `VARCHAR(100)` | NOT NULL                       | Bitcoin multisig address           |
+| `multisig_address`  | `VARCHAR(100)` | NOT NULL                       | Liquid confidential escrow address |
 | `buyer_pubkey`      | `VARCHAR(66)`  | NOT NULL                       | Buyer's signing public key         |
 | `seller_pubkey`     | `VARCHAR(66)`  | NOT NULL                       | Seller's signing public key        |
 | `platform_pubkey`   | `VARCHAR(66)`  | NOT NULL                       | Platform arbiter public key        |
-| `locked_amount_sat` | `BIGINT`       | NOT NULL                       | Sats locked in escrow              |
+| `locked_amount_sat` | `BIGINT`       | NOT NULL                       | Buyer funding amount: seller payout + fee + fee reserve |
 | `funding_txid`      | `VARCHAR(64)`  | nullable                       | On-chain funding transaction       |
 | `release_txid`      | `VARCHAR(64)`  | nullable                       | On-chain release transaction       |
-| `status`            | `VARCHAR(20)`  | NOT NULL, DEFAULT 'created'    | `created`, `funded`, `released`, `refunded`, `disputed` |
-| `expires_at`        | `TIMESTAMPTZ`  | NOT NULL                       | Escrow expiration (auto-refund)    |
+| `refund_txid`       | `VARCHAR(64)`  | nullable                       | On-chain refund transaction        |
+| `collected_signatures` | `JSONB`     | nullable                       | Signature metadata grouped by settlement path |
+| `settlement_metadata`  | `JSONB`     | nullable                       | Liquid settlement inputs, PSETs, payout addresses, and fee reserve metadata |
+| `status`            | `VARCHAR(20)`  | NOT NULL, DEFAULT 'created'    | `created`, `funded`, `inspection_pending`, `released`, `refunded`, `disputed`, `expired` |
+| `expires_at`        | `TIMESTAMPTZ`  | NOT NULL                       | Expiration for unfunded escrow rollback |
+
+Behavior notes:
+- Seller inventory is reserved when the escrow is created and restored if the escrow expires unfunded or is refunded after dispute.
+- Funding detection is handled by an internal marketplace watcher, not by escrow reads.
+- Release and refund terminal states are only persisted after the matching Liquid transaction is broadcast.
 
 ---
 

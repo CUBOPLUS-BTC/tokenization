@@ -1,5 +1,7 @@
 # Tokenization Service Integration Guide
 
+> Migration notice: this guide predates the native Liquid issuance migration. The live runtime uses Elements RPC, persists `liquid_asset_id`, and no longer depends on `tapd` at runtime.
+
 This document describes the tokenization service as it is currently implemented in `services/tokenization`, with explicit notes where the broader platform materials describe intended behavior that has not yet been fully realized.
 
 ## 1. Service Overview

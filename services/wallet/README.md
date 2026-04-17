@@ -1,12 +1,12 @@
 # Wallet Service
 
-Bitcoin custody, Lightning Network payments, and balance management.
+Bitcoin and Liquid custody, Lightning Network payments, and balance management.
 
 ## Responsibility
 
-- HD wallet derivation (BIP-84/86), encrypted seed storage, and custody posture reporting
+- HD wallet derivation for confidential Liquid addresses, encrypted seed storage, and custody posture reporting
 - gRPC connection to LND for invoice creation, payment, and routing
-- Aggregates on-chain + Lightning + token balances per user
+- Aggregates Liquid on-chain + Lightning + token balances per user
 - Exposes hosted fiat-to-BTC on-ramp discovery and external handoff session creation
 - Persists every inbound/outbound movement with blockchain proof
 
@@ -20,7 +20,7 @@ Python 3.11+ / FastAPI
 
 ## External Dependencies
 
-Bitcoin Core (RPC), LND (gRPC), Taproot Assets daemon.
+Bitcoin Core (RPC), LND (gRPC), Elements / Liquid Core (RPC).
 
 ## Security
 

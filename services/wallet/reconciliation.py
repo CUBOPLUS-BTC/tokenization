@@ -16,8 +16,8 @@ from common.db.metadata import (
     onchain_deposits as deposits_table,
     transactions as transactions_table,
 )
-from bitcoin_rpc import BitcoinRPCError, get_bitcoin_rpc
-from db import (
+from .liquid_rpc import ElementsRPCError, get_liquid_rpc
+from .db import (
     list_imported_wallet_addresses,
     list_pending_lightning_receives,
     list_pending_onchain_withdrawals,
@@ -103,7 +103,7 @@ async def _credit_confirmed_deposit(
 
 
 async def reconcile_deposits(engine: AsyncEngine, settings: Settings) -> None:
-    bitcoin_rpc = get_bitcoin_rpc(settings)
+    liquid_rpc = get_liquid_rpc(settings)
     confirmation_threshold = _confirmation_threshold(settings)
 
     async with engine.connect() as conn:
@@ -118,9 +118,9 @@ async def reconcile_deposits(engine: AsyncEngine, settings: Settings) -> None:
     }
 
     try:
-        unspents = await bitcoin_rpc.listunspent(0, 9_999_999, list(address_map.keys()))
-    except BitcoinRPCError as exc:
-        logger.warning("Deposit reconciliation skipped because Bitcoin RPC is unavailable: %s", exc)
+        unspents = await liquid_rpc.listunspent(0, 9_999_999, list(address_map.keys()))
+    except ElementsRPCError as exc:
+        logger.warning("Deposit reconciliation skipped because Elements RPC is unavailable: %s", exc)
         return
 
     async with engine.connect() as conn:
@@ -206,7 +206,7 @@ async def reconcile_deposits(engine: AsyncEngine, settings: Settings) -> None:
 
 
 async def reconcile_withdrawals(engine: AsyncEngine, settings: Settings) -> None:
-    bitcoin_rpc = get_bitcoin_rpc(settings)
+    liquid_rpc = get_liquid_rpc(settings)
     confirmation_threshold = _confirmation_threshold(settings)
 
     async with engine.connect() as conn:
@@ -222,8 +222,8 @@ async def reconcile_withdrawals(engine: AsyncEngine, settings: Settings) -> None
                 continue
 
             try:
-                tx = await bitcoin_rpc.gettransaction(txid)
-            except BitcoinRPCError as exc:
+                tx = await liquid_rpc.gettransaction(txid)
+            except ElementsRPCError as exc:
                 logger.warning("Unable to refresh withdrawal %s confirmations: %s", txid, exc)
                 continue
 
