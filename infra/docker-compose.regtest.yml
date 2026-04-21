@@ -86,7 +86,7 @@ services:
 
   elementsd:
     build:
-      context: ./infra/elements
+      context: ./elements
       dockerfile: Dockerfile
     container_name: tokenization-elementsd
     restart: unless-stopped
