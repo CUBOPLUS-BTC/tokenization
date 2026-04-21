@@ -3,7 +3,7 @@ services:
     image: postgres:15-alpine
     restart: unless-stopped
     env_file:
-      - path: ./infra/.env.regtest
+      - path: ./.env.regtest
         required: false
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -37,10 +37,10 @@ services:
       sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn services.wallet.main:app --host 0.0.0.0 --port 8001"
     env_file:
-      - path: ./infra/.env.regtest
+      - path: ./.env.regtest
         required: false
     volumes:
-      - ./:/app
+      - ../:/app
       - lnd_data:/run/secrets/lnd:ro
     depends_on:
       postgres:
@@ -64,10 +64,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8000"
     env_file:
-      - path: ./infra/.env.regtest
+      - path: ./.env.regtest
         required: false
     volumes:
-      - ./:/app
+      - ../:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,10 +84,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8002"
     env_file:
-      - path: ./infra/.env.regtest
+      - path: ./.env.regtest
         required: false
     volumes:
-      - ./:/app
+      - ../:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -106,10 +106,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8003"
     env_file:
-      - path: ./infra/.env.regtest
+      - path: ./.env.regtest
         required: false
     volumes:
-      - ./:/app
+      - ../:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -126,10 +126,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8005"
     env_file:
-      - path: ./infra/.env.regtest
+      - path: ./.env.regtest
         required: false
     volumes:
-      - ./:/app
+      - ../:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -146,10 +146,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8006"
     env_file:
-      - path: ./infra/.env.regtest
+      - path: ./.env.regtest
         required: false
     volumes:
-      - ./:/app
+      - ../:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -163,20 +163,10 @@ services:
     user: "0:0"
     command:
       - -datadir=/data/.bitcoin
-      - -regtest=1
-      - -server=1
-      - -txindex=1
-      - -fallbackfee=0.00001
-      - -rpcbind=0.0.0.0
-      - -rpcallowip=0.0.0.0/0
-      - -rpcport=18443
-      - -rpcuser=local_rpc
-      - -rpcpassword=local_rpc_password
-      - -zmqpubrawblock=tcp://0.0.0.0:28332
-      - -zmqpubrawtx=tcp://0.0.0.0:28333
       - -printtoconsole
     restart: unless-stopped
     volumes:
+      - ./bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
       - bitcoin_data:/data/.bitcoin
     ports:
       - "18443:18443"
@@ -192,15 +182,16 @@ services:
   lnd:
     image: lightninglabs/lnd:v0.20.0-beta
     restart: unless-stopped
-    command:
-      - --lnddir=/data/lnd
-      - --configfile=/etc/lnd/lnd.conf
     depends_on:
       bitcoind:
         condition: service_healthy
     volumes:
-      - ./infra/lnd/lnd.conf:/etc/lnd/lnd.conf:ro
+      - ./lnd/lnd.conf:/etc/lnd/lnd.conf:ro
       - lnd_data:/data/lnd
+    command:
+      - --lnddir=/data/lnd
+      - --configfile=/etc/lnd/lnd.conf
+      - --bitcoin.regtest
     healthcheck:
       test: ["CMD", "lncli", "--network=regtest", "--rpcserver=localhost:10009", "--tlscertpath=/data/lnd/tls.cert", "--macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon", "getinfo"]
       interval: 15s
@@ -212,7 +203,7 @@ services:
 
   elementsd:
     build:
-      context: ./infra/elements
+      context: ./elements
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
@@ -227,7 +218,7 @@ services:
       ELEMENTS_RPC_PORT: "7041"
       ELEMENTS_WALLET_NAME: platform
     volumes:
-      - ./infra/elements/elements.conf:/etc/elements/elements.conf:ro
+      - ./elements/elements.conf:/etc/elements/elements.conf:ro
       - elements_data:/data/elements
     healthcheck:
       test: ["CMD", "elements-cli", "-chain=elementsregtest", "-rpcuser=user", "-rpcpassword=pass", "-rpcport=7041", "-rpcwallet=platform", "getwalletinfo"]
@@ -240,7 +231,7 @@ services:
 
   gateway:
     build:
-      context: ./services/gateway
+      context: ../services/gateway
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:

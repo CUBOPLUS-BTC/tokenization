@@ -34,9 +34,10 @@ def test_bitcoin_local_config_exposes_zmq_for_lnd():
 def test_regtest_compose_uses_infra_relative_paths():
     content = (REPO_ROOT / "infra" / "docker-compose.regtest.yml").read_text(encoding="utf-8")
 
-    assert "./infra/.env.regtest" in content
-    assert "./infra/bitcoin/bitcoin.conf" in content
-    assert "./services/gateway" in content
+    assert "./.env.regtest" in content
+    assert "./bitcoin/bitcoin.conf" in content
+    assert "../services/gateway" in content
+    assert "../:/app" in content
 
 
 def test_regtest_environment_template_is_dedicated():
