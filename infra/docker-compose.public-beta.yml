@@ -32,17 +32,13 @@ services:
       - beta
 
   auth:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/auth/Dockerfile
     restart: unless-stopped
-    working_dir: /app/services/auth
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8000"
     env_file:
       - path: ./infra/.env.beta
         required: false
-    volumes:
-      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -52,17 +48,13 @@ services:
       - beta
 
   wallet:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/wallet/Dockerfile
     restart: unless-stopped
-    working_dir: /app
-    command: >
-      sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
-      uvicorn services.wallet.main:app --host 0.0.0.0 --port 8001"
     env_file:
       - path: ./infra/.env.beta
         required: false
-    volumes:
-      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,17 +64,13 @@ services:
       - beta
 
   tokenization:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/tokenization/Dockerfile
     restart: unless-stopped
-    working_dir: /app/services/tokenization
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8002"
     env_file:
       - path: ./infra/.env.beta
         required: false
-    volumes:
-      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -92,17 +80,13 @@ services:
       - beta
 
   marketplace:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/marketplace/Dockerfile
     restart: unless-stopped
-    working_dir: /app/services/marketplace
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8003"
     env_file:
       - path: ./infra/.env.beta
         required: false
-    volumes:
-      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -112,17 +96,13 @@ services:
       - beta
 
   nostr:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/nostr/Dockerfile
     restart: unless-stopped
-    working_dir: /app/services/nostr
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8005"
     env_file:
       - path: ./infra/.env.beta
         required: false
-    volumes:
-      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -132,17 +112,13 @@ services:
       - beta
 
   admin:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/admin/Dockerfile
     restart: unless-stopped
-    working_dir: /app/services/admin
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8006"
     env_file:
       - path: ./infra/.env.beta
         required: false
-    volumes:
-      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy

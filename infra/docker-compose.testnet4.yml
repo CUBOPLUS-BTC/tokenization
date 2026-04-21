@@ -112,18 +112,15 @@ services:
       - testnet4
 
   wallet:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/wallet/Dockerfile
     container_name: tokenization-testnet4-wallet
     restart: unless-stopped
-    working_dir: /app
-    command: >
-      sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
-      uvicorn services.wallet.main:app --host 0.0.0.0 --port 8001"
     env_file:
       - path: ./infra/.env.testnet4.example
         required: false
     volumes:
-      - ./:/app
       - testnet4_lnd_data:/run/secrets/lnd:ro
     depends_on:
       postgres:
@@ -140,18 +137,14 @@ services:
       - testnet4
 
   auth:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/auth/Dockerfile
     container_name: tokenization-testnet4-auth
     restart: unless-stopped
-    working_dir: /app/services/auth
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8000"
     env_file:
       - path: ./infra/.env.testnet4.example
         required: false
-    volumes:
-      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -161,18 +154,14 @@ services:
       - testnet4
 
   tokenization:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/tokenization/Dockerfile
     container_name: tokenization-testnet4-tokenization
     restart: unless-stopped
-    working_dir: /app/services/tokenization
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8002"
     env_file:
       - path: ./infra/.env.testnet4.example
         required: false
-    volumes:
-      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -184,18 +173,14 @@ services:
       - testnet4
 
   marketplace:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/marketplace/Dockerfile
     container_name: tokenization-testnet4-marketplace
     restart: unless-stopped
-    working_dir: /app/services/marketplace
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8003"
     env_file:
       - path: ./infra/.env.testnet4.example
         required: false
-    volumes:
-      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -205,18 +190,14 @@ services:
       - testnet4
 
   nostr:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/nostr/Dockerfile
     container_name: tokenization-testnet4-nostr
     restart: unless-stopped
-    working_dir: /app/services/nostr
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8005"
     env_file:
       - path: ./infra/.env.testnet4.example
         required: false
-    volumes:
-      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -226,18 +207,14 @@ services:
       - testnet4
 
   admin:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/admin/Dockerfile
     container_name: tokenization-testnet4-admin
     restart: unless-stopped
-    working_dir: /app/services/admin
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8006"
     env_file:
       - path: ./infra/.env.testnet4.example
         required: false
-    volumes:
-      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
