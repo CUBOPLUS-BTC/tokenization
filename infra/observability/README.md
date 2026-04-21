@@ -20,7 +20,7 @@ The observability stack is provisioned with:
 ## Startup
 
 ```bash
-docker compose -f infra/docker-compose.observability.yml up -d
+docker compose --project-directory . -f infra/docker-compose.observability.yml up -d
 ```
 
 ## Required Follow-Up

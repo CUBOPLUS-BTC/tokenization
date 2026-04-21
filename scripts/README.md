@@ -83,8 +83,8 @@ Current seeded data:
 Run it inside Docker Compose:
 
 ```bash
-docker compose -f infra/docker-compose.local.yml run --rm db-bootstrap
-docker compose -f infra/docker-compose.public-beta.yml run --rm db-bootstrap
+docker compose --project-directory . -f infra/docker-compose.local.yml run --rm db-bootstrap
+docker compose --project-directory . -f infra/docker-compose.public-beta.yml run --rm db-bootstrap
 ```
 
 Optional modes:
@@ -97,7 +97,7 @@ python scripts/db_bootstrap.py --seed-only
 ### Validate on a clean local database (zero -> head)
 
 ```bash
-docker compose -f infra/docker-compose.local.yml up -d postgres
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d postgres
 alembic downgrade base
 alembic upgrade head
 alembic current

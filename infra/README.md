@@ -28,7 +28,7 @@ By default, the local profile now launches a real regtest stack for PostgreSQL, 
 Run from repository root:
 
 ```bash
-docker compose -f infra/docker-compose.local.yml up -d
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d
 ```
 
 This starts:
@@ -44,13 +44,13 @@ This starts:
 Stop and clean up:
 
 ```bash
-docker compose -f infra/docker-compose.local.yml down
+docker compose --project-directory . -f infra/docker-compose.local.yml down
 ```
 
 To remove persisted local database/cache volumes:
 
 ```bash
-docker compose -f infra/docker-compose.local.yml down -v
+docker compose --project-directory . -f infra/docker-compose.local.yml down -v
 ```
 
 ### Health checks
@@ -147,7 +147,7 @@ The beta environment is intended for external validation on Bitcoin `signet`.
 
 1. Copy `infra/.env.beta.example` to `infra/.env.beta`.
 2. Wire the `*_FILE` secrets and signet infrastructure endpoints.
-3. Start the stack with `docker compose -f infra/docker-compose.public-beta.yml up -d`.
+3. Start the stack with `docker compose --project-directory . -f infra/docker-compose.public-beta.yml up -d`.
 4. Follow [deploy/public-beta/README.md](../deploy/public-beta/README.md) before exposing the environment.
 
 ## Observability
@@ -155,7 +155,7 @@ The beta environment is intended for external validation on Bitcoin `signet`.
 Shared monitoring assets live under [infra/observability](./observability).
 
 ```bash
-docker compose -f infra/docker-compose.observability.yml up -d
+docker compose --project-directory . -f infra/docker-compose.observability.yml up -d
 ```
 
 ### Secret handling convention

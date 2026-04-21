@@ -5,7 +5,8 @@ services:
     image: postgres:15-alpine
     restart: unless-stopped
     env_file:
-      - ./.env.beta
+      - path: ./infra/.env.beta
+        required: false
     volumes:
       - beta_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -38,9 +39,10 @@ services:
       sh -c "pip install --no-cache-dir -r scripts/requirements-migrations.txt -r services/auth/requirements.txt &&
       python scripts/db_bootstrap.py"
     env_file:
-      - ./.env.beta
+      - path: ./infra/.env.beta
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -55,9 +57,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8000"
     env_file:
-      - ./.env.beta
+      - path: ./infra/.env.beta
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -76,9 +79,10 @@ services:
       sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn services.wallet.main:app --host 0.0.0.0 --port 8001"
     env_file:
-      - ./.env.beta
+      - path: ./infra/.env.beta
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,9 +101,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8002"
     env_file:
-      - ./.env.beta
+      - path: ./infra/.env.beta
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -118,9 +123,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8003"
     env_file:
-      - ./.env.beta
+      - path: ./infra/.env.beta
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -139,9 +145,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8005"
     env_file:
-      - ./.env.beta
+      - path: ./infra/.env.beta
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -160,9 +167,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8006"
     env_file:
-      - ./.env.beta
+      - path: ./infra/.env.beta
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -175,7 +183,7 @@ services:
 
   gateway:
     build:
-      context: ../services/gateway
+      context: ./services/gateway
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
@@ -192,35 +200,35 @@ services:
 
   prometheus:
     extends:
-      file: ./docker-compose.observability.yml
+      file: ./infra/docker-compose.observability.yml
       service: prometheus
     networks:
       - beta
 
   alertmanager:
     extends:
-      file: ./docker-compose.observability.yml
+      file: ./infra/docker-compose.observability.yml
       service: alertmanager
     networks:
       - beta
 
   grafana:
     extends:
-      file: ./docker-compose.observability.yml
+      file: ./infra/docker-compose.observability.yml
       service: grafana
     networks:
       - beta
 
   blackbox:
     extends:
-      file: ./docker-compose.observability.yml
+      file: ./infra/docker-compose.observability.yml
       service: blackbox
     networks:
       - beta
 
   cadvisor:
     extends:
-      file: ./docker-compose.observability.yml
+      file: ./infra/docker-compose.observability.yml
       service: cadvisor
     networks:
       - beta

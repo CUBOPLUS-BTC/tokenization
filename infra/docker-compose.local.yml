@@ -6,7 +6,8 @@ services:
     container_name: tokenization-postgres
     restart: unless-stopped
     env_file:
-      - ./.env.local
+      - path: ./infra/.env.local
+        required: false
     ports:
       - "5432:5432"
     volumes:
@@ -45,9 +46,10 @@ services:
       sh -c "pip install --no-cache-dir -r scripts/requirements-migrations.txt -r services/auth/requirements.txt &&
       python scripts/db_bootstrap.py"
     env_file:
-      - ./.env.local
+      - path: ./infra/.env.local
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,9 +65,10 @@ services:
       sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn services.wallet.main:app --host 0.0.0.0 --port 8001"
     env_file:
-      - ./.env.local
+      - path: ./infra/.env.local
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
       - lnd_data:/run/secrets/lnd:ro
     depends_on:
       postgres:
@@ -94,9 +97,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8000"
     env_file:
-      - ./.env.local
+      - path: ./infra/.env.local
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -118,9 +122,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8002"
     env_file:
-      - ./.env.local
+      - path: ./infra/.env.local
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -144,9 +149,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8003"
     env_file:
-      - ./.env.local
+      - path: ./infra/.env.local
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -168,9 +174,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8005"
     env_file:
-      - ./.env.local
+      - path: ./infra/.env.local
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -192,9 +199,10 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8006"
     env_file:
-      - ./.env.local
+      - path: ./infra/.env.local
+        required: false
     volumes:
-      - ../:/app
+      - ./:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -216,7 +224,7 @@ services:
       - -printtoconsole
     restart: unless-stopped
     volumes:
-      - ./bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
+      - ./infra/bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
       - bitcoin_data:/data/.bitcoin
     ports:
       - "18443:18443"
@@ -240,7 +248,7 @@ services:
       bitcoind:
         condition: service_healthy
     volumes:
-      - ./lnd/lnd.conf:/etc/lnd/lnd.conf:ro
+      - ./infra/lnd/lnd.conf:/etc/lnd/lnd.conf:ro
       - lnd_data:/data/lnd
     ports:
       - "10009:10009"
@@ -256,7 +264,7 @@ services:
 
   elementsd:
     build:
-      context: ./elements
+      context: ./infra/elements
       dockerfile: Dockerfile
     container_name: tokenization-elementsd
     restart: unless-stopped
@@ -272,7 +280,7 @@ services:
       ELEMENTS_RPC_PORT: "7041"
       ELEMENTS_WALLET_NAME: platform
     volumes:
-      - ./elements/elements.conf:/etc/elements/elements.conf:ro
+      - ./infra/elements/elements.conf:/etc/elements/elements.conf:ro
       - elements_data:/data/elements
     ports:
       - "7041:7041"
@@ -287,7 +295,7 @@ services:
 
   gateway:
     build:
-      context: ../services/gateway
+      context: ./services/gateway
       dockerfile: Dockerfile
     container_name: tokenization-gateway
     restart: unless-stopped

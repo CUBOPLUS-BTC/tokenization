@@ -37,7 +37,7 @@ The complete design is documented in [specs/](specs), including architecture, AP
 The local profile now boots the full platform stack, including Bitcoin Core on `regtest`, LND wired to `bitcoind` over RPC + ZMQ, and an `elementsregtest` node wired back to the same Bitcoin node for Liquid-style RPC flows:
 
 ```bash
-docker compose -f infra/docker-compose.local.yml up -d
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d
 ```
 
 Quick checks:
@@ -50,7 +50,7 @@ Quick checks:
 Shutdown:
 
 ```bash
-docker compose -f infra/docker-compose.local.yml down
+docker compose --project-directory . -f infra/docker-compose.local.yml down
 ```
 
 ## Environment Profiles and Secrets
@@ -75,8 +75,8 @@ Do not commit real `.env` files or plaintext secrets.
 
 ## Monitoring and Public Beta
 
-- Observability stack: `docker compose -f infra/docker-compose.observability.yml up -d`
-- Public beta stack: `docker compose -f infra/docker-compose.public-beta.yml up -d`
+- Observability stack: `docker compose --project-directory . -f infra/docker-compose.observability.yml up -d`
+- Public beta stack: `docker compose --project-directory . -f infra/docker-compose.public-beta.yml up -d`
 - Beta runbook: [deploy/public-beta/README.md](deploy/public-beta/README.md)
 - Monitoring assets: [infra/observability/README.md](infra/observability/README.md)
 

@@ -23,8 +23,8 @@ This directory defines the operational gate for the public beta environment that
 3. Mount the required secrets referenced by `*_FILE`.
 4. Point `BITCOIN_RPC_*`, `LND_*`, and `ELEMENTS_*` to signet/testnet-connected infrastructure.
 5. Define `INITIAL_ADMIN_EMAIL` and `INITIAL_ADMIN_PASSWORD_FILE` in `infra/.env.beta` for the bootstrap seeder.
-6. Start the platform with `docker compose -f infra/docker-compose.public-beta.yml up -d`.
-7. If you need to re-run schema bootstrap manually, execute `docker compose -f infra/docker-compose.public-beta.yml run --rm db-bootstrap`.
+6. Start the platform with `docker compose --project-directory . -f infra/docker-compose.public-beta.yml up -d`.
+7. If you need to re-run schema bootstrap manually, execute `docker compose --project-directory . -f infra/docker-compose.public-beta.yml run --rm db-bootstrap`.
 8. Open Grafana at `http://<beta-observability-host>:3000` and confirm the `Platform Overview` and `Beta Release Gate` dashboards load.
 9. Confirm Alertmanager routes are mapped to beta receivers before opening access to participants.
 
