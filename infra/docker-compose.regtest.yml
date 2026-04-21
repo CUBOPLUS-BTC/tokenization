@@ -191,7 +191,7 @@ services:
   auth:
     image: python:3.11-slim
     restart: unless-stopped
-    working_dir: /app/services/auth
+    working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8000"
@@ -230,7 +230,7 @@ services:
   tokenization:
     image: python:3.11-slim
     restart: unless-stopped
-    working_dir: /app/services/tokenization
+    working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8002"
@@ -270,7 +270,7 @@ services:
   marketplace:
     image: python:3.11-slim
     restart: unless-stopped
-    working_dir: /app/services/marketplace
+    working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8003"
@@ -317,7 +317,7 @@ services:
   nostr:
     image: python:3.11-slim
     restart: unless-stopped
-    working_dir: /app/services/nostr
+    working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8005"
@@ -348,7 +348,7 @@ services:
   admin:
     image: python:3.11-slim
     restart: unless-stopped
-    working_dir: /app/services/admin
+    working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8006"
