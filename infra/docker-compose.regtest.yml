@@ -116,7 +116,7 @@ services:
     restart: unless-stopped
     working_dir: /app/services/auth
     command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8000"
     environment:
       ENV_PROFILE: ${ENV_PROFILE:-regtest}
@@ -155,7 +155,7 @@ services:
     restart: unless-stopped
     working_dir: /app/services/tokenization
     command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8002"
     environment:
       ENV_PROFILE: ${ENV_PROFILE:-regtest}
@@ -195,7 +195,7 @@ services:
     restart: unless-stopped
     working_dir: /app/services/marketplace
     command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8003"
     environment:
       ENV_PROFILE: ${ENV_PROFILE:-regtest}
@@ -242,7 +242,7 @@ services:
     restart: unless-stopped
     working_dir: /app/services/nostr
     command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8005"
     environment:
       ENV_PROFILE: ${ENV_PROFILE:-regtest}
@@ -273,7 +273,7 @@ services:
     restart: unless-stopped
     working_dir: /app/services/admin
     command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8006"
     environment:
       ENV_PROFILE: ${ENV_PROFILE:-regtest}
@@ -304,13 +304,14 @@ services:
     user: "0:0"
     command:
       - -regtest
-      - -datadir=/data/.bitcoin
-      - -printtoconsole
+      - -server=1
       - -rpcbind=0.0.0.0
       - -rpcallowip=0.0.0.0/0
       - -rpcport=18443
-      - -rpcuser=${BITCOIN_RPC_USER:-local_rpc}
-      - -rpcpassword=${BITCOIN_RPC_PASSWORD:-local_rpc_password}
+      - -rpcuser=local_rpc
+      - -rpcpassword=local_rpc_password
+      - -zmqpubrawblock=tcp://0.0.0.0:28332
+  - -zmqpubrawtx=tcp://0.0.0.0:28333
     restart: unless-stopped
     volumes:
       - ./bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
@@ -338,9 +339,6 @@ services:
     command:
       - --lnddir=/data/lnd
       - --configfile=/etc/lnd/lnd.conf
-      - --bitcoin.active
-      - --bitcoin.regtest
-      - --bitcoin.node=bitcoind
     healthcheck:
       test: ["CMD", "lncli", "--network=regtest", "--rpcserver=localhost:10009", "--tlscertpath=/data/lnd/tls.cert", "--macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon", "getinfo"]
       interval: 15s
