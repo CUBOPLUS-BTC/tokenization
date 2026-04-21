@@ -87,6 +87,7 @@ from schemas import (
     LoginRequest,
     LogoutRequest,
     MessageResponse,
+    NostrChallengeResponse,
     NostrLoginRequest,
     RefreshRequest,
     RegisterRequest,
@@ -103,7 +104,11 @@ from schemas import (
     ReferredUserOut,
 )
 from jwt_utils import decode_token, issue_token_pair
-from services.auth.nostr_utils import validate_nostr_event, NostrValidationError
+from services.auth.nostr_utils import (
+    NostrValidationError,
+    extract_nostr_challenge,
+    validate_nostr_event,
+)
 from db import (
     create_api_key,
     create_nostr_identity,
@@ -152,6 +157,8 @@ configure_alerting(settings)
 # bcrypt hashing config (using default rounds)
 _API_KEY_ALPHABET = string.ascii_letters + string.digits
 _API_KEY_VERIFY_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
+_NOSTR_CHALLENGE_TTL_SECONDS = 300
+_NOSTR_CHALLENGES: dict[str, float] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +201,7 @@ install_http_security(
         "/auth/register",
         "/auth/refresh",
         "/auth/logout",
+        "/auth/nostr/challenge",
         "/auth/nostr",
         "/auth/2fa",
     ),
@@ -561,6 +569,40 @@ def _get_cached_api_key_verify_result(raw_key: str) -> dict[str, object] | None:
     return payload
 
 
+def _prune_expired_nostr_challenges(*, now: float | None = None) -> None:
+    current_time = time.monotonic() if now is None else now
+    expired = [
+        challenge
+        for challenge, expires_at in _NOSTR_CHALLENGES.items()
+        if expires_at <= current_time
+    ]
+    for challenge in expired:
+        _NOSTR_CHALLENGES.pop(challenge, None)
+
+
+def _issue_nostr_challenge() -> str:
+    _prune_expired_nostr_challenges()
+    nonce = secrets.token_urlsafe(24)
+    _NOSTR_CHALLENGES[nonce] = time.monotonic() + _NOSTR_CHALLENGE_TTL_SECONDS
+    return nonce
+
+
+def _is_active_nostr_challenge(challenge: str) -> bool:
+    _prune_expired_nostr_challenges()
+    expires_at = _NOSTR_CHALLENGES.get(challenge)
+    return expires_at is not None and expires_at > time.monotonic()
+
+
+def _consume_nostr_challenge(challenge: str) -> bool:
+    _prune_expired_nostr_challenges()
+    expires_at = _NOSTR_CHALLENGES.get(challenge)
+    if expires_at is None or expires_at <= time.monotonic():
+        _NOSTR_CHALLENGES.pop(challenge, None)
+        return False
+    _NOSTR_CHALLENGES.pop(challenge, None)
+    return True
+
+
 def _is_private_network_request(request: Request) -> bool:
     host = request.client.host if request.client is not None else ""
     if not host:
@@ -770,6 +812,21 @@ async def login(body: LoginRequest):
 
 
 @app.post(
+    "/auth/nostr/challenge",
+    status_code=status.HTTP_200_OK,
+    response_model=NostrChallengeResponse,
+    summary="Issue a one-time Nostr sign-in challenge",
+)
+async def issue_nostr_challenge():
+    challenge = _issue_nostr_challenge()
+    return NostrChallengeResponse(
+        challenge=f"Sign-in challenge: {challenge}",
+        kind=22242,
+        expires_in=_NOSTR_CHALLENGE_TTL_SECONDS,
+    )
+
+
+@app.post(
     "/auth/nostr",
     status_code=status.HTTP_200_OK,
     response_model=AuthResponse,
@@ -778,12 +835,42 @@ async def login(body: LoginRequest):
 async def nostr_login(body: NostrLoginRequest):
     """Authenticate via Nostr signature challenge."""
     try:
-        validate_nostr_event(body.pubkey, body.signed_event)
+        challenge = extract_nostr_challenge(body.signed_event.content)
     except NostrValidationError as e:
         record_business_event("auth_nostr_login", outcome="failure")
         return _error(
             "invalid_credentials",
             str(e),
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    if not _is_active_nostr_challenge(challenge):
+        record_business_event("auth_nostr_login", outcome="failure")
+        return _error(
+            "invalid_credentials",
+            "Challenge is missing, expired, or already used.",
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    try:
+        validate_nostr_event(
+            body.pubkey,
+            body.signed_event,
+            expected_challenge=challenge,
+        )
+    except NostrValidationError as e:
+        record_business_event("auth_nostr_login", outcome="failure")
+        return _error(
+            "invalid_credentials",
+            str(e),
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    if not _consume_nostr_challenge(challenge):
+        record_business_event("auth_nostr_login", outcome="failure")
+        return _error(
+            "invalid_credentials",
+            "Challenge is missing, expired, or already used.",
             status.HTTP_401_UNAUTHORIZED,
         )
 

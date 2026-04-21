@@ -14,6 +14,9 @@ Thumbs.db
 !.env.example
 !.env.*.example
 !*.env.example
+# Non-production profiles: contain only dummy credentials, safe to commit
+!infra/.env.regtest
+!infra/.env.local
 *.pem
 *.key
 *.p12

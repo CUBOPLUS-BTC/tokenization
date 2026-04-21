@@ -8,8 +8,9 @@ import importlib.util
 import os
 from pathlib import Path
 import sys
+import traceback
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit, urlunsplit
 import uuid
 
 import bcrypt
@@ -74,6 +75,28 @@ def _build_sync_database_url() -> str:
         "postgresql+pg8000://"
         f"{quoted_user}:{quoted_password}@{postgres_host}:{postgres_port}/{postgres_db}"
     )
+
+
+def _sanitize_database_url(url: str) -> str:
+    """Return a copy of ``url`` with the password masked.
+
+    Used for logging so operators can see which host/db/user were targeted
+    without leaking credentials in CI or Coolify logs.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "<unparseable-database-url>"
+    netloc = parts.netloc
+    if "@" in netloc:
+        userinfo, hostinfo = netloc.rsplit("@", 1)
+        if ":" in userinfo:
+            user, _ = userinfo.split(":", 1)
+            masked_userinfo = f"{user}:***"
+        else:
+            masked_userinfo = userinfo
+        netloc = f"{masked_userinfo}@{hostinfo}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 def _make_async_url(sync_url: str) -> str:
@@ -145,13 +168,36 @@ def _load_bootstrap_admin_config() -> BootstrapAdminConfig | None:
     return BootstrapAdminConfig(email=email, password=password, display_name=display_name)
 
 
+def _count_public_tables(sync_url: str) -> int:
+    engine = sa.create_engine(sync_url)
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(
+                sa.text(
+                    "SELECT count(*) FROM information_schema.tables "
+                    "WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
+                )
+            )
+            row = result.fetchone()
+            return int(row[0]) if row is not None else 0
+    finally:
+        engine.dispose()
+
+
 def run_migrations() -> None:
     sync_url = _build_sync_database_url()
     os.environ["DATABASE_URL"] = sync_url
+    print(f"Using DATABASE_URL={_sanitize_database_url(sync_url)}", flush=True)
 
     alembic_config = Config(str(REPO_ROOT / "alembic.ini"))
     alembic_config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
     command.upgrade(alembic_config, "head")
+
+    try:
+        table_count = _count_public_tables(sync_url)
+        print(f"Public schema tables after migration: {table_count}", flush=True)
+    except Exception as exc:  # noqa: BLE001 - diagnostic-only, never block on this
+        print(f"Warning: could not count public tables: {exc}", file=sys.stderr, flush=True)
 
 
 async def seed_initial_data() -> None:
@@ -246,19 +292,30 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    args = parse_args()
-    profile = os.getenv("ENV_PROFILE", "local").strip().lower() or "local"
-    print(f"Database bootstrap started for profile={profile}")
+    try:
+        args = parse_args()
+        profile = os.getenv("ENV_PROFILE", "local").strip().lower() or "local"
+        print(f"Database bootstrap started for profile={profile}", flush=True)
 
-    if not args.seed_only:
-        run_migrations()
-        print("Alembic migrations applied successfully.")
+        if not args.seed_only:
+            run_migrations()
+            print("Alembic migrations applied successfully.", flush=True)
 
-    if not args.migrate_only:
-        asyncio.run(seed_initial_data())
-        print("Seed phase completed.")
+        if not args.migrate_only:
+            asyncio.run(seed_initial_data())
+            print("Seed phase completed.", flush=True)
 
-    return 0
+        return 0
+    except SystemExit:
+        raise
+    except BaseException:
+        # Flush both streams so Coolify captures the full traceback before the
+        # container is torn down.
+        print("Database bootstrap failed:", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        sys.stdout.flush()
+        return 1
 
 
 if __name__ == "__main__":

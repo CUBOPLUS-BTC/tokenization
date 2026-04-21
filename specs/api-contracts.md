@@ -87,6 +87,21 @@ POST /auth/login
 ### 2.3 Login with Nostr
 
 ```
+POST /auth/nostr/challenge
+```
+
+**Response (200):**
+```json
+{
+  "challenge": "Sign-in challenge: <nonce>",
+  "kind": 22242,
+  "expires_in": 300
+}
+```
+
+Sign the returned `challenge` as a Nostr event with `kind = 22242`, then submit it to:
+
+```
 POST /auth/nostr
 ```
 

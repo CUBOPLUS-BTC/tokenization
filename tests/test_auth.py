@@ -759,9 +759,22 @@ class TestProtectedEndpoints:
 # ---------------------------------------------------------------------------
 
 class TestNostrAuth:
+    def test_nostr_challenge_returns_signable_payload(self, client):
+        app_client, *_ = client
+
+        response = app_client.post("/auth/nostr/challenge")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["kind"] == 22242
+        assert body["expires_in"] == 300
+        assert body["challenge"].startswith("Sign-in challenge: ")
+
     def test_nostr_login_first_time_creates_user(self, client):
         app_client, fake_conn, settings = client
         fake_user = _make_fake_user(email=None, password="")
+        challenge_response = app_client.post("/auth/nostr/challenge")
+        challenge = challenge_response.json()["challenge"]
         
         with (
             patch("services.auth.main.validate_nostr_event", MagicMock(return_value=None)),
@@ -778,7 +791,7 @@ class TestNostrAuth:
                         "id": "b" * 64,
                         "kind": 22242,
                         "created_at": 1234567890,
-                        "content": "Sign-in challenge: 123",
+                        "content": challenge,
                         "sig": "c" * 128
                     }
                 }
@@ -795,6 +808,8 @@ class TestNostrAuth:
         app_client, fake_conn, settings = client
         fake_user = _make_fake_user(email="test@nostr.com", password="")
         fake_identity = MagicMock(user_id=fake_user.id)
+        challenge_response = app_client.post("/auth/nostr/challenge")
+        challenge = challenge_response.json()["challenge"]
         
         with (
             patch("services.auth.main.validate_nostr_event", MagicMock(return_value=None)),
@@ -810,7 +825,7 @@ class TestNostrAuth:
                         "id": "b" * 64,
                         "kind": 22242,
                         "created_at": 1234567890,
-                        "content": "Sign-in challenge: 123",
+                        "content": challenge,
                         "sig": "c" * 128
                     }
                 }
@@ -823,6 +838,8 @@ class TestNostrAuth:
     def test_nostr_login_invalid_signature_returns_401(self, client):
         app_client, fake_conn, settings = client
         from services.auth.nostr_utils import NostrValidationError
+        challenge_response = app_client.post("/auth/nostr/challenge")
+        challenge = challenge_response.json()["challenge"]
         
         with (
             patch("services.auth.main.validate_nostr_event", MagicMock(side_effect=NostrValidationError("Bad sig"))),
@@ -835,7 +852,7 @@ class TestNostrAuth:
                         "id": "b" * 64,
                         "kind": 22242,
                         "created_at": 1234567890,
-                        "content": "Sign-in challenge: 123",
+                        "content": challenge,
                         "sig": "c" * 128
                     }
                 }
@@ -844,6 +861,68 @@ class TestNostrAuth:
         assert resp.status_code == 401
         assert resp.json()["error"]["code"] == "invalid_credentials"
         assert "Bad sig" in resp.json()["error"]["message"]
+
+    def test_nostr_login_rejects_missing_or_reused_challenge(self, client):
+        app_client, *_ = client
+
+        missing_response = app_client.post(
+            "/auth/nostr",
+            json={
+                "pubkey": "a" * 64,
+                "signed_event": {
+                    "id": "b" * 64,
+                    "kind": 22242,
+                    "created_at": 1234567890,
+                    "content": "Sign-in challenge: missing-token",
+                    "sig": "c" * 128,
+                },
+            },
+        )
+
+        assert missing_response.status_code == 401
+        assert missing_response.json()["error"]["message"] == "Challenge is missing, expired, or already used."
+
+        challenge_response = app_client.post("/auth/nostr/challenge")
+        challenge = challenge_response.json()["challenge"]
+        fake_user = _make_fake_user(email=None, password="")
+
+        with (
+            patch("services.auth.main.validate_nostr_event", MagicMock(return_value=None)),
+            patch("services.auth.main.get_nostr_identity_by_pubkey", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_nostr_user", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.create_nostr_identity", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_refresh_session", AsyncMock(return_value=None)),
+        ):
+            first_response = app_client.post(
+                "/auth/nostr",
+                json={
+                    "pubkey": "a" * 64,
+                    "signed_event": {
+                        "id": "b" * 64,
+                        "kind": 22242,
+                        "created_at": 1234567890,
+                        "content": challenge,
+                        "sig": "c" * 128,
+                    },
+                },
+            )
+            second_response = app_client.post(
+                "/auth/nostr",
+                json={
+                    "pubkey": "a" * 64,
+                    "signed_event": {
+                        "id": "b" * 64,
+                        "kind": 22242,
+                        "created_at": 1234567890,
+                        "content": challenge,
+                        "sig": "c" * 128,
+                    },
+                },
+            )
+
+        assert first_response.status_code == 200
+        assert second_response.status_code == 401
+        assert second_response.json()["error"]["message"] == "Challenge is missing, expired, or already used."
 
 
 class TestTwoFactor:

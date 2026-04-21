@@ -475,12 +475,36 @@
             "type": "string",
             "minLength": 1,
             "title": "Notes"
+          },
+          "resolution_txid": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Resolution Txid"
+          },
+          "collected_signatures": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Collected Signatures"
+          },
+          "settlement_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settlement Metadata"
           }
         },
         "type": "object",
         "required": [
           "resolution",
-          "notes"
+          "notes",
+          "resolution_txid"
         ],
         "title": "AdminDisputeResolveRequest"
       },
@@ -785,6 +809,17 @@
               }
             ],
             "title": "Reference Id"
+          },
+          "source_referral_reward_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Referral Reward Id"
           },
           "description": {
             "anyOf": [

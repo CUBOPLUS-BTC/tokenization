@@ -49,13 +49,19 @@ class NostrSignedEvent(BaseModel):
     kind: int
     created_at: int
     content: str
-    tags: list[list[str]] = []
+    tags: list[list[str]] = Field(default_factory=list)
     sig: str = Field(min_length=128, max_length=128)
 
 
 class NostrLoginRequest(BaseModel):
     pubkey: str = Field(min_length=64, max_length=64)
     signed_event: NostrSignedEvent
+
+
+class NostrChallengeResponse(BaseModel):
+    challenge: str
+    kind: Literal[22242]
+    expires_in: int
 
 
 class ApiKeyCreateRequest(BaseModel):

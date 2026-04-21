@@ -1,6 +1,11 @@
 import sys, os, json
+
 service = sys.argv[1]
-os.environ['PYTHONPATH'] = ';' + os.environ.get('PYTHONPATH', '')
+
+# Ensure the services/ directory is on the import path
+_services_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'services')
+if _services_dir not in sys.path:
+    sys.path.insert(0, _services_dir)
 
 if service == 'auth':
     from auth.main import app

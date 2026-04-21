@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 
 try:
@@ -21,7 +22,22 @@ class NostrValidationError(Exception):
     pass
 
 
-def validate_nostr_event(pubkey: str, event: NostrSignedEvent) -> None:
+_CHALLENGE_PATTERN = re.compile(r"^Sign-in challenge:\s*(\S.*?)\s*$")
+
+
+def extract_nostr_challenge(content: str) -> str:
+    match = _CHALLENGE_PATTERN.fullmatch(content.strip())
+    if match is None:
+        raise NostrValidationError("Invalid challenge format in event content.")
+    return match.group(1)
+
+
+def validate_nostr_event(
+    pubkey: str,
+    event: NostrSignedEvent,
+    *,
+    expected_challenge: str | None = None,
+) -> None:
     """Validate a NIP-98 style Nostr auth event.
 
     Raises:
@@ -30,8 +46,9 @@ def validate_nostr_event(pubkey: str, event: NostrSignedEvent) -> None:
     if event.kind != 22242:
         raise NostrValidationError("Event kind must be 22242 for authentication.")
 
-    if not event.content.startswith("Sign-in challenge:"):
-        raise NostrValidationError("Invalid challenge format in event content.")
+    challenge = extract_nostr_challenge(event.content)
+    if expected_challenge is not None and challenge != expected_challenge:
+        raise NostrValidationError("Event challenge does not match the issued challenge.")
 
     now = int(time.time())
     if abs(now - event.created_at) > 300:
