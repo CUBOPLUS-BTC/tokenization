@@ -180,3 +180,46 @@ class FiatOnRampSessionResponse(BaseModel):
     expires_at: datetime
     disclaimer: str
     compliance_action: Literal["review_terms", "complete_kyc"]
+
+
+class CampaignFundsReserveRequest(BaseModel):
+    campaign_id: str = Field(min_length=1, max_length=64)
+    user_id: str = Field(min_length=1, max_length=64)
+    amount_sat: int = Field(ge=1)
+
+
+class CampaignFundingInvoiceRequest(BaseModel):
+    campaign_id: str = Field(min_length=1, max_length=64)
+    amount_sat: int = Field(ge=1)
+    memo: str | None = Field(default=None, max_length=255)
+
+
+class CampaignFundingSyncRequest(BaseModel):
+    campaign_id: str = Field(min_length=1, max_length=64)
+    payment_hash: str = Field(min_length=1, max_length=128)
+
+
+class CampaignFundsPayRequest(BaseModel):
+    campaign_id: str = Field(min_length=1, max_length=64)
+    payment_request: str = Field(min_length=1)
+    payout_id: str | None = Field(default=None, max_length=64)
+    max_fee_sat: int | None = Field(default=None, ge=0)
+
+
+class CampaignFundingResponse(BaseModel):
+    campaign_id: str
+    funding_id: str
+    status: Literal["pending", "confirmed", "cancelled", "refunded"]
+    amount_sat: int
+    payment_request: str | None = None
+    payment_hash: str | None = None
+    confirmed_at: datetime | None = None
+
+
+class CampaignPaymentResponse(BaseModel):
+    campaign_id: str
+    payment_hash: str
+    amount_sat: int
+    fee_sat: int
+    status: Literal["SUCCEEDED", "FAILED"]
+    failure_reason: str | None = None

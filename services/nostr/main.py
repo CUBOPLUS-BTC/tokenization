@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 import uvicorn
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -30,9 +31,32 @@ from common import (
 )
 from common.alerting import configure_alerting
 from common.metrics import mount_metrics_endpoint, record_business_event
+from nostr.db import (
+    create_campaign,
+    get_db_conn,
+    get_engine,
+    get_campaign_by_id as get_campaign_row,
+    list_campaign_fundings,
+    list_campaign_matches,
+    list_campaign_payouts,
+    list_campaign_triggers,
+    list_campaigns_for_user,
+    set_campaign_status,
+)
 from nostr.events import map_and_sign_classified_listing, map_and_sign_internal_event
 from nostr.relay_client import NostrRelayConnector
-from nostr.schemas import AnnouncementPublishRequest, AnnouncementPublishResponse
+from nostr.schemas import (
+    AnnouncementPublishRequest,
+    AnnouncementPublishResponse,
+    CampaignCreateRequest,
+    CampaignFundingOut,
+    CampaignFundingRequest,
+    CampaignMatchOut,
+    CampaignOut,
+    CampaignPayoutOut,
+    CampaignTriggerOut,
+)
+from nostr.wallet_client import WalletClientError, WalletInternalClient
 
 settings = get_settings(service_name="nostr", default_port=8005)
 configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
@@ -41,6 +65,7 @@ TOPICS = ("asset.created", "ai.evaluation.complete", "trade.matched", "token.min
 configure_alerting(settings)
 _bearer_scheme = HTTPBearer(auto_error=False)
 _connector: NostrRelayConnector | None = None
+_wallet_client: WalletInternalClient | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +94,16 @@ def _get_connector() -> NostrRelayConnector:
     if _connector is None:
         _connector = NostrRelayConnector(settings.nostr_relay_list)
     return _connector
+
+
+def _get_wallet_client() -> WalletInternalClient:
+    global _wallet_client
+    if _wallet_client is None:
+        _wallet_client = WalletInternalClient(
+            base_url=settings.wallet_service_url,
+            internal_token=_jwt_secret(),
+        )
+    return _wallet_client
 
 
 def _decode_stream_value(value: object) -> str:
@@ -203,6 +238,7 @@ async def _lifespan(app: FastAPI):
     connector = _get_connector()
     relay_statuses = await connector.probe_relays()
     logger.info("Nostr relay connectivity probe completed", extra={"relays": relay_statuses})
+    engine = get_engine()
 
     stop_event = asyncio.Event()
     worker = asyncio.create_task(_pump_events_to_relays(stop_event, connector))
@@ -213,6 +249,7 @@ async def _lifespan(app: FastAPI):
         worker.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await worker
+        await engine.dispose()
 
 
 def _nostr_private_key() -> str:
@@ -229,6 +266,62 @@ def _announcement_identifier(tags: list[list[str]]) -> str:
         if len(tag) >= 2 and tag[0] == "d":
             return tag[1]
     return "announcement"
+
+
+def _row_value(row: object, key: str, default: object = None) -> object:
+    if row is None:
+        return default
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None and key in mapping:
+        return mapping[key]
+    if isinstance(row, dict):
+        return row.get(key, default)
+    return getattr(row, key, default)
+
+
+async def _campaign_response(conn: AsyncConnection, campaign_row: object) -> dict[str, object]:
+    campaign_id = str(_row_value(campaign_row, "id"))
+    trigger_rows = await list_campaign_triggers(conn, campaign_id)
+    funding_rows = await list_campaign_fundings(conn, campaign_id)
+    return CampaignOut(
+        id=campaign_id,
+        name=str(_row_value(campaign_row, "name")),
+        status=str(_row_value(campaign_row, "status")),
+        funding_mode=str(_row_value(campaign_row, "funding_mode")),
+        reward_amount_sat=int(_row_value(campaign_row, "reward_amount_sat")),
+        budget_total_sat=int(_row_value(campaign_row, "budget_total_sat")),
+        budget_reserved_sat=int(_row_value(campaign_row, "budget_reserved_sat")),
+        budget_spent_sat=int(_row_value(campaign_row, "budget_spent_sat")),
+        budget_refunded_sat=int(_row_value(campaign_row, "budget_refunded_sat")),
+        max_rewards_per_user=int(_row_value(campaign_row, "max_rewards_per_user")),
+        start_at=_row_value(campaign_row, "start_at"),
+        end_at=_row_value(campaign_row, "end_at"),
+        created_at=_row_value(campaign_row, "created_at"),
+        updated_at=_row_value(campaign_row, "updated_at"),
+        triggers=[
+            CampaignTriggerOut(
+                id=str(_row_value(row, "id")),
+                trigger_type=str(_row_value(row, "trigger_type")),
+                operator=str(_row_value(row, "operator")),
+                value=str(_row_value(row, "value")),
+                case_sensitive=bool(_row_value(row, "case_sensitive")),
+                created_at=_row_value(row, "created_at"),
+            )
+            for row in trigger_rows
+        ],
+        fundings=[
+            CampaignFundingOut(
+                id=str(_row_value(row, "id")),
+                funding_mode=str(_row_value(row, "funding_mode")),
+                amount_sat=int(_row_value(row, "amount_sat")),
+                status=str(_row_value(row, "status")),
+                payment_hash=_row_value(row, "ln_payment_hash"),
+                confirmed_at=_row_value(row, "confirmed_at"),
+                created_at=_row_value(row, "created_at"),
+            )
+            for row in funding_rows
+        ],
+    ).model_dump(mode="json")
 
 
 app = FastAPI(title="Nostr Service", lifespan=_lifespan)
@@ -265,6 +358,300 @@ async def ready():
     payload = get_readiness_payload(settings)
     status_code = 200 if payload["status"] == "ready" else 503
     return JSONResponse(status_code=status_code, content=payload)
+
+
+@app.post(
+    "/campaigns",
+    response_model=CampaignOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a Nostr zap campaign",
+)
+async def create_nostr_campaign(
+    body: CampaignCreateRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    row = await create_campaign(
+        conn,
+        user_id=principal.id,
+        payload=body.model_dump(),
+        triggers=[trigger.model_dump() for trigger in body.triggers],
+    )
+    record_business_event("nostr_campaign_create")
+    return await _campaign_response(conn, row)
+
+
+@app.get(
+    "/campaigns",
+    response_model=list[CampaignOut],
+    status_code=status.HTTP_200_OK,
+    summary="List the authenticated user's Nostr zap campaigns",
+)
+async def list_nostr_campaigns(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    rows = await list_campaigns_for_user(conn, principal.id)
+    return [await _campaign_response(conn, row) for row in rows]
+
+
+@app.get(
+    "/campaigns/{campaign_id}",
+    response_model=CampaignOut,
+    status_code=status.HTTP_200_OK,
+    summary="Get one Nostr zap campaign",
+)
+async def get_nostr_campaign(
+    campaign_id: str,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    row = await get_campaign_row(conn, campaign_id=campaign_id, user_id=principal.id)
+    if row is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    for funding in await list_campaign_fundings(conn, campaign_id):
+        payment_hash = _row_value(funding, "ln_payment_hash")
+        funding_status = str(_row_value(funding, "status"))
+        if isinstance(payment_hash, str) and payment_hash and funding_status == "pending":
+            with contextlib.suppress(WalletClientError):
+                await _get_wallet_client().sync_campaign_funding(campaign_id=campaign_id, payment_hash=payment_hash)
+    refreshed = await get_campaign_row(conn, campaign_id=campaign_id, user_id=principal.id)
+    assert refreshed is not None
+    return await _campaign_response(conn, refreshed)
+
+
+@app.post(
+    "/campaigns/{campaign_id}/fund/intraledger",
+    response_model=CampaignOut,
+    status_code=status.HTTP_200_OK,
+    summary="Reserve internal Lightning balance for a campaign",
+)
+async def fund_campaign_intraledger(
+    campaign_id: str,
+    body: CampaignFundingRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    row = await get_campaign_row(conn, campaign_id=campaign_id, user_id=principal.id)
+    if row is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    if str(_row_value(row, "funding_mode")) != "intraledger":
+        raise ContractError(
+            code="invalid_funding_mode",
+            message="This campaign must be funded through an external Lightning invoice.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    try:
+        await _get_wallet_client().reserve_campaign_funds(
+            campaign_id=campaign_id,
+            user_id=principal.id,
+            amount_sat=body.amount_sat,
+        )
+    except WalletClientError as exc:
+        raise ContractError(code=exc.code, message=exc.message, status_code=exc.status_code) from exc
+
+    refreshed = await get_campaign_row(conn, campaign_id=campaign_id, user_id=principal.id)
+    assert refreshed is not None
+    record_business_event("nostr_campaign_fund_intraledger")
+    return await _campaign_response(conn, refreshed)
+
+
+@app.post(
+    "/campaigns/{campaign_id}/fund/external",
+    response_model=CampaignFundingOut,
+    status_code=status.HTTP_200_OK,
+    summary="Create an external Lightning funding invoice for a campaign",
+)
+async def fund_campaign_external(
+    campaign_id: str,
+    body: CampaignFundingRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    row = await get_campaign_row(conn, campaign_id=campaign_id, user_id=principal.id)
+    if row is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    if str(_row_value(row, "funding_mode")) != "external":
+        raise ContractError(
+            code="invalid_funding_mode",
+            message="This campaign must be funded from the platform wallet balance.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    try:
+        funding = await _get_wallet_client().create_campaign_funding_invoice(
+            campaign_id=campaign_id,
+            amount_sat=body.amount_sat,
+            memo=f"Nostr campaign {campaign_id}",
+        )
+    except WalletClientError as exc:
+        raise ContractError(code=exc.code, message=exc.message, status_code=exc.status_code) from exc
+
+    record_business_event("nostr_campaign_fund_external")
+    return CampaignFundingOut(
+        id=str(funding["funding_id"]),
+        funding_mode="external",
+        amount_sat=int(funding["amount_sat"]),
+        status=str(funding["status"]),
+        payment_hash=funding.get("payment_hash"),
+        payment_request=funding.get("payment_request"),
+        confirmed_at=funding.get("confirmed_at"),
+    ).model_dump(mode="json")
+
+
+@app.post(
+    "/campaigns/{campaign_id}/activate",
+    response_model=CampaignOut,
+    status_code=status.HTTP_200_OK,
+    summary="Activate a campaign after it has been funded",
+)
+async def activate_campaign(
+    campaign_id: str,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    row = await get_campaign_row(conn, campaign_id=campaign_id, user_id=principal.id)
+    if row is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    if int(_row_value(row, "budget_reserved_sat")) < int(_row_value(row, "reward_amount_sat")):
+        raise ContractError(
+            code="campaign_not_funded",
+            message="Campaign must have at least one reward available before activation.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    updated = await set_campaign_status(conn, campaign_id=campaign_id, user_id=principal.id, status="active")
+    assert updated is not None
+    record_business_event("nostr_campaign_activate")
+    return await _campaign_response(conn, updated)
+
+
+@app.post(
+    "/campaigns/{campaign_id}/pause",
+    response_model=CampaignOut,
+    status_code=status.HTTP_200_OK,
+    summary="Pause a campaign",
+)
+async def pause_campaign(
+    campaign_id: str,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    updated = await set_campaign_status(conn, campaign_id=campaign_id, user_id=principal.id, status="paused")
+    if updated is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    record_business_event("nostr_campaign_pause")
+    return await _campaign_response(conn, updated)
+
+
+@app.post(
+    "/campaigns/{campaign_id}/cancel",
+    response_model=CampaignOut,
+    status_code=status.HTTP_200_OK,
+    summary="Cancel a campaign",
+)
+async def cancel_campaign(
+    campaign_id: str,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    updated = await set_campaign_status(conn, campaign_id=campaign_id, user_id=principal.id, status="cancelled")
+    if updated is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    record_business_event("nostr_campaign_cancel")
+    return await _campaign_response(conn, updated)
+
+
+@app.get(
+    "/campaigns/{campaign_id}/matches",
+    response_model=list[CampaignMatchOut],
+    status_code=status.HTTP_200_OK,
+    summary="List detected campaign matches",
+)
+async def get_campaign_matches(
+    campaign_id: str,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    row = await get_campaign_row(conn, campaign_id=campaign_id, user_id=principal.id)
+    if row is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    return [
+        CampaignMatchOut(
+            id=str(_row_value(match, "id")),
+            relay_url=str(_row_value(match, "relay_url")),
+            event_id=str(_row_value(match, "event_id")),
+            event_pubkey=str(_row_value(match, "event_pubkey")),
+            event_kind=int(_row_value(match, "event_kind")),
+            match_fingerprint=str(_row_value(match, "match_fingerprint")),
+            status=str(_row_value(match, "status")),
+            ignore_reason=_row_value(match, "ignore_reason"),
+            created_at=_row_value(match, "created_at"),
+        ).model_dump(mode="json")
+        for match in await list_campaign_matches(conn, campaign_id)
+    ]
+
+
+@app.get(
+    "/campaigns/{campaign_id}/payouts",
+    response_model=list[CampaignPayoutOut],
+    status_code=status.HTTP_200_OK,
+    summary="List campaign payout attempts",
+)
+async def get_campaign_payouts(
+    campaign_id: str,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    row = await get_campaign_row(conn, campaign_id=campaign_id, user_id=principal.id)
+    if row is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    return [
+        CampaignPayoutOut(
+            id=str(_row_value(payout, "id")),
+            match_id=str(_row_value(payout, "match_id")),
+            recipient_pubkey=str(_row_value(payout, "recipient_pubkey")),
+            amount_sat=int(_row_value(payout, "amount_sat")),
+            fee_sat=_row_value(payout, "fee_sat"),
+            payment_hash=_row_value(payout, "payment_hash"),
+            status=str(_row_value(payout, "status")),
+            failure_reason=_row_value(payout, "failure_reason"),
+            created_at=_row_value(payout, "created_at"),
+            settled_at=_row_value(payout, "settled_at"),
+        ).model_dump(mode="json")
+        for payout in await list_campaign_payouts(conn, campaign_id)
+    ]
 
 
 @app.post(

@@ -4,6 +4,7 @@ import re
 from decimal import Decimal
 from typing import Literal
 
+from datetime import datetime
 from pydantic import AnyHttpUrl, BaseModel, Field, field_validator, model_validator
 
 
@@ -94,3 +95,113 @@ class AnnouncementPublishResponse(BaseModel):
     identifier: str
     accepted_relays: list[str]
     failed_relays: list[str]
+
+
+CampaignStatus = Literal["draft", "funding_pending", "active", "paused", "completed", "exhausted", "cancelled", "failed"]
+CampaignFundingMode = Literal["intraledger", "external"]
+CampaignTriggerType = Literal["hashtag", "tag", "content_substring", "author_pubkey", "event_kind"]
+CampaignTriggerOperator = Literal["equals", "contains", "in"]
+
+
+class CampaignTriggerIn(BaseModel):
+    trigger_type: CampaignTriggerType
+    operator: CampaignTriggerOperator = "equals"
+    value: str = Field(min_length=1, max_length=255)
+    case_sensitive: bool = False
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _validate_value(cls, value: str) -> str:
+        return _strip_and_require_text(value)
+
+
+class CampaignCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=140)
+    funding_mode: CampaignFundingMode
+    reward_amount_sat: int = Field(ge=1)
+    budget_total_sat: int = Field(ge=1)
+    max_rewards_per_user: int = Field(default=1, ge=1, le=1000)
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    triggers: list[CampaignTriggerIn] = Field(min_length=1, max_length=20)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        return _strip_and_require_text(value)
+
+    @model_validator(mode="after")
+    def _validate_budget_and_window(self) -> "CampaignCreateRequest":
+        if self.budget_total_sat < self.reward_amount_sat:
+            raise ValueError("budget_total_sat must be greater than or equal to reward_amount_sat.")
+        if self.end_at is not None and self.start_at is not None and self.end_at <= self.start_at:
+            raise ValueError("end_at must be later than start_at.")
+        return self
+
+
+class CampaignFundingRequest(BaseModel):
+    amount_sat: int = Field(ge=1)
+
+
+class CampaignTriggerOut(BaseModel):
+    id: str
+    trigger_type: CampaignTriggerType
+    operator: CampaignTriggerOperator
+    value: str
+    case_sensitive: bool
+    created_at: datetime
+
+
+class CampaignFundingOut(BaseModel):
+    id: str
+    funding_mode: CampaignFundingMode
+    amount_sat: int
+    status: Literal["pending", "confirmed", "cancelled", "refunded"]
+    payment_hash: str | None = None
+    payment_request: str | None = None
+    confirmed_at: datetime | None = None
+    created_at: datetime | None = None
+
+
+class CampaignOut(BaseModel):
+    id: str
+    name: str
+    status: CampaignStatus
+    funding_mode: CampaignFundingMode
+    reward_amount_sat: int
+    budget_total_sat: int
+    budget_reserved_sat: int
+    budget_spent_sat: int
+    budget_refunded_sat: int
+    max_rewards_per_user: int
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    triggers: list[CampaignTriggerOut] = Field(default_factory=list)
+    fundings: list[CampaignFundingOut] = Field(default_factory=list)
+
+
+class CampaignMatchOut(BaseModel):
+    id: str
+    relay_url: str
+    event_id: str
+    event_pubkey: str
+    event_kind: int
+    match_fingerprint: str
+    status: Literal["matched", "ignored", "reserved", "paid", "failed"]
+    ignore_reason: str | None = None
+    created_at: datetime
+
+
+class CampaignPayoutOut(BaseModel):
+    id: str
+    match_id: str
+    recipient_pubkey: str
+    amount_sat: int
+    fee_sat: int | None = None
+    payment_hash: str | None = None
+    status: Literal["pending", "succeeded", "failed"]
+    failure_reason: str | None = None
+    created_at: datetime
+    settled_at: datetime | None = None

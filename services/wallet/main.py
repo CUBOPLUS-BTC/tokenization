@@ -52,8 +52,12 @@ from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
 from services.auth.kyc_db import get_kyc_status, is_kyc_verified
 
 from .db import (
+    confirm_external_campaign_funding,
+    create_external_campaign_funding,
     create_onchain_withdrawal,
     create_transaction,
+    get_campaign_by_id,
+    get_campaign_funding_by_payment_hash,
     get_db_conn,
     get_engine,
     get_or_create_wallet,
@@ -65,8 +69,10 @@ from .db import (
     get_next_derivation_index,
     recompute_lightning_balance,
     release_onchain_balance,
+    reserve_campaign_balance_from_wallet,
     reserve_onchain_balance,
     save_wallet_address,
+    spend_campaign_balance,
 )
 import asyncio
 from .reconciliation import reconciliation_loop, lightning_sync_loop, sync_wallet_lightning_state
@@ -74,6 +80,12 @@ from .key_manager import KeyManager
 from .liquid_rpc import ElementsRPCError, get_liquid_rpc
 from .lnd_client import LNDClient
 from .schemas import (
+    CampaignFundingInvoiceRequest,
+    CampaignFundingResponse,
+    CampaignFundingSyncRequest,
+    CampaignFundsPayRequest,
+    CampaignFundsReserveRequest,
+    CampaignPaymentResponse,
     CustodyStatusResponse,
     FiatOnRampProviderStatus,
     FiatOnRampProvidersResponse,
@@ -162,6 +174,21 @@ def _error(code: str, message: str, status_code: int) -> JSONResponse:
         status_code=status_code,
         content={"error": {"code": code, "message": message}},
     )
+
+
+def _internal_service_token() -> str:
+    return (settings.jwt_secret or "dev-secret-change-me").strip()
+
+
+async def _require_internal_caller(
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+) -> None:
+    if not x_internal_token or not secrets.compare_digest(x_internal_token.strip(), _internal_service_token()):
+        raise ContractError(
+            code="forbidden",
+            message="Internal service authentication is required.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
 
 
 def _runtime_engine() -> AsyncEngine | Any:
@@ -332,7 +359,11 @@ def _infer_bolt11_network(payment_request: str) -> str:
     if lowered.startswith("lnbcrt"):
         return "regtest"
     if lowered.startswith("lntb"):
-        return "signet" if settings.bitcoin_network == "signet" else "testnet"
+        if settings.bitcoin_network == "signet":
+            return "signet"
+        if settings.bitcoin_network == "testnet4":
+            return "testnet4"
+        return "testnet"
     if lowered.startswith("lnbc"):
         return "mainnet"
     return settings.bitcoin_network
@@ -929,6 +960,293 @@ async def create_fiat_onramp_session(
         expires_at=session.expires_at,
         disclaimer=session.disclaimer,
         compliance_action=session.compliance_action,
+    ).model_dump(mode="json")
+
+
+@app.post(
+    "/internal/campaign-funds/reserve",
+    status_code=status.HTTP_200_OK,
+    response_model=CampaignFundingResponse,
+    include_in_schema=False,
+)
+async def reserve_campaign_funds(
+    request: Request,
+    body: CampaignFundsReserveRequest,
+    _internal: None = Depends(_require_internal_caller),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    campaign = await get_campaign_by_id(conn, body.campaign_id)
+    if campaign is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    wallet = await get_wallet_by_user_id(conn, body.user_id)
+    if wallet is None:
+        raise ContractError(
+            code="wallet_not_found",
+            message="Wallet does not exist for the requested user.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    funding = await reserve_campaign_balance_from_wallet(
+        conn,
+        campaign_id=body.campaign_id,
+        wallet_id=str(_row_value(wallet, "id")),
+        amount_sat=body.amount_sat,
+    )
+    if funding is None:
+        raise ContractError(
+            code="insufficient_funds",
+            message="Wallet Lightning balance is insufficient for this campaign reservation.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+
+    await record_audit_event(
+        conn,
+        settings=settings,
+        request=request,
+        action="wallet.campaign_funds.reserve",
+        target_type="campaign",
+        target_id=body.campaign_id,
+        metadata={"user_id": body.user_id, "amount_sat": body.amount_sat},
+    )
+    record_business_event("wallet_campaign_funds_reserve")
+    return CampaignFundingResponse(
+        campaign_id=body.campaign_id,
+        funding_id=str(_row_value(funding, "id")),
+        status=str(_row_value(funding, "status")),
+        amount_sat=int(_row_value(funding, "amount_sat")),
+        confirmed_at=_row_value(funding, "confirmed_at"),
+    ).model_dump(mode="json")
+
+
+@app.post(
+    "/internal/campaign-funds/invoice",
+    status_code=status.HTTP_200_OK,
+    response_model=CampaignFundingResponse,
+    include_in_schema=False,
+)
+async def create_campaign_funding_invoice(
+    request: Request,
+    body: CampaignFundingInvoiceRequest,
+    _internal: None = Depends(_require_internal_caller),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    campaign = await get_campaign_by_id(conn, body.campaign_id)
+    if campaign is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    memo = body.memo or f"Campaign funding {body.campaign_id}"
+    try:
+        invoice = lnd_client.create_invoice(memo=memo, amount_sats=body.amount_sat)
+    except grpc.RpcError as exc:
+        raise ContractError(
+            code="lightning_unavailable",
+            message="Lightning service is unavailable.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        ) from exc
+
+    funding = await create_external_campaign_funding(
+        conn,
+        campaign_id=body.campaign_id,
+        amount_sat=body.amount_sat,
+        payment_hash=invoice.r_hash.hex(),
+        transaction_id=None,
+    )
+
+    await record_audit_event(
+        conn,
+        settings=settings,
+        request=request,
+        action="wallet.campaign_funds.invoice",
+        target_type="campaign",
+        target_id=body.campaign_id,
+        metadata={"amount_sat": body.amount_sat, "payment_hash": invoice.r_hash.hex()},
+    )
+    record_business_event("wallet_campaign_funds_invoice")
+    return CampaignFundingResponse(
+        campaign_id=body.campaign_id,
+        funding_id=str(_row_value(funding, "id")),
+        status=str(_row_value(funding, "status")),
+        amount_sat=body.amount_sat,
+        payment_request=invoice.payment_request,
+        payment_hash=invoice.r_hash.hex(),
+    ).model_dump(mode="json")
+
+
+@app.post(
+    "/internal/campaign-funds/sync",
+    status_code=status.HTTP_200_OK,
+    response_model=CampaignFundingResponse,
+    include_in_schema=False,
+)
+async def sync_campaign_funding_invoice(
+    request: Request,
+    body: CampaignFundingSyncRequest,
+    _internal: None = Depends(_require_internal_caller),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    funding = await get_campaign_funding_by_payment_hash(
+        conn,
+        campaign_id=body.campaign_id,
+        payment_hash=body.payment_hash,
+    )
+    if funding is None:
+        raise ContractError(
+            code="funding_not_found",
+            message="Campaign funding record does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    if str(_row_value(funding, "status")) == "confirmed":
+        return CampaignFundingResponse(
+            campaign_id=body.campaign_id,
+            funding_id=str(_row_value(funding, "id")),
+            status="confirmed",
+            amount_sat=int(_row_value(funding, "amount_sat")),
+            payment_hash=body.payment_hash,
+            confirmed_at=_row_value(funding, "confirmed_at"),
+        ).model_dump(mode="json")
+
+    try:
+        invoice = lnd_client.lookup_invoice(r_hash_str=body.payment_hash)
+    except grpc.RpcError as exc:
+        raise ContractError(
+            code="lightning_unavailable",
+            message="Lightning service is unavailable.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        ) from exc
+
+    is_settled = getattr(invoice, "state", None) == 1 or bool(getattr(invoice, "settle_date", 0))
+    if not is_settled:
+        return CampaignFundingResponse(
+            campaign_id=body.campaign_id,
+            funding_id=str(_row_value(funding, "id")),
+            status="pending",
+            amount_sat=int(_row_value(funding, "amount_sat")),
+            payment_hash=body.payment_hash,
+        ).model_dump(mode="json")
+
+    confirmed = await confirm_external_campaign_funding(
+        conn,
+        campaign_id=body.campaign_id,
+        funding_id=str(_row_value(funding, "id")),
+        amount_sat=int(_row_value(funding, "amount_sat")),
+    )
+    if confirmed is None:
+        refreshed = await get_campaign_funding_by_payment_hash(
+            conn,
+            campaign_id=body.campaign_id,
+            payment_hash=body.payment_hash,
+        )
+        confirmed = refreshed or funding
+
+    await record_audit_event(
+        conn,
+        settings=settings,
+        request=request,
+        action="wallet.campaign_funds.sync",
+        target_type="campaign",
+        target_id=body.campaign_id,
+        metadata={"payment_hash": body.payment_hash, "status": "confirmed"},
+    )
+    record_business_event("wallet_campaign_funds_sync")
+    return CampaignFundingResponse(
+        campaign_id=body.campaign_id,
+        funding_id=str(_row_value(confirmed, "id")),
+        status=str(_row_value(confirmed, "status")),
+        amount_sat=int(_row_value(confirmed, "amount_sat")),
+        payment_hash=body.payment_hash,
+        confirmed_at=_row_value(confirmed, "confirmed_at"),
+    ).model_dump(mode="json")
+
+
+@app.post(
+    "/internal/campaign-funds/pay",
+    status_code=status.HTTP_200_OK,
+    response_model=CampaignPaymentResponse,
+    include_in_schema=False,
+)
+async def pay_campaign_invoice(
+    request: Request,
+    body: CampaignFundsPayRequest,
+    _internal: None = Depends(_require_internal_caller),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    campaign = await get_campaign_by_id(conn, body.campaign_id)
+    if campaign is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    try:
+        decoded = lnd_client.decode_pay_req(payment_request=body.payment_request)
+        expected_amount_sat = int(getattr(decoded, "num_satoshis", 0))
+        resp = lnd_client.pay_invoice(payment_request=body.payment_request)
+    except grpc.RpcError as exc:
+        raise ContractError(
+            code="lightning_unavailable",
+            message="Lightning service is unavailable.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        ) from exc
+
+    payment_status = "SUCCEEDED"
+    failure_reason = None
+    fee_sat = int(resp.payment_route.total_fees if resp.payment_route else 0)
+    amount_sat = int(resp.payment_route.total_amt if resp.payment_route else expected_amount_sat)
+    if body.max_fee_sat is not None and fee_sat > body.max_fee_sat:
+        raise ContractError(
+            code="fee_limit_exceeded",
+            message="Lightning fee exceeds the configured maximum.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    if resp.payment_error:
+        payment_status = "FAILED"
+        failure_reason = resp.payment_error
+    elif not await spend_campaign_balance(
+        conn,
+        campaign_id=body.campaign_id,
+        amount_sat=expected_amount_sat,
+        fee_sat=fee_sat,
+    ):
+        raise ContractError(
+            code="insufficient_campaign_funds",
+            message="Campaign balance is insufficient for this payout.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+
+    await record_audit_event(
+        conn,
+        settings=settings,
+        request=request,
+        action="wallet.campaign_funds.pay",
+        target_type="campaign",
+        target_id=body.campaign_id,
+        metadata={
+            "payout_id": body.payout_id,
+            "amount_sat": expected_amount_sat,
+            "fee_sat": fee_sat,
+            "payment_hash": resp.payment_hash.hex(),
+            "status": payment_status,
+        },
+    )
+    record_business_event("wallet_campaign_funds_pay", outcome="failure" if resp.payment_error else "success")
+    return CampaignPaymentResponse(
+        campaign_id=body.campaign_id,
+        payment_hash=resp.payment_hash.hex(),
+        amount_sat=expected_amount_sat,
+        fee_sat=fee_sat,
+        status=payment_status,
+        failure_reason=failure_reason,
     ).model_dump(mode="json")
 
 

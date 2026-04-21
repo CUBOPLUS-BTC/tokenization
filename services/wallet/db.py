@@ -26,6 +26,8 @@ from common.db.metadata import users as users_table
 from common.db.metadata import wallets as wallets_table
 from common.db.metadata import wallet_addresses as wallet_addresses_table
 from common.db.metadata import onchain_deposits as onchain_deposits_table
+from common.db.metadata import nostr_campaign_fundings as nostr_campaign_fundings_table
+from common.db.metadata import nostr_campaigns as nostr_campaigns_table
 
 
 os.environ.setdefault("ELEMENTS_RPC_HOST", "localhost")
@@ -524,4 +526,188 @@ async def recompute_lightning_balance(
     balance_sat = max(0, incoming_sat - outgoing_sat)
     await update_lightning_balance(conn, wallet_id, balance_sat)
     return balance_sat
+
+
+async def get_campaign_by_id(
+    conn: AsyncConnection,
+    campaign_id: str | uuid.UUID,
+) -> sa.engine.Row | None:
+    result = await conn.execute(
+        sa.select(nostr_campaigns_table).where(nostr_campaigns_table.c.id == _as_uuid(campaign_id))
+    )
+    return result.fetchone()
+
+
+async def reserve_campaign_balance_from_wallet(
+    conn: AsyncConnection,
+    *,
+    campaign_id: str | uuid.UUID,
+    wallet_id: str | uuid.UUID,
+    amount_sat: int,
+) -> sa.engine.Row | None:
+    now = _utc_now()
+    campaign_row = await get_campaign_by_id(conn, campaign_id)
+    if campaign_row is None:
+        await conn.rollback()
+        return None
+
+    wallet_result = await conn.execute(
+        sa.update(wallets_table)
+        .where(wallets_table.c.id == _as_uuid(wallet_id))
+        .where(wallets_table.c.lightning_balance_sat >= amount_sat)
+        .values(
+            lightning_balance_sat=wallets_table.c.lightning_balance_sat - amount_sat,
+            updated_at=now,
+        )
+        .returning(wallets_table.c.id)
+    )
+    if wallet_result.fetchone() is None:
+        await conn.rollback()
+        return None
+
+    await conn.execute(
+        sa.update(nostr_campaigns_table)
+        .where(nostr_campaigns_table.c.id == _as_uuid(campaign_id))
+        .values(
+            budget_reserved_sat=nostr_campaigns_table.c.budget_reserved_sat + amount_sat,
+            updated_at=now,
+            status=sa.case(
+                (nostr_campaigns_table.c.status == "draft", "funding_pending"),
+                else_=nostr_campaigns_table.c.status,
+            ),
+        )
+    )
+    funding_result = await conn.execute(
+        sa.insert(nostr_campaign_fundings_table)
+        .values(
+            id=uuid.uuid4(),
+            campaign_id=_as_uuid(campaign_id),
+            wallet_id=_as_uuid(wallet_id),
+            funding_mode="intraledger",
+            amount_sat=amount_sat,
+            status="confirmed",
+            created_at=now,
+            confirmed_at=now,
+        )
+        .returning(nostr_campaign_fundings_table)
+    )
+    await conn.commit()
+    row = funding_result.fetchone()
+    assert row is not None
+    return row
+
+
+async def create_external_campaign_funding(
+    conn: AsyncConnection,
+    *,
+    campaign_id: str | uuid.UUID,
+    amount_sat: int,
+    payment_hash: str,
+    transaction_id: str | uuid.UUID | None = None,
+) -> sa.engine.Row:
+    now = _utc_now()
+    result = await conn.execute(
+        sa.insert(nostr_campaign_fundings_table)
+        .values(
+            id=uuid.uuid4(),
+            campaign_id=_as_uuid(campaign_id),
+            funding_mode="external",
+            amount_sat=amount_sat,
+            status="pending",
+            ln_payment_hash=payment_hash,
+            transaction_id=_as_uuid(transaction_id) if transaction_id is not None else None,
+            created_at=now,
+        )
+        .returning(nostr_campaign_fundings_table)
+    )
+    await conn.execute(
+        sa.update(nostr_campaigns_table)
+        .where(nostr_campaigns_table.c.id == _as_uuid(campaign_id))
+        .values(status="funding_pending", updated_at=now)
+    )
+    await conn.commit()
+    row = result.fetchone()
+    assert row is not None
+    return row
+
+
+async def get_campaign_funding_by_payment_hash(
+    conn: AsyncConnection,
+    *,
+    campaign_id: str | uuid.UUID,
+    payment_hash: str,
+) -> sa.engine.Row | None:
+    result = await conn.execute(
+        sa.select(nostr_campaign_fundings_table)
+        .where(nostr_campaign_fundings_table.c.campaign_id == _as_uuid(campaign_id))
+        .where(nostr_campaign_fundings_table.c.ln_payment_hash == payment_hash)
+    )
+    return result.fetchone()
+
+
+async def confirm_external_campaign_funding(
+    conn: AsyncConnection,
+    *,
+    campaign_id: str | uuid.UUID,
+    funding_id: str | uuid.UUID,
+    amount_sat: int,
+) -> sa.engine.Row | None:
+    now = _utc_now()
+    result = await conn.execute(
+        sa.update(nostr_campaign_fundings_table)
+        .where(nostr_campaign_fundings_table.c.id == _as_uuid(funding_id))
+        .where(nostr_campaign_fundings_table.c.status == "pending")
+        .values(status="confirmed", confirmed_at=now)
+        .returning(nostr_campaign_fundings_table)
+    )
+    row = result.fetchone()
+    if row is None:
+        await conn.rollback()
+        return None
+
+    await conn.execute(
+        sa.update(nostr_campaigns_table)
+        .where(nostr_campaigns_table.c.id == _as_uuid(campaign_id))
+        .values(
+            budget_reserved_sat=nostr_campaigns_table.c.budget_reserved_sat + amount_sat,
+            updated_at=now,
+        )
+    )
+    await conn.commit()
+    return row
+
+
+async def spend_campaign_balance(
+    conn: AsyncConnection,
+    *,
+    campaign_id: str | uuid.UUID,
+    amount_sat: int,
+    fee_sat: int,
+) -> bool:
+    now = _utc_now()
+    total_cost_sat = amount_sat + fee_sat
+    result = await conn.execute(
+        sa.update(nostr_campaigns_table)
+        .where(nostr_campaigns_table.c.id == _as_uuid(campaign_id))
+        .where(nostr_campaigns_table.c.budget_reserved_sat >= total_cost_sat)
+        .values(
+            budget_reserved_sat=nostr_campaigns_table.c.budget_reserved_sat - total_cost_sat,
+            budget_spent_sat=nostr_campaigns_table.c.budget_spent_sat + amount_sat,
+            updated_at=now,
+            status=sa.case(
+                (
+                    nostr_campaigns_table.c.budget_reserved_sat - total_cost_sat < nostr_campaigns_table.c.reward_amount_sat,
+                    "exhausted",
+                ),
+                else_=nostr_campaigns_table.c.status,
+            ),
+        )
+        .returning(nostr_campaigns_table.c.id)
+    )
+    spent = result.fetchone() is not None
+    if spent:
+        await conn.commit()
+    else:
+        await conn.rollback()
+    return spent
 
