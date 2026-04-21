@@ -2,9 +2,10 @@ services:
   postgres:
     image: postgres:15-alpine
     restart: unless-stopped
-    env_file:
-      - path: ./.env.regtest
-        required: false
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tokenization}
+      POSTGRES_USER: ${POSTGRES_USER:-local_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_password}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -36,9 +37,63 @@ services:
     command: >
       sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn services.wallet.main:app --host 0.0.0.0 --port 8001"
-    env_file:
-      - path: ./.env.regtest
-        required: false
+    environment:
+      ENV_PROFILE: ${ENV_PROFILE:-regtest}
+
+      WALLET_SERVICE_URL: ${WALLET_SERVICE_URL:-http://wallet:8001}
+      TOKENIZATION_SERVICE_URL: ${TOKENIZATION_SERVICE_URL:-http://tokenization:8002}
+      MARKETPLACE_SERVICE_URL: ${MARKETPLACE_SERVICE_URL:-http://marketplace:8003}
+      NOSTR_SERVICE_URL: ${NOSTR_SERVICE_URL:-http://nostr:8005}
+
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-tokenization}
+      POSTGRES_USER: ${POSTGRES_USER:-local_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_password}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+pg8000://local_user:local_password@postgres:5432/tokenization}
+
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+
+      BITCOIN_RPC_HOST: ${BITCOIN_RPC_HOST:-bitcoind}
+      BITCOIN_RPC_PORT: ${BITCOIN_RPC_PORT:-18443}
+      BITCOIN_RPC_USER: ${BITCOIN_RPC_USER:-local_rpc}
+      BITCOIN_RPC_PASSWORD: ${BITCOIN_RPC_PASSWORD:-local_rpc_password}
+      BITCOIN_NETWORK: ${BITCOIN_NETWORK:-regtest}
+      BITCOIN_RPC_REQUIRED: ${BITCOIN_RPC_REQUIRED:-true}
+
+      LND_GRPC_HOST: ${LND_GRPC_HOST:-lnd}
+      LND_GRPC_PORT: ${LND_GRPC_PORT:-10009}
+      LND_MACAROON_PATH: ${LND_MACAROON_PATH:-/run/secrets/lnd/data/chain/bitcoin/regtest/admin.macaroon}
+      LND_TLS_CERT_PATH: ${LND_TLS_CERT_PATH:-/run/secrets/lnd/tls.cert}
+      LND_GRPC_REQUIRED: ${LND_GRPC_REQUIRED:-true}
+
+      ELEMENTS_RPC_HOST: ${ELEMENTS_RPC_HOST:-elementsd}
+      ELEMENTS_RPC_PORT: ${ELEMENTS_RPC_PORT:-7041}
+      ELEMENTS_RPC_USER: ${ELEMENTS_RPC_USER:-user}
+      ELEMENTS_RPC_PASSWORD: ${ELEMENTS_RPC_PASSWORD:-pass}
+      ELEMENTS_NETWORK: ${ELEMENTS_NETWORK:-elementsregtest}
+      ELEMENTS_WALLET_NAME: ${ELEMENTS_WALLET_NAME:-platform}
+      ELEMENTS_RPC_REQUIRED: ${ELEMENTS_RPC_REQUIRED:-true}
+
+      NOSTR_RELAYS: ${NOSTR_RELAYS:-wss://relay.damus.io,wss://nos.lol}
+
+      JWT_SECRET: ${JWT_SECRET:-local_jwt_secret}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: ${JWT_REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      TOTP_ISSUER: ${TOTP_ISSUER:-RWAPlatform-Regtest}
+
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-admin@regtest.local}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-RegtestAdmin123!}
+      INITIAL_ADMIN_DISPLAY_NAME: ${INITIAL_ADMIN_DISPLAY_NAME:-Regtest Platform Admin}
+
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      MARKETPLACE_ESCROW_WATCH_INTERVAL_SECONDS: ${MARKETPLACE_ESCROW_WATCH_INTERVAL_SECONDS:-30}
+      MARKETPLACE_ESCROW_FEE_RESERVE_SAT: ${MARKETPLACE_ESCROW_FEE_RESERVE_SAT:-5000}
+
+      WALLET_ENCRYPTION_KEY: ${WALLET_ENCRYPTION_KEY:-00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
     volumes:
       - ../:/app
       - lnd_data:/run/secrets/lnd:ro
@@ -63,9 +118,28 @@ services:
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8000"
-    env_file:
-      - path: ./.env.regtest
-        required: false
+    environment:
+      ENV_PROFILE: ${ENV_PROFILE:-regtest}
+
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-tokenization}
+      POSTGRES_USER: ${POSTGRES_USER:-local_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_password}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+pg8000://local_user:local_password@postgres:5432/tokenization}
+
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+
+      JWT_SECRET: ${JWT_SECRET:-local_jwt_secret}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: ${JWT_REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      TOTP_ISSUER: ${TOTP_ISSUER:-RWAPlatform-Regtest}
+
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-admin@regtest.local}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-RegtestAdmin123!}
+      INITIAL_ADMIN_DISPLAY_NAME: ${INITIAL_ADMIN_DISPLAY_NAME:-Regtest Platform Admin}
+
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     volumes:
       - ../:/app
     depends_on:
@@ -83,9 +157,27 @@ services:
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8002"
-    env_file:
-      - path: ./.env.regtest
-        required: false
+    environment:
+      ENV_PROFILE: ${ENV_PROFILE:-regtest}
+
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-tokenization}
+      POSTGRES_USER: ${POSTGRES_USER:-local_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_password}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+pg8000://local_user:local_password@postgres:5432/tokenization}
+
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+
+      ELEMENTS_RPC_HOST: ${ELEMENTS_RPC_HOST:-elementsd}
+      ELEMENTS_RPC_PORT: ${ELEMENTS_RPC_PORT:-7041}
+      ELEMENTS_RPC_USER: ${ELEMENTS_RPC_USER:-user}
+      ELEMENTS_RPC_PASSWORD: ${ELEMENTS_RPC_PASSWORD:-pass}
+      ELEMENTS_NETWORK: ${ELEMENTS_NETWORK:-elementsregtest}
+      ELEMENTS_WALLET_NAME: ${ELEMENTS_WALLET_NAME:-platform}
+      ELEMENTS_RPC_REQUIRED: ${ELEMENTS_RPC_REQUIRED:-true}
+
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     volumes:
       - ../:/app
     depends_on:
@@ -105,9 +197,36 @@ services:
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8003"
-    env_file:
-      - path: ./.env.regtest
-        required: false
+    environment:
+      ENV_PROFILE: ${ENV_PROFILE:-regtest}
+
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-tokenization}
+      POSTGRES_USER: ${POSTGRES_USER:-local_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_password}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+pg8000://local_user:local_password@postgres:5432/tokenization}
+
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+
+      BITCOIN_RPC_HOST: ${BITCOIN_RPC_HOST:-bitcoind}
+      BITCOIN_RPC_PORT: ${BITCOIN_RPC_PORT:-18443}
+      BITCOIN_RPC_USER: ${BITCOIN_RPC_USER:-local_rpc}
+      BITCOIN_RPC_PASSWORD: ${BITCOIN_RPC_PASSWORD:-local_rpc_password}
+      BITCOIN_NETWORK: ${BITCOIN_NETWORK:-regtest}
+      BITCOIN_RPC_REQUIRED: ${BITCOIN_RPC_REQUIRED:-true}
+
+      ELEMENTS_RPC_HOST: ${ELEMENTS_RPC_HOST:-elementsd}
+      ELEMENTS_RPC_PORT: ${ELEMENTS_RPC_PORT:-7041}
+      ELEMENTS_RPC_USER: ${ELEMENTS_RPC_USER:-user}
+      ELEMENTS_RPC_PASSWORD: ${ELEMENTS_RPC_PASSWORD:-pass}
+      ELEMENTS_NETWORK: ${ELEMENTS_NETWORK:-elementsregtest}
+      ELEMENTS_WALLET_NAME: ${ELEMENTS_WALLET_NAME:-platform}
+      ELEMENTS_RPC_REQUIRED: ${ELEMENTS_RPC_REQUIRED:-true}
+
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      MARKETPLACE_ESCROW_WATCH_INTERVAL_SECONDS: ${MARKETPLACE_ESCROW_WATCH_INTERVAL_SECONDS:-30}
+      MARKETPLACE_ESCROW_FEE_RESERVE_SAT: ${MARKETPLACE_ESCROW_FEE_RESERVE_SAT:-5000}
     volumes:
       - ../:/app
     depends_on:
@@ -125,9 +244,20 @@ services:
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8005"
-    env_file:
-      - path: ./.env.regtest
-        required: false
+    environment:
+      ENV_PROFILE: ${ENV_PROFILE:-regtest}
+
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-tokenization}
+      POSTGRES_USER: ${POSTGRES_USER:-local_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_password}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+pg8000://local_user:local_password@postgres:5432/tokenization}
+
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      NOSTR_RELAYS: ${NOSTR_RELAYS:-wss://relay.damus.io,wss://nos.lol}
+
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     volumes:
       - ../:/app
     depends_on:
@@ -145,9 +275,20 @@ services:
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8006"
-    env_file:
-      - path: ./.env.regtest
-        required: false
+    environment:
+      ENV_PROFILE: ${ENV_PROFILE:-regtest}
+
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-tokenization}
+      POSTGRES_USER: ${POSTGRES_USER:-local_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_password}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+pg8000://local_user:local_password@postgres:5432/tokenization}
+
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+
+      JWT_SECRET: ${JWT_SECRET:-local_jwt_secret}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
     volumes:
       - ../:/app
     depends_on:
@@ -162,8 +303,14 @@ services:
     image: lncm/bitcoind:v28.0
     user: "0:0"
     command:
+      - -regtest
       - -datadir=/data/.bitcoin
       - -printtoconsole
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcport=18443
+      - -rpcuser=${BITCOIN_RPC_USER:-local_rpc}
+      - -rpcpassword=${BITCOIN_RPC_PASSWORD:-local_rpc_password}
     restart: unless-stopped
     volumes:
       - ./bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
@@ -171,7 +318,7 @@ services:
     ports:
       - "18443:18443"
     healthcheck:
-      test: ["CMD-SHELL", "bitcoin-cli -regtest -rpcconnect=127.0.0.1 -rpcport=18443 -rpcuser=local_rpc -rpcpassword=local_rpc_password getblockchaininfo >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "bitcoin-cli -regtest -rpcconnect=127.0.0.1 -rpcport=18443 -rpcuser=$${BITCOIN_RPC_USER:-local_rpc} -rpcpassword=$${BITCOIN_RPC_PASSWORD:-local_rpc_password} getblockchaininfo >/dev/null 2>&1 || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 20
@@ -191,7 +338,9 @@ services:
     command:
       - --lnddir=/data/lnd
       - --configfile=/etc/lnd/lnd.conf
+      - --bitcoin.active
       - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
     healthcheck:
       test: ["CMD", "lncli", "--network=regtest", "--rpcserver=localhost:10009", "--tlscertpath=/data/lnd/tls.cert", "--macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon", "getinfo"]
       interval: 15s
@@ -212,11 +361,11 @@ services:
     environment:
       ELEMENTS_CONF_FILE: /etc/elements/elements.conf
       ELEMENTS_DATA_DIR: /data/elements
-      ELEMENTS_NETWORK: elementsregtest
-      ELEMENTS_RPC_USER: user
-      ELEMENTS_RPC_PASSWORD: pass
-      ELEMENTS_RPC_PORT: "7041"
-      ELEMENTS_WALLET_NAME: platform
+      ELEMENTS_NETWORK: ${ELEMENTS_NETWORK:-elementsregtest}
+      ELEMENTS_RPC_USER: ${ELEMENTS_RPC_USER:-user}
+      ELEMENTS_RPC_PASSWORD: ${ELEMENTS_RPC_PASSWORD:-pass}
+      ELEMENTS_RPC_PORT: ${ELEMENTS_RPC_PORT:-7041}
+      ELEMENTS_WALLET_NAME: ${ELEMENTS_WALLET_NAME:-platform}
     volumes:
       - ./elements/elements.conf:/etc/elements/elements.conf:ro
       - elements_data:/data/elements
@@ -256,5 +405,3 @@ volumes:
 networks:
   platform:
     driver: bridge
-
-
