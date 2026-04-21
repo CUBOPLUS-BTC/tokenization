@@ -36,6 +36,24 @@ services:
     networks:
       - platform
 
+  db-bootstrap:
+    image: python:3.11-slim
+    container_name: tokenization-db-bootstrap
+    restart: "no"
+    working_dir: /app
+    command: >
+      sh -c "pip install --no-cache-dir -r scripts/requirements-migrations.txt -r services/auth/requirements.txt &&
+      python scripts/db_bootstrap.py"
+    env_file:
+      - ./.env.local
+    volumes:
+      - ../:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - platform
+
   wallet:
     image: python:3.11-slim
     container_name: tokenization-wallet
@@ -54,6 +72,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
       bitcoind:
         condition: service_healthy
       lnd:
@@ -82,6 +102,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     ports:
       - "8007:8000"
     networks:
@@ -104,6 +126,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
       elementsd:
         condition: service_healthy
     ports:
@@ -128,6 +152,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     ports:
       - "8003:8003"
     networks:
@@ -150,6 +176,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     ports:
       - "8005:8005"
     networks:
@@ -172,6 +200,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     ports:
       - "8006:8006"
     networks:

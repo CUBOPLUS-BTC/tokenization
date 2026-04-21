@@ -37,7 +37,7 @@ def _repo_root() -> Path:
 
 def _env_profile() -> str:
     profile = os.getenv("ENV_PROFILE", "local").strip().lower()
-    return profile if profile in {"local", "staging", "production"} else "local"
+    return profile if profile in {"local", "staging", "beta", "production"} else "local"
 
 
 def _load_alembic_env_files() -> None:

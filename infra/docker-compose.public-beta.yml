@@ -8,6 +8,11 @@ services:
       - ./.env.beta
     volumes:
       - beta_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - beta
 
@@ -17,6 +22,28 @@ services:
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - beta_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - beta
+
+  db-bootstrap:
+    image: python:3.11-slim
+    restart: "no"
+    working_dir: /app
+    command: >
+      sh -c "pip install --no-cache-dir -r scripts/requirements-migrations.txt -r services/auth/requirements.txt &&
+      python scripts/db_bootstrap.py"
+    env_file:
+      - ./.env.beta
+    volumes:
+      - ../:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - beta
 
@@ -32,8 +59,12 @@ services:
     volumes:
       - ../:/app
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     networks:
       - beta
 
@@ -49,8 +80,12 @@ services:
     volumes:
       - ../:/app
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     networks:
       - beta
 
@@ -66,8 +101,12 @@ services:
     volumes:
       - ../:/app
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     networks:
       - beta
 
@@ -83,8 +122,12 @@ services:
     volumes:
       - ../:/app
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     networks:
       - beta
 
@@ -100,8 +143,12 @@ services:
     volumes:
       - ../:/app
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     networks:
       - beta
 
@@ -117,8 +164,12 @@ services:
     volumes:
       - ../:/app
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     networks:
       - beta
 

@@ -69,6 +69,31 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
+### Bootstrap migrations + seeders in Docker
+
+The repository now includes `scripts/db_bootstrap.py`, which runs:
+
+1. `alembic upgrade head`
+2. Idempotent initial seeders
+
+Current seeded data:
+
+- Initial admin user from `INITIAL_ADMIN_*` environment variables
+
+Run it inside Docker Compose:
+
+```bash
+docker compose -f infra/docker-compose.local.yml run --rm db-bootstrap
+docker compose -f infra/docker-compose.public-beta.yml run --rm db-bootstrap
+```
+
+Optional modes:
+
+```bash
+python scripts/db_bootstrap.py --migrate-only
+python scripts/db_bootstrap.py --seed-only
+```
+
 ### Validate on a clean local database (zero -> head)
 
 ```bash
