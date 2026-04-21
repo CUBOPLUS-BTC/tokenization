@@ -24,6 +24,16 @@ def test_local_compose_includes_real_lnd_and_elements_services():
     assert "lnd_data:/run/secrets/lnd:ro" in content
 
 
+def test_compose_up_helpers_force_repo_project_directory_for_migrate():
+    powershell_content = (REPO_ROOT / "scripts" / "compose-up.ps1").read_text(encoding="utf-8")
+    shell_content = (REPO_ROOT / "scripts" / "compose-up.sh").read_text(encoding="utf-8")
+
+    assert "--project-directory" in powershell_content
+    assert "--force-recreate --build migrate" in powershell_content
+    assert "--project-directory" in shell_content
+    assert "--force-recreate --build migrate" in shell_content
+
+
 def test_bitcoin_local_config_exposes_zmq_for_lnd():
     content = (REPO_ROOT / "infra" / "bitcoin" / "bitcoin.conf").read_text(encoding="utf-8")
 

@@ -93,8 +93,8 @@ chmod +x scripts/compose-up.sh
 Equivalent manual steps:
 
 ```bash
-docker compose -f infra/docker-compose.local.yml up -d --force-recreate --build migrate
-docker compose -f infra/docker-compose.local.yml up -d
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d --force-recreate --build migrate
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d
 ```
 
 **Manual validation:** after `up`, confirm tables exist, e.g. `docker exec <postgres-container> psql -U <user> -d <db> -c "\dt"`.

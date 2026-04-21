@@ -6,8 +6,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-docker compose -f $ComposeFile up -d --force-recreate --build migrate
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$ComposePath = if ([System.IO.Path]::IsPathRooted($ComposeFile)) {
+    (Resolve-Path $ComposeFile).Path
+} else {
+    (Resolve-Path (Join-Path $RepoRoot $ComposeFile)).Path
+}
+
+docker compose --project-directory $RepoRoot -f $ComposePath up -d --force-recreate --build migrate
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-docker compose -f $ComposeFile up -d
+docker compose --project-directory $RepoRoot -f $ComposePath up -d
 exit $LASTEXITCODE
