@@ -6,7 +6,7 @@ services:
     container_name: tokenization-postgres
     restart: unless-stopped
     env_file:
-      - path: ./infra/.env.local
+      - path: ./.env.local
         required: false
     ports:
       - "5432:5432"
@@ -46,7 +46,7 @@ services:
       - -printtoconsole
     restart: unless-stopped
     volumes:
-      - ./infra/bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
+      - ./bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
       - bitcoin_data:/data/.bitcoin
     ports:
       - "18444:18443"
@@ -70,7 +70,7 @@ services:
       bitcoind:
         condition: service_healthy
     volumes:
-      - ./infra/lnd/lnd.conf:/etc/lnd/lnd.conf:ro
+      - ./lnd/lnd.conf:/etc/lnd/lnd.conf:ro
       - lnd_data:/data/lnd
     ports:
       - "10009:10009"
@@ -86,7 +86,7 @@ services:
 
   elementsd:
     build:
-      context: ./infra/elements
+      context: ./elements
       dockerfile: Dockerfile
     container_name: tokenization-elementsd
     restart: unless-stopped
@@ -102,7 +102,7 @@ services:
       ELEMENTS_RPC_PORT: "7041"
       ELEMENTS_WALLET_NAME: platform
     volumes:
-      - ./infra/elements/elements.conf:/etc/elements/elements.conf:ro
+      - ./elements/elements.conf:/etc/elements/elements.conf:ro
       - elements_data:/data/elements
     ports:
       - "7041:7041"
@@ -117,12 +117,12 @@ services:
 
   migrate:
     build:
-      context: .
+      context: ..
       dockerfile: ./services/migrate/Dockerfile
     container_name: tokenization-migrate
     restart: "no"
     env_file:
-      - path: ./infra/.env.local
+      - path: ./.env.local
         required: false
     depends_on:
       postgres:
@@ -132,12 +132,12 @@ services:
 
   wallet:
     build:
-      context: .
+      context: ..
       dockerfile: ./services/wallet/Dockerfile
     container_name: tokenization-wallet
     restart: unless-stopped
     env_file:
-      - path: ./infra/.env.local
+      - path: ./.env.local
         required: false
     volumes:
       - lnd_data:/run/secrets/lnd:ro
@@ -161,12 +161,12 @@ services:
 
   auth:
     build:
-      context: .
+      context: ..
       dockerfile: ./services/auth/Dockerfile
     container_name: tokenization-auth
     restart: unless-stopped
     env_file:
-      - path: ./infra/.env.local
+      - path: ./.env.local
         required: false
     depends_on:
       postgres:
@@ -182,12 +182,12 @@ services:
 
   tokenization:
     build:
-      context: .
+      context: ..
       dockerfile: ./services/tokenization/Dockerfile
     container_name: tokenization-tokenization
     restart: unless-stopped
     env_file:
-      - path: ./infra/.env.local
+      - path: ./.env.local
         required: false
     depends_on:
       postgres:
@@ -205,12 +205,12 @@ services:
 
   marketplace:
     build:
-      context: .
+      context: ..
       dockerfile: ./services/marketplace/Dockerfile
     container_name: tokenization-marketplace
     restart: unless-stopped
     env_file:
-      - path: ./infra/.env.local
+      - path: ./.env.local
         required: false
     depends_on:
       postgres:
@@ -226,12 +226,12 @@ services:
 
   nostr:
     build:
-      context: .
+      context: ..
       dockerfile: ./services/nostr/Dockerfile
     container_name: tokenization-nostr
     restart: unless-stopped
     env_file:
-      - path: ./infra/.env.local
+      - path: ./.env.local
         required: false
     depends_on:
       postgres:
@@ -247,12 +247,12 @@ services:
 
   admin:
     build:
-      context: .
+      context: ..
       dockerfile: ./services/admin/Dockerfile
     container_name: tokenization-admin
     restart: unless-stopped
     env_file:
-      - path: ./infra/.env.local
+      - path: ./.env.local
         required: false
     depends_on:
       postgres:
@@ -268,7 +268,7 @@ services:
 
   gateway:
     build:
-      context: ./services/gateway
+      context: ../services/gateway
       dockerfile: Dockerfile
     container_name: tokenization-gateway
     restart: unless-stopped
