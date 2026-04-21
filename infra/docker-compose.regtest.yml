@@ -86,7 +86,7 @@ services:
 
   elementsd:
     build:
-      context: ./elements
+      context: /app/infra/elements
       dockerfile: Dockerfile
     container_name: tokenization-elementsd
     restart: unless-stopped
@@ -102,7 +102,7 @@ services:
       ELEMENTS_RPC_PORT: "7041"
       ELEMENTS_WALLET_NAME: platform
     volumes:
-      - ./infra/elements/elements.conf:/etc/elements/elements.conf:ro
+      - /app/infra/elements/elements.conf:/etc/elements/elements.conf:ro
       - elements_data:/data/elements
     ports:
       - "7041:7041"
@@ -234,7 +234,7 @@ services:
 
   gateway:
     build:
-      context: ../services/gateway
+      context: /app/services/gateway
       dockerfile: Dockerfile
     container_name: tokenization-gateway
     restart: unless-stopped
