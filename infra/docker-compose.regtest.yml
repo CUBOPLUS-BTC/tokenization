@@ -148,7 +148,7 @@ services:
     restart: unless-stopped
     working_dir: /app
     command: >
-      sh -c "pip install --no-cache-dir -r /app/services/auth/requirements.txt &&
+      sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8000"
     volumes:
       - ../services/auth:/app
@@ -166,7 +166,7 @@ services:
     restart: unless-stopped
     working_dir: /app
     command: >
-      sh -c "pip install --no-cache-dir -r /app/services/wallet/requirements.txt &&
+      sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8001"
     volumes:
       - ../services/wallet:/app
@@ -191,7 +191,7 @@ services:
     restart: unless-stopped
     working_dir: /app
     command: >
-      sh -c "pip install --no-cache-dir -r /app/services/tokenization/requirements.txt &&
+      sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8002"
     volumes:
       - ../services/tokenization:/app
@@ -211,7 +211,7 @@ services:
     restart: unless-stopped
     working_dir: /app
     command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8003"
     volumes:
       - ../services/marketplace:/app
@@ -229,7 +229,7 @@ services:
     restart: unless-stopped
     working_dir: /app
     command: >
-      sh -c "pip install --no-cache-dir -r /app/services/nostr/requirements.txt &&
+      sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8005"
     volumes:
       - ../services/nostr:/app
@@ -247,7 +247,7 @@ services:
     restart: unless-stopped
     working_dir: /app
     command: >
-      sh -c "pip install --no-cache-dir -r /app/services/admin/requirements.txt &&
+      sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8006"
     volumes:
       - ../services/admin:/app
