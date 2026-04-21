@@ -5,6 +5,34 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/announcements": {
+      "post": {
+        "summary": "Publish Announcement",
+        "operationId": "publish_announcement_announcements_post",
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication Required"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "422": {
+            "description": "Validation Error"
+          },
+          "502": {
+            "description": "Relay Unavailable"
+          }
+        }
+      }
+    },
     "/metrics": {
       "get": {
         "tags": [
