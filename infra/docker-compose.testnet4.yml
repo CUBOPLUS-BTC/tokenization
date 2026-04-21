@@ -15,8 +15,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - testnet4
 
   redis:
     image: redis:7-alpine
@@ -30,8 +28,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - testnet4
 
   bitcoind:
     image: lncm/bitcoind:v28.0
@@ -44,16 +40,12 @@ services:
     volumes:
       - ./infra/bitcoin/bitcoin.testnet4.conf:/data/.bitcoin/bitcoin.conf:ro
       - testnet4_bitcoin_data:/data/.bitcoin
-    ports:
-      - "48332:48332"
     healthcheck:
       test: ["CMD", "bitcoin-cli", "-testnet4", "-rpcuser=testnet4_rpc", "-rpcpassword=testnet4_rpc_password", "getblockchaininfo"]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 10s
-    networks:
-      - testnet4
 
   lnd:
     image: lightninglabs/lnd:v0.20.0-beta
@@ -68,17 +60,12 @@ services:
     volumes:
       - ./infra/lnd/lnd.testnet4.conf:/etc/lnd/lnd.conf:ro
       - testnet4_lnd_data:/data/lnd
-    ports:
-      - "11009:10009"
-      - "19735:9735"
     healthcheck:
       test: ["CMD", "lncli", "--network=testnet", "--rpcserver=localhost:10009", "--tlscertpath=/data/lnd/tls.cert", "--macaroonpath=/data/lnd/data/chain/bitcoin/testnet/admin.macaroon", "getinfo"]
       interval: 15s
       timeout: 10s
       retries: 10
       start_period: 20s
-    networks:
-      - testnet4
 
   elementsd:
     build:
@@ -100,16 +87,12 @@ services:
     volumes:
       - ./infra/elements/elements.testnet4.conf:/etc/elements/elements.conf:ro
       - testnet4_elements_data:/data/elements
-    ports:
-      - "17041:7041"
     healthcheck:
       test: ["CMD", "elements-cli", "-chain=liquidtestnet", "-rpcuser=user", "-rpcpassword=pass", "-rpcport=7041", "-rpcwallet=platform", "getwalletinfo"]
       interval: 15s
       timeout: 10s
       retries: 10
       start_period: 25s
-    networks:
-      - testnet4
 
   migrate:
     build:
@@ -123,8 +106,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    networks:
-      - testnet4
 
   wallet:
     build:
@@ -150,8 +131,6 @@ services:
         condition: service_healthy
       elementsd:
         condition: service_healthy
-    networks:
-      - testnet4
 
   auth:
     build:
@@ -169,8 +148,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - testnet4
 
   tokenization:
     build:
@@ -190,8 +167,6 @@ services:
         condition: service_completed_successfully
       elementsd:
         condition: service_healthy
-    networks:
-      - testnet4
 
   marketplace:
     build:
@@ -209,8 +184,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - testnet4
 
   nostr:
     build:
@@ -228,8 +201,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - testnet4
 
   admin:
     build:
@@ -247,8 +218,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - testnet4
 
   gateway:
     build:
@@ -263,10 +232,6 @@ services:
       - marketplace
       - nostr
       - admin
-    ports:
-      - "8040:8000"
-    networks:
-      - testnet4
 
 volumes:
   testnet4_postgres_data:
@@ -274,7 +239,3 @@ volumes:
   testnet4_bitcoin_data:
   testnet4_lnd_data:
   testnet4_elements_data:
-
-networks:
-  testnet4:
-    driver: bridge

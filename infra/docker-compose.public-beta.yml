@@ -14,8 +14,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - beta
 
   redis:
     image: redis:7-alpine
@@ -28,8 +26,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - beta
 
   migrate:
     build:
@@ -42,8 +38,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    networks:
-      - beta
 
   auth:
     build:
@@ -60,8 +54,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - beta
 
   wallet:
     build:
@@ -78,8 +70,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - beta
 
   tokenization:
     build:
@@ -96,8 +86,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - beta
 
   marketplace:
     build:
@@ -114,8 +102,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - beta
 
   nostr:
     build:
@@ -132,8 +118,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - beta
 
   admin:
     build:
@@ -150,8 +134,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - beta
 
   gateway:
     build:
@@ -165,55 +147,9 @@ services:
       - marketplace
       - nostr
       - admin
-    ports:
-      - "8000:8000"
-    networks:
-      - beta
-
-  prometheus:
-    extends:
-      file: ./infra/docker-compose.observability.yml
-      service: prometheus
-    networks:
-      - beta
-
-  alertmanager:
-    extends:
-      file: ./infra/docker-compose.observability.yml
-      service: alertmanager
-    networks:
-      - beta
-
-  grafana:
-    extends:
-      file: ./infra/docker-compose.observability.yml
-      service: grafana
-    networks:
-      - beta
-
-  blackbox:
-    extends:
-      file: ./infra/docker-compose.observability.yml
-      service: blackbox
-    networks:
-      - beta
-
-  cadvisor:
-    extends:
-      file: ./infra/docker-compose.observability.yml
-      service: cadvisor
-    networks:
-      - beta
 
 volumes:
   beta_postgres_data:
   beta_redis_data:
-  prometheus_data:
-  alertmanager_data:
-  grafana_data:
-
-networks:
-  beta:
-    driver: bridge
 
 

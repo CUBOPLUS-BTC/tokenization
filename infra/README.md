@@ -36,7 +36,16 @@ python scripts/run_db_bootstrap.py --profile regtest
 docker compose --project-directory . -f infra/docker-compose.regtest.yml up -d
 ```
 
-`infra/docker-compose.regtest.yml` reads `infra/.env.regtest`, so it no longer depends on `infra/.env.local`.
+`infra/docker-compose.regtest.yml` now injects `infra/.env.regtest` directly into PostgreSQL, migrations, and the Python services, so the profile no longer depends on `infra/.env.local` or the root `.env`.
+
+On a brand-new `lnd_data` volume, LND may stay unhealthy until a wallet is created. If that happens, initialize it before starting `wallet`:
+
+```bash
+docker compose --project-directory . -f infra/docker-compose.regtest.yml exec lnd \
+  lncli --network=regtest --lnddir=/data/lnd create
+```
+
+After the wallet is created, `admin.macaroon` will exist and the `wallet` service can pass its dependency gate.
 
 Run from repository root:
 
@@ -79,6 +88,15 @@ docker compose --project-directory . -f infra/docker-compose.local.yml down -v
 - Bitcoin Core readiness: container healthcheck with `bitcoin-cli getblockchaininfo`
 - LND readiness: container healthcheck with `lncli getinfo`
 - Elements readiness: container healthcheck with `elements-cli getwalletinfo`
+
+## Coolify deployment profiles
+
+The `regtest`, `public-beta`, and `testnet4` compose profiles are normalized for Coolify:
+
+- Coolify should publish only the `gateway` service.
+- The `gateway` service listens on container port `8000`.
+- Private services are reached over Docker service discovery, not host port mappings.
+- These deployment profiles intentionally avoid custom Compose networks so the Coolify proxy can attach and route traffic reliably.
 
 ## Bitcoin Core (regtest)
 

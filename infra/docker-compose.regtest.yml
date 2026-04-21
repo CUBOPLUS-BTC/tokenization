@@ -5,8 +5,9 @@ services:
     image: postgres:15-alpine
     container_name: tokenization-postgres
     restart: unless-stopped
-    ports:
-      - "5432:5432"
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -14,16 +15,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - platform
 
   redis:
     image: redis:7-alpine
     container_name: tokenization-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -31,8 +28,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    networks:
-      - platform
 
   bitcoind:
     image: lncm/bitcoind:v28.0
@@ -52,11 +47,6 @@ services:
     volumes:
       - ./infra/bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
       - bitcoin_data:/data/.bitcoin
-    ports:
-      - "18444:18444"
-      - "18443:18443"
-      - "28332:28332"
-      - "28333:28333"
     healthcheck:
       test:
         [
@@ -67,8 +57,6 @@ services:
       timeout: 10s
       retries: 10
       start_period: 45s
-    networks:
-      - platform
 
   lnd:
     image: lightninglabs/lnd:v0.20.0-beta
@@ -91,21 +79,16 @@ services:
     volumes:
       - ./infra/lnd/lnd.conf:/etc/lnd/lnd.conf:ro
       - lnd_data:/data/lnd
-    ports:
-      - "10009:10009"
-      - "9735:9735"
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "test -f /data/lnd/tls.cert || exit 1"
+          "lncli --network=regtest --rpcserver=localhost:10009 --tlscertpath=/data/lnd/tls.cert --macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon getinfo >/dev/null 2>&1 || exit 1"
         ]
       interval: 15s
       timeout: 10s
       retries: 20
       start_period: 60s
-    networks:
-      - platform
 
   elementsd:
     build:
@@ -127,8 +110,6 @@ services:
     volumes:
       - ./infra/elements/elements.conf:/etc/elements/elements.conf:ro
       - elements_data:/data/elements
-    ports:
-      - "7041:7041"
     healthcheck:
       test:
         [
@@ -139,8 +120,6 @@ services:
       timeout: 10s
       retries: 10
       start_period: 45s
-    networks:
-      - platform
 
   migrate:
     build:
@@ -148,11 +127,12 @@ services:
       dockerfile: ./services/migrate/Dockerfile
     container_name: tokenization-migrate
     restart: "no"
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
-    networks:
-      - platform
 
   auth:
     build:
@@ -160,6 +140,9 @@ services:
       dockerfile: ./services/auth/Dockerfile
     container_name: tokenization-auth
     restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -167,8 +150,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - platform
 
   wallet:
     build:
@@ -176,6 +157,9 @@ services:
       dockerfile: ./services/wallet/Dockerfile
     container_name: tokenization-wallet
     restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
     volumes:
       - lnd_data:/run/secrets/lnd:ro
     depends_on:
@@ -191,8 +175,6 @@ services:
         condition: service_healthy
       elementsd:
         condition: service_healthy
-    networks:
-      - platform
 
   tokenization:
     build:
@@ -200,6 +182,9 @@ services:
       dockerfile: ./services/tokenization/Dockerfile
     container_name: tokenization-tokenization
     restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -209,8 +194,6 @@ services:
         condition: service_completed_successfully
       elementsd:
         condition: service_healthy
-    networks:
-      - platform
 
   marketplace:
     build:
@@ -218,6 +201,9 @@ services:
       dockerfile: ./services/marketplace/Dockerfile
     container_name: tokenization-marketplace
     restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -225,8 +211,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - platform
 
   nostr:
     build:
@@ -234,6 +218,9 @@ services:
       dockerfile: ./services/nostr/Dockerfile
     container_name: tokenization-nostr
     restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -241,8 +228,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - platform
 
   admin:
     build:
@@ -250,6 +235,9 @@ services:
       dockerfile: ./services/admin/Dockerfile
     container_name: tokenization-admin
     restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -257,8 +245,6 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    networks:
-      - platform
 
   gateway:
     build:
@@ -273,8 +259,6 @@ services:
       - marketplace
       - nostr
       - admin
-    networks:
-      - platform
 
 volumes:
   postgres_data:
@@ -282,7 +266,3 @@ volumes:
   bitcoin_data:
   lnd_data:
   elements_data:
-
-networks:
-  platform:
-    driver: bridge
