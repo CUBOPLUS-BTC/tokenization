@@ -5,6 +5,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import importlib.util
+import logging
 import os
 from pathlib import Path
 import sys
@@ -17,6 +18,8 @@ import bcrypt
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
+from alembic.util.exc import CommandError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 
@@ -184,6 +187,116 @@ def _count_public_tables(sync_url: str) -> int:
         engine.dispose()
 
 
+def _metadata_app_table_count() -> int:
+    spec = importlib.util.spec_from_file_location("_db_bootstrap_metadata_count", METADATA_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load metadata from {METADATA_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return len(module.metadata.tables)
+
+
+def _verify_migration_outcome(sync_url: str, alembic_config: Config) -> None:
+    """Fail fast if migrations did not create the expected schema and Alembic head stamp."""
+    expected_app_tables = _metadata_app_table_count()
+    # App tables plus alembic_version
+    min_tables = expected_app_tables + 1
+    table_count = _count_public_tables(sync_url)
+    if table_count < min_tables:
+        raise RuntimeError(
+            f"Migrations did not produce expected schema: public has {table_count} BASE TABLE(s), "
+            f"expected at least {min_tables} (metadata tables + alembic_version)."
+        )
+
+    script_dir = ScriptDirectory.from_config(alembic_config)
+    head = script_dir.get_current_head()
+    if head is None:
+        raise RuntimeError("Alembic script directory has no head revision.")
+
+    engine = sa.create_engine(sync_url)
+    try:
+        with engine.connect() as connection:
+            version_exists = connection.execute(
+                sa.text(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = 'public' AND table_name = 'alembic_version')"
+                )
+            ).scalar()
+            if not version_exists:
+                raise RuntimeError("Table alembic_version is missing after migration.")
+
+            rows = connection.execute(sa.text("SELECT version_num FROM alembic_version")).fetchall()
+            versions = {row[0] for row in rows if row[0] is not None}
+            if head not in versions:
+                raise RuntimeError(
+                    f"alembic_version does not contain current head revision {head!r}; got {sorted(versions)}."
+                )
+    finally:
+        engine.dispose()
+
+
+def _env_flag(name: str) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _heal_stale_alembic_version(sync_url: str, alembic_config: Config) -> None:
+    """Remove an ``alembic_version`` stamp that no longer exists in the script tree.
+
+    When a previous deploy used a longer Alembic revision chain (e.g. ``0017``)
+    and the current tree has been squashed to a single baseline (``0001``),
+    ``alembic upgrade head`` fails with ``ResolutionError`` because Alembic
+    cannot locate the persisted revision. This helper detects that mismatch
+    and clears the ``alembic_version`` table so the squashed baseline can be
+    re-applied (``metadata.create_all`` is idempotent).
+
+    Gated behind ``ALEMBIC_RESET_STALE_VERSION`` to avoid accidental
+    auto-recovery in production environments.
+    """
+    if not _env_flag("ALEMBIC_RESET_STALE_VERSION"):
+        return
+
+    script_dir = ScriptDirectory.from_config(alembic_config)
+    engine = sa.create_engine(sync_url)
+    try:
+        with engine.begin() as connection:
+            table_exists = connection.execute(
+                sa.text(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = 'public' AND table_name = 'alembic_version')"
+                )
+            ).scalar()
+            if not table_exists:
+                return
+
+            rows = connection.execute(
+                sa.text("SELECT version_num FROM alembic_version")
+            ).fetchall()
+            if not rows:
+                return
+
+            stale_versions: list[str] = []
+            for (version_num,) in rows:
+                if version_num is None:
+                    continue
+                try:
+                    script_dir.get_revision(version_num)
+                except (CommandError, KeyError):
+                    stale_versions.append(version_num)
+
+            if not stale_versions:
+                return
+
+            print(
+                "Stale alembic_version detected "
+                f"({', '.join(stale_versions)}); resetting to apply squashed baseline.",
+                flush=True,
+            )
+            connection.execute(sa.text("DELETE FROM alembic_version"))
+    finally:
+        engine.dispose()
+
+
 def run_migrations() -> None:
     sync_url = _build_sync_database_url()
     os.environ["DATABASE_URL"] = sync_url
@@ -191,7 +304,19 @@ def run_migrations() -> None:
 
     alembic_config = Config(str(REPO_ROOT / "alembic.ini"))
     alembic_config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+
+    try:
+        _heal_stale_alembic_version(sync_url, alembic_config)
+    except Exception as exc:  # noqa: BLE001 - best-effort recovery, must not mask real migration errors
+        print(
+            f"Warning: alembic_version self-heal skipped: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
     command.upgrade(alembic_config, "head")
+
+    _verify_migration_outcome(sync_url, alembic_config)
 
     try:
         table_count = _count_public_tables(sync_url)
@@ -293,6 +418,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     try:
+        logging.basicConfig(
+            level=logging.INFO,
+            stream=sys.stdout,
+            format="%(levelname)-5.5s [%(name)s] %(message)s",
+        )
         args = parse_args()
         profile = os.getenv("ENV_PROFILE", "local").strip().lower() or "local"
         print(f"Database bootstrap started for profile={profile}", flush=True)

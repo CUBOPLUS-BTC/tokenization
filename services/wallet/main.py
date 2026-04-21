@@ -49,6 +49,7 @@ from common import (
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
+from common.db.schema_check import ensure_schema_ready
 from services.auth.kyc_db import get_kyc_status, is_kyc_verified
 
 from .db import (
@@ -223,6 +224,17 @@ async def _lifespan(app: FastAPI):
     global _engine
     if _engine is None:
         _engine = engine
+
+    await ensure_schema_ready(
+        engine,
+        (
+            "users",
+            "wallets",
+            "transactions",
+            "token_balances",
+            "nostr_campaigns",
+        ),
+    )
 
     # Start background tasks
     recon_task = asyncio.create_task(reconciliation_loop(engine, settings))

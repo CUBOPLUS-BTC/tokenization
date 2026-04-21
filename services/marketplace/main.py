@@ -49,6 +49,7 @@ from common.db.metadata import wallet_addresses as wallet_addresses_table
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
+from common.db.schema_check import ensure_schema_ready
 from marketplace.escrow import derive_private_key
 from marketplace.db import (
     activate_triggered_orders,
@@ -164,6 +165,18 @@ def _runtime_engine() -> AsyncEngine | object:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     engine = _runtime_engine()
+    await ensure_schema_ready(
+        engine,
+        (
+            "users",
+            "orders",
+            "trades",
+            "escrows",
+            "tokens",
+            "disputes",
+            "wallet_addresses",
+        ),
+    )
     stop_event = asyncio.Event()
     watcher_task: asyncio.Task[None] | None = None
     if _liquid_rpc_client is not None:

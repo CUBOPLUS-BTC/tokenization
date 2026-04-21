@@ -70,6 +70,7 @@ from common.readiness import get_readiness_payload
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
+from common.db.schema_check import ensure_schema_ready
 
 from schemas import (
     ApiKeyCreateRequest,
@@ -187,6 +188,16 @@ async def _lifespan(app: FastAPI):
     global _engine
     async_url = _make_async_url(settings.database_url)
     _engine = create_async_engine(async_url, pool_pre_ping=True)
+    await ensure_schema_ready(
+        _engine,
+        (
+            "users",
+            "api_keys",
+            "refresh_token_sessions",
+            "kyc_verifications",
+            "nostr_identities",
+        ),
+    )
     yield
     await _engine.dispose()
 

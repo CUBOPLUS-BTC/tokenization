@@ -103,8 +103,11 @@ services:
     build:
       context: .
       dockerfile: ./services/migrate/Dockerfile
+    pull_policy: build
     container_name: tokenization-testnet4-migrate
     restart: "no"
+    labels:
+      - "com.tokenization.migrate.role=one-shot"
     env_file:
       - path: ./infra/.env.testnet4.example
         required: false

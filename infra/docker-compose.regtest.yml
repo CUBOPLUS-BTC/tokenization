@@ -122,8 +122,11 @@ services:
     build:
       context: .
       dockerfile: ./services/migrate/Dockerfile
+    pull_policy: build
     container_name: tokenization-regtest-migrate
     restart: "no"
+    labels:
+      - "com.tokenization.migrate.role=one-shot"
     env_file:
       - path: ./infra/.env.regtest
         required: false

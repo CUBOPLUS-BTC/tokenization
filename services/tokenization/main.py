@@ -36,6 +36,7 @@ from common import (
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
+from common.db.schema_check import ensure_schema_ready
 from tokenization.db import (
     begin_asset_evaluation,
     complete_asset_evaluation,
@@ -122,6 +123,7 @@ def _runtime_engine() -> AsyncEngine | object:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     engine = _runtime_engine()
+    await ensure_schema_ready(engine, ("users", "assets", "tokens"))
     yield
     tasks = tuple(_background_tasks)
     for task in tasks:

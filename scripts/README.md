@@ -69,6 +69,36 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
+### Docker Compose: `migrate` sidecar
+
+Stack compose files run a one-shot **`migrate`** container (`services/migrate/Dockerfile`) that executes `scripts/db_bootstrap.py --migrate-only`. If you wipe the Postgres volume but an old **`migrate`** container is still in “exited successfully” state, Compose may not re-run migrations; app services can then start against an empty database.
+
+**Recommended:** rebuild and re-run migrations before the rest of the stack:
+
+```powershell
+# Windows (default: infra/docker-compose.local.yml)
+.\scripts\compose-up.ps1
+# Optional: other compose file
+.\scripts\compose-up.ps1 -ComposeFile infra/docker-compose.regtest.yml
+```
+
+```bash
+# Unix (default: infra/docker-compose.local.yml)
+chmod +x scripts/compose-up.sh
+./scripts/compose-up.sh
+# Optional: other compose file
+./scripts/compose-up.sh infra/docker-compose.regtest.yml
+```
+
+Equivalent manual steps:
+
+```bash
+docker compose -f infra/docker-compose.local.yml up -d --force-recreate --build migrate
+docker compose -f infra/docker-compose.local.yml up -d
+```
+
+**Manual validation:** after `up`, confirm tables exist, e.g. `docker exec <postgres-container> psql -U <user> -d <db> -c "\dt"`.
+
 ### Schema smoke test (PostgreSQL required)
 
 `tests/test_migrations_schema.py` resets the `public` schema and runs `alembic upgrade head`. Set `DATABASE_URL` (e.g. `postgresql+pg8000://user:pass@localhost:5432/dbname`):

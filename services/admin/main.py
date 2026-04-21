@@ -37,6 +37,7 @@ from common import (
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
+from common.db.schema_check import ensure_schema_ready
 from admin.db import (
     disburse_treasury,
     get_dispute_by_trade_id,
@@ -145,9 +146,19 @@ def _runtime_engine() -> AsyncEngine | object:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    _runtime_engine()
+    engine = _runtime_engine()
+    await ensure_schema_ready(
+        engine,
+        (
+            "users",
+            "treasury",
+            "disputes",
+            "referral_rewards",
+            "yield_accruals",
+        ),
+    )
     yield
-    await _runtime_engine().dispose()
+    await engine.dispose()
 
 
 def _error(code: str, message: str, status_code: int) -> JSONResponse:

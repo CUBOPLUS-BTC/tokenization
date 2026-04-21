@@ -7,9 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY scripts/requirements-migrations.txt /tmp/requirements-migrations.txt
-COPY services/auth/requirements.txt /tmp/requirements-auth.txt
-RUN pip install -r /tmp/requirements-migrations.txt -r /tmp/requirements-auth.txt
+COPY scripts/requirements-bootstrap.txt /tmp/requirements-bootstrap.txt
+RUN pip install -r /tmp/requirements-migrations.txt -r /tmp/requirements-bootstrap.txt
 
 COPY . /app
 
-CMD ["python", "scripts/db_bootstrap.py", "--migrate-only"]
+CMD ["python", "-u", "scripts/db_bootstrap.py", "--migrate-only"]

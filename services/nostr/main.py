@@ -31,6 +31,7 @@ from common import (
 )
 from common.alerting import configure_alerting
 from common.metrics import mount_metrics_endpoint, record_business_event
+from common.db.schema_check import ensure_schema_ready
 from nostr.db import (
     create_campaign,
     get_db_conn,
@@ -239,6 +240,17 @@ async def _lifespan(app: FastAPI):
     relay_statuses = await connector.probe_relays()
     logger.info("Nostr relay connectivity probe completed", extra={"relays": relay_statuses})
     engine = get_engine()
+    await ensure_schema_ready(
+        engine,
+        (
+            "nostr_identities",
+            "nostr_campaigns",
+            "nostr_campaign_triggers",
+            "nostr_campaign_fundings",
+            "nostr_campaign_matches",
+            "nostr_campaign_payouts",
+        ),
+    )
 
     stop_event = asyncio.Event()
     worker = asyncio.create_task(_pump_events_to_relays(stop_event, connector))
