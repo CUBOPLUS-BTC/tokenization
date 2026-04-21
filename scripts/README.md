@@ -69,7 +69,7 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
-### Bootstrap migrations + seeders in Docker
+### Bootstrap migrations + seeders manually
 
 The repository now includes `scripts/db_bootstrap.py`, which runs:
 
@@ -80,19 +80,23 @@ Current seeded data:
 
 - Initial admin user from `INITIAL_ADMIN_*` environment variables
 
-Run it inside Docker Compose:
+Recommended runner:
 
 ```bash
-docker compose --project-directory . -f infra/docker-compose.local.yml run --rm db-bootstrap
-docker compose --project-directory . -f infra/docker-compose.public-beta.yml run --rm db-bootstrap
+python scripts/run_db_bootstrap.py --profile local
+python scripts/run_db_bootstrap.py --profile regtest
+python scripts/run_db_bootstrap.py --profile public-beta
+python scripts/run_db_bootstrap.py --profile testnet4
 ```
 
 Optional modes:
 
 ```bash
-python scripts/db_bootstrap.py --migrate-only
-python scripts/db_bootstrap.py --seed-only
+python scripts/run_db_bootstrap.py --profile local --migrate-only
+python scripts/run_db_bootstrap.py --profile local --seed-only
 ```
+
+The runner starts a standalone `python:3.11-slim` container on the same Docker network as the selected profile, loads the matching env file, installs migration dependencies, and executes `scripts/db_bootstrap.py`. This keeps bootstrap out of `docker compose up` while preserving service-name DNS such as `postgres`.
 
 ### Validate on a clean local database (zero -> head)
 

@@ -33,25 +33,6 @@ services:
     networks:
       - platform
 
-  db-bootstrap:
-    image: python:3.11-slim
-    container_name: tokenization-db-bootstrap
-    restart: "no"
-    working_dir: /app
-    command: >
-      sh -c "pip install --no-cache-dir -r scripts/requirements-migrations.txt -r services/auth/requirements.txt &&
-      python scripts/db_bootstrap.py"
-    env_file:
-      - path: ./infra/.env.local
-        required: false
-    volumes:
-      - ./:/app
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - platform
-
   wallet:
     image: python:3.11-slim
     container_name: tokenization-wallet
@@ -71,8 +52,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      db-bootstrap:
-        condition: service_completed_successfully
       bitcoind:
         condition: service_healthy
       lnd:
@@ -100,8 +79,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      db-bootstrap:
-        condition: service_completed_successfully
     networks:
       - platform
 
@@ -123,8 +100,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      db-bootstrap:
-        condition: service_completed_successfully
       elementsd:
         condition: service_healthy
     networks:
@@ -148,8 +123,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      db-bootstrap:
-        condition: service_completed_successfully
     networks:
       - platform
 
@@ -171,8 +144,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      db-bootstrap:
-        condition: service_completed_successfully
     networks:
       - platform
 
@@ -194,8 +165,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      db-bootstrap:
-        condition: service_completed_successfully
     networks:
       - platform
 

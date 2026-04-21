@@ -28,6 +28,8 @@ By default, the local profile now launches a real regtest stack for PostgreSQL, 
 Run from repository root:
 
 ```bash
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d postgres redis bitcoind lnd elementsd
+python scripts/run_db_bootstrap.py --profile local
 docker compose --project-directory . -f infra/docker-compose.local.yml up -d
 ```
 
@@ -40,6 +42,8 @@ This starts:
 - `elementsd` on `localhost:7041`
 - `wallet`, `tokenization`, `marketplace`, `nostr`, `admin`
 - `gateway` on `localhost:8000`
+
+`db-bootstrap` no longer runs automatically as part of Compose startup. Migrations and the optional initial admin seeder are now executed manually with `python scripts/run_db_bootstrap.py --profile <profile>`.
 
 Stop and clean up:
 
@@ -147,8 +151,10 @@ The beta environment is intended for external validation on Bitcoin `signet`.
 
 1. Copy `infra/.env.beta.example` to `infra/.env.beta`.
 2. Wire the `*_FILE` secrets and signet infrastructure endpoints.
-3. Start the stack with `docker compose --project-directory . -f infra/docker-compose.public-beta.yml up -d`.
-4. Follow [deploy/public-beta/README.md](../deploy/public-beta/README.md) before exposing the environment.
+3. Start the shared dependencies with `docker compose --project-directory . -f infra/docker-compose.public-beta.yml up -d postgres redis`.
+4. Run `python scripts/run_db_bootstrap.py --profile public-beta`.
+5. Start the application stack with `docker compose --project-directory . -f infra/docker-compose.public-beta.yml up -d`.
+6. Follow [deploy/public-beta/README.md](../deploy/public-beta/README.md) before exposing the environment.
 
 ## Observability
 

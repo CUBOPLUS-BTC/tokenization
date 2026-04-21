@@ -37,6 +37,8 @@ The complete design is documented in [specs/](specs), including architecture, AP
 The local profile now boots the full platform stack, including Bitcoin Core on `regtest`, LND wired to `bitcoind` over RPC + ZMQ, and an `elementsregtest` node wired back to the same Bitcoin node for Liquid-style RPC flows:
 
 ```bash
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d postgres redis bitcoind lnd elementsd
+python scripts/run_db_bootstrap.py --profile local
 docker compose --project-directory . -f infra/docker-compose.local.yml up -d
 ```
 
