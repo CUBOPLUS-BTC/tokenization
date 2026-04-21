@@ -33,6 +33,84 @@ services:
     networks:
       - testnet4
 
+  bitcoind:
+    image: lncm/bitcoind:v28.0
+    container_name: tokenization-testnet4-bitcoind
+    user: "0:0"
+    command:
+      - -datadir=/data/.bitcoin
+      - -printtoconsole
+    restart: unless-stopped
+    volumes:
+      - ./infra/bitcoin/bitcoin.testnet4.conf:/data/.bitcoin/bitcoin.conf:ro
+      - testnet4_bitcoin_data:/data/.bitcoin
+    ports:
+      - "48332:48332"
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-testnet4", "-rpcuser=testnet4_rpc", "-rpcpassword=testnet4_rpc_password", "getblockchaininfo"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    networks:
+      - testnet4
+
+  lnd:
+    image: lightninglabs/lnd:v0.20.0-beta
+    container_name: tokenization-testnet4-lnd
+    restart: unless-stopped
+    command:
+      - --lnddir=/data/lnd
+      - --configfile=/etc/lnd/lnd.conf
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    volumes:
+      - ./infra/lnd/lnd.testnet4.conf:/etc/lnd/lnd.conf:ro
+      - testnet4_lnd_data:/data/lnd
+    ports:
+      - "11009:10009"
+      - "19735:9735"
+    healthcheck:
+      test: ["CMD", "lncli", "--network=testnet", "--rpcserver=localhost:10009", "--tlscertpath=/data/lnd/tls.cert", "--macaroonpath=/data/lnd/data/chain/bitcoin/testnet/admin.macaroon", "getinfo"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    networks:
+      - testnet4
+
+  elementsd:
+    build:
+      context: ./infra/elements
+      dockerfile: Dockerfile
+    container_name: tokenization-testnet4-elementsd
+    restart: unless-stopped
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    environment:
+      ELEMENTS_CONF_FILE: /etc/elements/elements.conf
+      ELEMENTS_DATA_DIR: /data/elements
+      ELEMENTS_NETWORK: liquidtestnet
+      ELEMENTS_RPC_USER: user
+      ELEMENTS_RPC_PASSWORD: pass
+      ELEMENTS_RPC_PORT: "7041"
+      ELEMENTS_WALLET_NAME: platform
+    volumes:
+      - ./infra/elements/elements.testnet4.conf:/etc/elements/elements.conf:ro
+      - testnet4_elements_data:/data/elements
+    ports:
+      - "17041:7041"
+    healthcheck:
+      test: ["CMD", "elements-cli", "-chain=liquidtestnet", "-rpcuser=user", "-rpcpassword=pass", "-rpcport=7041", "-rpcwallet=platform", "getwalletinfo"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 25s
+    networks:
+      - testnet4
+
   wallet:
     image: python:3.11-slim
     container_name: tokenization-testnet4-wallet
@@ -165,84 +243,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    networks:
-      - testnet4
-
-  bitcoind:
-    image: lncm/bitcoind:v28.0
-    container_name: tokenization-testnet4-bitcoind
-    user: "0:0"
-    command:
-      - -datadir=/data/.bitcoin
-      - -printtoconsole
-    restart: unless-stopped
-    volumes:
-      - ./infra/bitcoin/bitcoin.testnet4.conf:/data/.bitcoin/bitcoin.conf:ro
-      - testnet4_bitcoin_data:/data/.bitcoin
-    ports:
-      - "48332:48332"
-    healthcheck:
-      test: ["CMD", "bitcoin-cli", "-testnet4", "-rpcuser=testnet4_rpc", "-rpcpassword=testnet4_rpc_password", "getblockchaininfo"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 10s
-    networks:
-      - testnet4
-
-  lnd:
-    image: lightninglabs/lnd:v0.20.0-beta
-    container_name: tokenization-testnet4-lnd
-    restart: unless-stopped
-    command:
-      - --lnddir=/data/lnd
-      - --configfile=/etc/lnd/lnd.conf
-    depends_on:
-      bitcoind:
-        condition: service_healthy
-    volumes:
-      - ./infra/lnd/lnd.testnet4.conf:/etc/lnd/lnd.conf:ro
-      - testnet4_lnd_data:/data/lnd
-    ports:
-      - "11009:10009"
-      - "19735:9735"
-    healthcheck:
-      test: ["CMD", "lncli", "--network=testnet", "--rpcserver=localhost:10009", "--tlscertpath=/data/lnd/tls.cert", "--macaroonpath=/data/lnd/data/chain/bitcoin/testnet/admin.macaroon", "getinfo"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 20s
-    networks:
-      - testnet4
-
-  elementsd:
-    build:
-      context: ./infra/elements
-      dockerfile: Dockerfile
-    container_name: tokenization-testnet4-elementsd
-    restart: unless-stopped
-    depends_on:
-      bitcoind:
-        condition: service_healthy
-    environment:
-      ELEMENTS_CONF_FILE: /etc/elements/elements.conf
-      ELEMENTS_DATA_DIR: /data/elements
-      ELEMENTS_NETWORK: liquidtestnet
-      ELEMENTS_RPC_USER: user
-      ELEMENTS_RPC_PASSWORD: pass
-      ELEMENTS_RPC_PORT: "7041"
-      ELEMENTS_WALLET_NAME: platform
-    volumes:
-      - ./infra/elements/elements.testnet4.conf:/etc/elements/elements.conf:ro
-      - testnet4_elements_data:/data/elements
-    ports:
-      - "17041:7041"
-    healthcheck:
-      test: ["CMD", "elements-cli", "-chain=liquidtestnet", "-rpcuser=user", "-rpcpassword=pass", "-rpcport=7041", "-rpcwallet=platform", "getwalletinfo"]
-      interval: 15s
-      timeout: 10s
-      retries: 10
-      start_period: 25s
     networks:
       - testnet4
 
