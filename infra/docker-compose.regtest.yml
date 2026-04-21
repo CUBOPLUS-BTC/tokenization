@@ -148,9 +148,6 @@ services:
       dockerfile: ./services/migrate/Dockerfile
     container_name: tokenization-migrate
     restart: "no"
-    env_file:
-      - path: ./infra/.env.regtest
-        required: false
     depends_on:
       postgres:
         condition: service_healthy
