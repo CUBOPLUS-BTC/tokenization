@@ -25,6 +25,19 @@ cp infra/.env.local.example infra/.env.local
 
 By default, the local profile now launches a real regtest stack for PostgreSQL, Redis, Bitcoin Core, LND, and Elements. `LND_GRPC_REQUIRED=true` and `ELEMENTS_RPC_REQUIRED=true` in `infra/.env.local.example`, so local readiness only turns green when Lightning and Liquid dependencies are actually up.
 
+## Dedicated regtest profile
+
+Use this when you need a regtest stack that is isolated from `infra/.env.local`:
+
+```bash
+cp infra/.env.regtest.example infra/.env.regtest
+docker compose --project-directory . -f infra/docker-compose.regtest.yml up -d postgres redis bitcoind lnd elementsd
+python scripts/run_db_bootstrap.py --profile regtest
+docker compose --project-directory . -f infra/docker-compose.regtest.yml up -d
+```
+
+`infra/docker-compose.regtest.yml` reads `infra/.env.regtest`, so it no longer depends on `infra/.env.local`.
+
 Run from repository root:
 
 ```bash
@@ -138,7 +151,7 @@ All Python services use the shared settings loader in `services/common/config.py
 
 ### Environment profile selection
 
-- Set `ENV_PROFILE` to `local`, `staging`, `beta`, or `production`.
+- Set `ENV_PROFILE` to `local`, `regtest`, `staging`, `beta`, or `production`.
 - The loader reads, in order (when present):
     1. `.env`
     2. `infra/.env`

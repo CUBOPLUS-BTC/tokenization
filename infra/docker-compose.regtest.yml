@@ -6,7 +6,7 @@ services:
     container_name: tokenization-postgres
     restart: unless-stopped
     env_file:
-      - path: ./infra/.env.local
+      - path: ./infra/.env.regtest
         required: false
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -42,7 +42,7 @@ services:
       sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn services.wallet.main:app --host 0.0.0.0 --port 8001"
     env_file:
-      - path: ./infra/.env.local
+      - path: ./infra/.env.regtest
         required: false
     volumes:
       - ./:/app
@@ -70,7 +70,7 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8000"
     env_file:
-      - path: ./infra/.env.local
+      - path: ./infra/.env.regtest
         required: false
     volumes:
       - ./:/app
@@ -91,7 +91,7 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8002"
     env_file:
-      - path: ./infra/.env.local
+      - path: ./infra/.env.regtest
         required: false
     volumes:
       - ./:/app
@@ -114,7 +114,7 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8003"
     env_file:
-      - path: ./infra/.env.local
+      - path: ./infra/.env.regtest
         required: false
     volumes:
       - ./:/app
@@ -135,7 +135,7 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8005"
     env_file:
-      - path: ./infra/.env.local
+      - path: ./infra/.env.regtest
         required: false
     volumes:
       - ./:/app
@@ -156,7 +156,7 @@ services:
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8006"
     env_file:
-      - path: ./infra/.env.local
+      - path: ./infra/.env.regtest
         required: false
     volumes:
       - ./:/app

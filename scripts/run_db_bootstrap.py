@@ -14,7 +14,7 @@ PROFILE_CONFIG = {
         "network": "tokenization-local_platform",
     },
     "regtest": {
-        "env_file": REPO_ROOT / "infra" / ".env.local",
+        "env_file": REPO_ROOT / "infra" / ".env.regtest",
         "network": "tokenization-regtest_platform",
     },
     "public-beta": {

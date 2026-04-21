@@ -89,6 +89,8 @@ python scripts/run_db_bootstrap.py --profile public-beta
 python scripts/run_db_bootstrap.py --profile testnet4
 ```
 
+For `--profile regtest`, the runner reads `infra/.env.regtest`.
+
 Optional modes:
 
 ```bash

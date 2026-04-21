@@ -34,10 +34,18 @@ def test_bitcoin_local_config_exposes_zmq_for_lnd():
 def test_regtest_compose_uses_infra_relative_paths():
     content = (REPO_ROOT / "infra" / "docker-compose.regtest.yml").read_text(encoding="utf-8")
 
-    assert "./.env.local" in content
-    assert "../:/app" in content
-    assert "./bitcoin/bitcoin.conf" in content
-    assert "../services/gateway" in content
+    assert "./infra/.env.regtest" in content
+    assert "./infra/bitcoin/bitcoin.conf" in content
+    assert "./services/gateway" in content
+
+
+def test_regtest_environment_template_is_dedicated():
+    content = (REPO_ROOT / "infra" / ".env.regtest.example").read_text(encoding="utf-8")
+
+    assert "ENV_PROFILE=regtest" in content
+    assert "BITCOIN_NETWORK=regtest" in content
+    assert "ELEMENTS_NETWORK=elementsregtest" in content
+    assert "LND_MACAROON_PATH=/run/secrets/lnd/data/chain/bitcoin/regtest/admin.macaroon" in content
 
 
 def test_testnet4_stack_template_and_compose_exist():

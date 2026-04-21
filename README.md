@@ -59,8 +59,8 @@ docker compose --project-directory . -f infra/docker-compose.local.yml down
 
 Python services share a centralized settings module at `services/common/config.py`.
 
-- Supported profiles: `local`, `staging`, `beta`, `production` (`ENV_PROFILE`)
-- Profile templates: `infra/.env.local.example`, `infra/.env.staging.example`, `infra/.env.beta.example`, `infra/.env.production.example`
+- Supported profiles: `local`, `regtest`, `staging`, `beta`, `production` (`ENV_PROFILE`)
+- Profile templates: `infra/.env.local.example`, `infra/.env.regtest.example`, `infra/.env.staging.example`, `infra/.env.beta.example`, `infra/.env.production.example`
 - Secret convention: use either `VAR` or `VAR_FILE` (file path), with `VAR_FILE` taking precedence
 
 Create a runtime local profile before running Docker Compose:
@@ -72,6 +72,8 @@ cp infra/.env.local.example infra/.env.local
 For local Docker Compose, defaults in `infra/.env.local` target internal service names (`postgres`, `redis`, and service hostnames) so all services can connect through shared configuration.
 
 The local template now treats Lightning and Elements as required dependencies, matching the real stack that `infra/docker-compose.local.yml` launches by default.
+
+If you want an isolated regtest stack, copy `infra/.env.regtest.example` to `infra/.env.regtest` and use `infra/docker-compose.regtest.yml`. That profile no longer depends on `infra/.env.local`.
 
 Do not commit real `.env` files or plaintext secrets.
 

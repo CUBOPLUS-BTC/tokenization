@@ -20,7 +20,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    env_profile: Literal["local", "staging", "beta", "production"] = "local"
+    env_profile: Literal["local", "regtest", "staging", "beta", "production"] = "local"
 
     service_name: str
     service_host: str = "0.0.0.0"
@@ -111,13 +111,13 @@ class Settings(BaseSettings):
     def resolved_elements_rpc_required(self) -> bool:
         if self.elements_rpc_required is not None:
             return self.elements_rpc_required
-        return self.env_profile != "local"
+        return self.env_profile not in {"local", "regtest"}
 
     @property
     def resolved_lnd_grpc_required(self) -> bool:
         if self.lnd_grpc_required is not None:
             return self.lnd_grpc_required
-        return self.env_profile != "local"
+        return self.env_profile not in {"local", "regtest"}
 
     @staticmethod
     def _resolve_secret(secret_value: str | None, file_path: str | None) -> str | None:
@@ -189,7 +189,7 @@ def _repo_root() -> Path:
 
 def _infer_env_profile() -> str:
     profile = os.getenv("ENV_PROFILE", "local").strip().lower()
-    return profile if profile in {"local", "staging", "beta", "production"} else "local"
+    return profile if profile in {"local", "regtest", "staging", "beta", "production"} else "local"
 
 
 def _env_files_for_profile(profile: str) -> list[Path]:
