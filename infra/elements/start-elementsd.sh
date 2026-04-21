@@ -25,7 +25,19 @@ trap shutdown INT TERM
 
 mkdir -p "${DATA_DIR}"
 
-elementsd -datadir="${DATA_DIR}" -conf="${CONF_FILE}" -printtoconsole &
+elementsd \
+  -chain="${NETWORK}" \
+  -datadir="${DATA_DIR}" \
+  -conf="${CONF_FILE}" \
+  -rpcuser="${RPC_USER}" \
+  -rpcpassword="${RPC_PASSWORD}" \
+  -rpcport="${RPC_PORT}" \
+  -validatepegin=0 \
+  -mainchainrpchost=bitcoind \
+  -mainchainrpcport=18443 \
+  -mainchainrpcuser=local_rpc \
+  -mainchainrpcpassword=local_rpc_password \
+  -printtoconsole &
 ELEMENTS_PID=$!
 
 until cli getblockchaininfo >/dev/null 2>&1; do
