@@ -50,7 +50,7 @@ services:
       - -rpcpassword=local_rpc_password
     restart: unless-stopped
     volumes:
-      - ./bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
+      - ./infra/bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
       - bitcoin_data:/data/.bitcoin
     ports:
       - "18444:18444"
@@ -69,7 +69,7 @@ services:
       start_period: 45s
     networks:
       - platform
-      
+
   lnd:
     image: lightninglabs/lnd:v0.20.0-beta
     container_name: tokenization-lnd
@@ -89,7 +89,7 @@ services:
       bitcoind:
         condition: service_healthy
     volumes:
-      - ./lnd/lnd.conf:/etc/lnd/lnd.conf:ro
+      - ./infra/lnd/lnd.conf:/etc/lnd/lnd.conf:ro
       - lnd_data:/data/lnd
     ports:
       - "10009:10009"
@@ -109,7 +109,7 @@ services:
 
   elementsd:
     build:
-      context: ./elements
+      context: ./infra/elements
       dockerfile: Dockerfile
     container_name: tokenization-elementsd
     restart: unless-stopped
@@ -125,7 +125,7 @@ services:
       ELEMENTS_RPC_PORT: "7041"
       ELEMENTS_WALLET_NAME: platform
     volumes:
-      - ./elements/elements.conf:/etc/elements/elements.conf:ro
+      - ./infra/elements/elements.conf:/etc/elements/elements.conf:ro
       - elements_data:/data/elements
     ports:
       - "7041:7041"
@@ -151,7 +151,7 @@ services:
       sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8000"
     volumes:
-      - ../services/auth:/app
+      - ./services/auth:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -169,7 +169,7 @@ services:
       sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8001"
     volumes:
-      - ../services/wallet:/app
+      - ./services/wallet:/app
       - lnd_data:/run/secrets/lnd:ro
     depends_on:
       postgres:
@@ -194,7 +194,7 @@ services:
       sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8002"
     volumes:
-      - ../services/tokenization:/app
+      - ./services/tokenization:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -214,7 +214,7 @@ services:
       sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8003"
     volumes:
-      - ../services/marketplace:/app
+      - ./services/marketplace:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -232,7 +232,7 @@ services:
       sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8005"
     volumes:
-      - ../services/nostr:/app
+      - ./services/nostr:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -250,7 +250,7 @@ services:
       sh -c "pip install --no-cache-dir -r /app/requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8006"
     volumes:
-      - ../services/admin:/app
+      - ./services/admin:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -261,7 +261,7 @@ services:
 
   gateway:
     build:
-      context: ../services/gateway
+      context: ./services/gateway
       dockerfile: Dockerfile
     container_name: tokenization-gateway
     restart: unless-stopped
@@ -285,5 +285,3 @@ volumes:
 networks:
   platform:
     driver: bridge
-
-
