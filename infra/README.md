@@ -15,6 +15,20 @@ Docker Compose files, Nginx/Traefik configuration, and environment templates.
 - `.env.beta.example` — Public beta profile
 - `.env.production.example` — Production profile
 
+## Database migrations (Alembic)
+
+The canonical schema lives in `services/common/db/metadata.py`. Migrations live under `alembic/versions/`; the baseline is a **squashed** `0001_initial_schema` that runs `metadata.create_all()`.
+
+If you already had a database created with the **old** multi-revision chain, you must reset before applying the new history:
+
+```bash
+# Against a dev database (destructive)
+docker compose --project-directory . -f infra/docker-compose.local.yml exec postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+alembic upgrade head
+# Or remove the Postgres volume and recreate: docker compose ... down -v
+```
+
 ## Invoking Compose (always from repository root)
 
 Use a single pattern so volume paths and `build.context` resolve correctly:

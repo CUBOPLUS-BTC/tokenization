@@ -379,7 +379,8 @@ def _asset_token_out(row: object) -> AssetTokenOut | None:
 
     minted_at = _aware_datetime(_optional_row_value(row, "minted_at"))
     assert minted_at is not None
-    liquid_asset_id = _row_value(row, "liquid_asset_id") or _row_value(row, "taproot_asset_id")
+    liquid_asset_id = _optional_row_value(row, "liquid_asset_id") or _optional_row_value(row, "taproot_asset_id")
+    assert liquid_asset_id is not None
 
     return AssetTokenOut(
         id=str(token_id),
@@ -677,15 +678,6 @@ def _require_roles(*allowed_roles: str, api_key_scopes: tuple[str, ...] = ()):
 
 app = FastAPI(title="Tokenization Service", lifespan=_lifespan)
 
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 install_http_security(
     app,
     settings,

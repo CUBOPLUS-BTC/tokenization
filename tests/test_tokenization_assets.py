@@ -606,6 +606,43 @@ class TestTokenizeAsset:
             },
         )
 
+    def test_tokenize_response_falls_back_to_legacy_taproot_asset_id(self, client):
+        app_client, settings = client
+        fake_user = _make_fake_user(role="seller")
+        approved_asset = _make_fake_asset(fake_user.id, status="approved")
+        legacy_asset_id = "ab" * 32
+        minted_at = datetime.now(tz=timezone.utc)
+        tokenized_asset = approved_asset._replace(
+            status="tokenized",
+            token_id=uuid.uuid4(),
+            liquid_asset_id=None,
+            taproot_asset_id=legacy_asset_id,
+            total_supply=1_000,
+            circulating_supply=1_000,
+            unit_price_sat=100_000,
+            minted_at=minted_at,
+        )
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+
+        with (
+            patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=approved_asset)),
+            patch("services.tokenization.main.create_asset_token", AsyncMock(return_value=tokenized_asset)),
+            patch("services.tokenization.main.record_audit_event", AsyncMock()),
+        ):
+            response = app_client.post(
+                f"/assets/{approved_asset.id}/tokenize",
+                headers=_auth_headers(access_token),
+                json={
+                    "taproot_asset_id": legacy_asset_id,
+                    "total_supply": 1_000,
+                    "unit_price_sat": 100_000,
+                },
+            )
+
+        assert response.status_code == 201
+        assert response.json()["asset"]["token"]["liquid_asset_id"] == legacy_asset_id
+
     def test_tokenization_emits_token_minted_event(self, client):
         app_client, settings = client
         import services.tokenization.main as tokenization_main

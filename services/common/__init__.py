@@ -47,7 +47,7 @@ from .incentives import (
 from .events import InternalEventBus, RedisStreamMirror
 from .realtime import RedisStreamFeed, StreamEvent, decode_resume_token, encode_resume_token
 from .readiness import get_readiness_payload
-from .security import configure_logging, install_http_security
+from .security import configure_logging, install_cors_middleware, install_http_security
 from .logging import JSONFormatter, configure_structured_logging
 from .metrics import MetricsCollector, metrics, mount_metrics_endpoint, record_business_event
 from .alerting import (
@@ -89,6 +89,7 @@ __all__ = [
     "decode_resume_token",
     "encode_resume_token",
     "configure_logging",
+    "install_cors_middleware",
     "install_http_security",
     "record_audit_event",
     "ALL_API_KEY_SCOPES",

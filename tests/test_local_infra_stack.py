@@ -20,7 +20,7 @@ def test_local_compose_includes_real_lnd_and_elements_services():
     assert "  lnd:" in content
     assert "lightninglabs/lnd:v0.20.0-beta" in content
     assert "  elementsd:" in content
-    assert "tokenization-elementsd" in content
+    assert "tokenization-local-elementsd" in content
     assert "lnd_data:/run/secrets/lnd:ro" in content
 
 
@@ -34,10 +34,10 @@ def test_bitcoin_local_config_exposes_zmq_for_lnd():
 def test_regtest_compose_uses_infra_relative_paths():
     content = (REPO_ROOT / "infra" / "docker-compose.regtest.yml").read_text(encoding="utf-8")
 
-    assert "./.env.regtest" in content
-    assert "./bitcoin/bitcoin.conf" in content
-    assert "../services/gateway" in content
-    assert "../:/app" in content
+    assert "./infra/.env.regtest" in content
+    assert "./infra/bitcoin/bitcoin.conf" in content
+    assert "context: ./services/gateway" in content
+    assert "../:/app" not in content
 
 
 def test_regtest_environment_template_is_dedicated():

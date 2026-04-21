@@ -519,7 +519,12 @@ def test_admin_can_resolve_dispute(client):
     ):
         response = app_client.post(
             f"/escrows/{dispute.trade_id}/resolve",
-            json={"resolution": "refund_buyer", "notes": "Seller failed to deliver."},
+            json={
+                "resolution": "refund_buyer",
+                "notes": "Seller failed to deliver.",
+                "resolution_txid": "a" * 64,
+                "collected_signatures": {},
+            },
             headers=_auth(token),
         )
 
@@ -540,7 +545,12 @@ def test_resolve_dispute_not_found(client):
     ):
         response = app_client.post(
             f"/escrows/{uuid.uuid4()}/resolve",
-            json={"resolution": "refund_buyer", "notes": "test"},
+            json={
+                "resolution": "refund_buyer",
+                "notes": "test",
+                "resolution_txid": "b" * 64,
+                "collected_signatures": {},
+            },
             headers=_auth(token),
         )
 
@@ -555,7 +565,12 @@ def test_non_admin_cannot_resolve_dispute(client):
     with patch("services.admin.main.get_user_by_id", AsyncMock(return_value=regular)):
         response = app_client.post(
             f"/escrows/{uuid.uuid4()}/resolve",
-            json={"resolution": "refund_buyer", "notes": "test"},
+            json={
+                "resolution": "refund_buyer",
+                "notes": "test",
+                "resolution_txid": "c" * 64,
+                "collected_signatures": {},
+            },
             headers=_auth(token),
         )
 

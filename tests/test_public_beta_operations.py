@@ -13,13 +13,14 @@ def test_beta_environment_template_targets_signet():
 
 
 def test_public_beta_compose_includes_observability_stack():
-    content = (REPO_ROOT / "infra" / "docker-compose.public-beta.yml").read_text(encoding="utf-8")
+    beta_content = (REPO_ROOT / "infra" / "docker-compose.public-beta.yml").read_text(encoding="utf-8")
+    observability_content = (REPO_ROOT / "infra" / "docker-compose.observability.yml").read_text(encoding="utf-8")
 
-    assert "docker-compose.observability.yml" in content
-    assert "./.env.beta" in content
-    assert "prometheus:" in content
-    assert "grafana:" in content
-    assert "alertmanager:" in content
+    assert "./infra/.env.beta" in beta_content
+    assert "gateway:" in beta_content
+    assert "prometheus:" in observability_content
+    assert "grafana:" in observability_content
+    assert "alertmanager:" in observability_content
 
 
 def test_gateway_exposes_metrics_for_all_services():

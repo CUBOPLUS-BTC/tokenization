@@ -146,6 +146,8 @@ def test_users_schema_matches_spec(inspector: sa.Inspector) -> None:
     assert columns["display_name"]["nullable"] is False
     assert columns["role"]["nullable"] is False
     assert columns["role"]["default"] is not None
+    assert "backup_codes" in columns
+    assert columns["backup_codes"]["nullable"] is True
     assert columns["is_verified"]["default"] is not None
     assert columns["referrer_id"]["nullable"] is True
     assert columns["referral_code"]["nullable"] is False

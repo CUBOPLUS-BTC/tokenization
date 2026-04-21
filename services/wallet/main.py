@@ -247,15 +247,6 @@ async def _noop_lifespan(app: FastAPI):
 
 app = FastAPI(title="Wallet Service", lifespan=_lifespan)
 
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 install_http_security(
     app,
     settings,
@@ -744,7 +735,6 @@ async def get_wallet_summary(
             token_id=_row_value(row, "token_id"),
             liquid_asset_id=(
                 _row_value(row, "liquid_asset_id")
-                or _row_value(row, "taproot_asset_id")
                 or str(_row_value(row, "token_id"))
             ),
             asset_name=_row_value(row, "asset_name"),
@@ -1343,7 +1333,22 @@ async def pay_invoice(
                 tags={"user_id": user_id},
             )
 
-        amount_sat = resp.payment_route.total_amt if resp.payment_route else 0
+        amount_sat = int(resp.payment_route.total_amt if resp.payment_route else 0)
+        if amount_sat < 1:
+            if resp.payment_error:
+                # Cannot persist: transactions.amount_sat CHECK requires amount_sat > 0
+                return Payment(
+                    payment_hash=resp.payment_hash.hex(),
+                    payment_preimage=None,
+                    status=payment_status,
+                    fee_sats=int(resp.payment_route.total_fees if resp.payment_route else 0),
+                    failure_reason=failure_reason,
+                    created_at=datetime.now(timezone.utc),
+                )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Lightning payment requires a positive amount (missing payment route).",
+            )
 
         await create_transaction(
             conn,
@@ -1354,7 +1359,7 @@ async def pay_invoice(
             status=db_status,
             ln_payment_hash=resp.payment_hash.hex(),
             description=f"Payment to {req.payment_request[:20]}...",
-            fee_sat=resp.payment_route.total_fees if resp.payment_route else 0,
+            fee_sat=int(resp.payment_route.total_fees if resp.payment_route else 0),
         )
         await sync_wallet_lightning_state(conn, str(_row_value(wallet, "id")), lnd_client)
         await record_audit_event(
@@ -1378,7 +1383,7 @@ async def pay_invoice(
             payment_hash=resp.payment_hash.hex(),
             payment_preimage=resp.payment_preimage.hex() if not resp.payment_error else None,
             status=payment_status,
-            fee_sats=resp.payment_route.total_fees if resp.payment_route else 0,
+            fee_sats=int(resp.payment_route.total_fees if resp.payment_route else 0),
             failure_reason=failure_reason,
             created_at=datetime.now(timezone.utc),
         )

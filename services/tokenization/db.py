@@ -192,8 +192,7 @@ async def create_asset_token(
     *,
     asset_id: str | uuid.UUID,
     owner_id: str | uuid.UUID,
-    liquid_asset_id: str | None = None,
-    taproot_asset_id: str | None = None,
+    liquid_asset_id: str,
     total_supply: int,
     circulating_supply: int,
     unit_price_sat: int,
@@ -201,9 +200,9 @@ async def create_asset_token(
 ) -> sa.engine.Row | None:
     now = _utc_now()
     token_id = uuid.uuid4()
-    resolved_asset_id = liquid_asset_id or taproot_asset_id
-    if resolved_asset_id is None:
-        raise ValueError("liquid_asset_id or taproot_asset_id is required")
+    resolved_asset_id = liquid_asset_id
+    if not resolved_asset_id:
+        raise ValueError("liquid_asset_id is required")
 
     try:
         updated_asset = await conn.execute(

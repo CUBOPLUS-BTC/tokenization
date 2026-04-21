@@ -84,7 +84,7 @@ def test_create_asset_token_seeds_owner_balance_with_circulating_supply(service_
                 fake_conn,
                 asset_id=asset_id,
                 owner_id=owner_id,
-                taproot_asset_id="ab" * 32,
+                liquid_asset_id="ab" * 32,
                 total_supply=1_000,
                 circulating_supply=1_000,
                 unit_price_sat=100_000,

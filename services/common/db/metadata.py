@@ -605,6 +605,11 @@ disputes = sa.Table(
     sa.Column("resolution", sa.String(length=10), nullable=True),
     sa.Column("resolved_by", postgresql.UUID(as_uuid=True), nullable=True),
     sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column(
+        "resolution_notes",
+        sa.Text(),
+        nullable=True,
+    ),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.ForeignKeyConstraint(["trade_id"], ["trades.id"], name="fk_disputes_trade_id_trades"),

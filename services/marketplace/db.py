@@ -271,6 +271,9 @@ def _treasury_balance_delta(*, entry_type: str, amount_sat: int) -> int:
         return -amount_sat
     if entry_type == "adjustment":
         return amount_sat
+    if entry_type == "referral_reward":
+        # Outflow: same sign as disbursement (see incentives.py treasury insert).
+        return -amount_sat
     raise ValueError("invalid_treasury_entry_type")
 
 
@@ -1192,7 +1195,9 @@ async def open_dispute(
         escrow_result = await conn.execute(
             sa.update(escrows_table)
             .where(escrows_table.c.trade_id == trade_id_uuid)
-            .where(escrows_table.c.status == "funded")
+            .where(
+                escrows_table.c.status.in_(("funded", "inspection_pending"))
+            )
             .values(status="disputed", updated_at=now)
             .returning(escrows_table)
         )
@@ -1235,6 +1240,7 @@ async def resolve_dispute(
     resolution_txid: str,
     collected_signatures: dict,
     settlement_metadata: dict | None = None,
+    resolution_notes: str | None = None,
 ) -> tuple[sa.engine.Row, sa.engine.Row, sa.engine.Row]:
     """Resolve an open dispute.
 
@@ -1350,6 +1356,7 @@ async def resolve_dispute(
                 resolution=resolution,
                 resolved_by=_as_uuid(resolved_by),
                 resolved_at=now,
+                resolution_notes=resolution_notes,
                 updated_at=now,
             )
             .returning(disputes_table)

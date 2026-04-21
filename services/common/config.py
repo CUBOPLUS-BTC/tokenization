@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     alert_webhook_url_file: str | None = None
 
     log_level: str
+    # CORS: comma-separated list of allowed browser Origin values.
+    # When unset/empty, the in-process CORSMiddleware is not installed; this is the
+    # expected configuration when the service is only reachable via the gateway
+    # (which owns CORS centrally).
+    cors_allowed_origins: str | None = None
     rate_limit_window_seconds: int = 60
     rate_limit_write_requests: int = 60
     rate_limit_sensitive_requests: int = 10
@@ -106,6 +111,13 @@ class Settings(BaseSettings):
     @property
     def nostr_relay_list(self) -> list[str]:
         return [relay.strip() for relay in self.nostr_relays.split(",") if relay.strip()]
+
+    @property
+    def cors_allowed_origin_list(self) -> list[str]:
+        """Parsed, trimmed list of allowed CORS origins (empty when disabled)."""
+        if not self.cors_allowed_origins:
+            return []
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
 
     @property
     def resolved_elements_rpc_required(self) -> bool:

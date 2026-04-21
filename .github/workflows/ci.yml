@@ -91,19 +91,19 @@ jobs:
         run: python -m pip install -r scripts/requirements-migrations.txt
 
       - name: alembic downgrade base (initial state)
-        run: alembic downgrade base
+        run: python -m alembic downgrade base
 
       - name: alembic upgrade head (apply all migrations)
-        run: alembic upgrade head
+        run: python -m alembic upgrade head
 
       - name: alembic current (confirm head stamp)
-        run: alembic current
+        run: python -m alembic current
 
       - name: alembic downgrade base (verify reversibility)
-        run: alembic downgrade base
+        run: python -m alembic downgrade base
 
       - name: alembic upgrade head (re-apply to confirm idempotency)
-        run: alembic upgrade head
+        run: python -m alembic upgrade head
 
       - name: pytest migration schema assertions
         run: python -m pytest tests/test_migrations_schema.py -q

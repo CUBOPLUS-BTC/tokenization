@@ -89,7 +89,7 @@ tokenization/
 ├── alembic.ini               # Alembic configuration
 ├── alembic/                  # Database migrations
 │   ├── env.py                # Migration environment (loads metadata, env vars)
-│   └── versions/             # 11 sequential migration files
+│   └── versions/             # Squashed initial migration (0001) + follow-up revisions
 ├── services/                 # All platform microservices
 │   ├── __init__.py
 │   ├── common/               # Shared infrastructure (no port)
@@ -1049,7 +1049,7 @@ Each dependency has health checks (pg_isready, Redis PING, getblockchaininfo).
 
 - All 6 services + admin + gateway + common module structure and code.
 - 19 database tables defined in `services/common/db/metadata.py`.
-- 11 Alembic migrations with full up/down support.
+- One squashed Alembic baseline (`0001_initial_schema`) generated from `services/common/db/metadata.py`, with full up/down support.
 - API contracts documented in `specs/api-contracts.md`.
 - 7 security findings tracked in `specs/security-findings-registry.md`.
 - CI pipeline defined in `.github/workflows/ci.yml`.

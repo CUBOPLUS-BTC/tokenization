@@ -292,6 +292,11 @@ def _treasury_entry_out(row: object) -> TreasuryEntryOut:
             if _row_value(row, "source_trade_id") is not None
             else None
         ),
+        source_referral_reward_id=(
+            str(_row_value(row, "source_referral_reward_id"))
+            if _row_value(row, "source_referral_reward_id") is not None
+            else None
+        ),
         description=_row_value(row, "description"),
         created_at=_aware_datetime(_row_value(row, "created_at")),
     )
@@ -310,7 +315,7 @@ def _dispute_out(row: object) -> DisputeOut:
             if _row_value(row, "resolved_by") is not None
             else None
         ),
-        notes=None,
+        notes=_row_value(row, "resolution_notes"),
         resolved_at=_aware_datetime(_row_value(row, "resolved_at")),
         created_at=_aware_datetime(_row_value(row, "created_at")),
         updated_at=_aware_datetime(_row_value(row, "updated_at")),
@@ -595,6 +600,10 @@ async def resolve_escrow_dispute_endpoint(
                 trade_id=trade_id,
                 resolved_by=principal.id,
                 resolution=db_resolution,
+                resolution_txid=body.resolution_txid,
+                collected_signatures=body.collected_signatures,
+                settlement_metadata=body.settlement_metadata,
+                resolution_notes=body.notes,
             )
         except LookupError as exc:
             return _error(

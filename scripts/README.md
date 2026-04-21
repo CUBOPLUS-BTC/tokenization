@@ -69,6 +69,19 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
+### Schema smoke test (PostgreSQL required)
+
+`tests/test_migrations_schema.py` resets the `public` schema and runs `alembic upgrade head`. Set `DATABASE_URL` (e.g. `postgresql+pg8000://user:pass@localhost:5432/dbname`):
+
+```powershell
+# Example: ephemeral Postgres
+docker run -d --rm --name tok_pg_test -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:16
+$env:DATABASE_URL = "postgresql+pg8000://postgres:test@127.0.0.1:55432/postgres"
+python -m pytest tests/test_migrations_schema.py -v
+```
+
+After a **squashed** migration or any change that rewrites history, existing databases must be reset (drop/recreate schema or volume) before `alembic upgrade head`.
+
 ### Bootstrap migrations + seeders manually
 
 The repository now includes `scripts/db_bootstrap.py`, which runs:
