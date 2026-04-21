@@ -86,7 +86,6 @@ services:
     ports:
       - "10009:10009"
       - "9735:9735"
-      - "8080:8080"
     healthcheck:
       test:
         [
