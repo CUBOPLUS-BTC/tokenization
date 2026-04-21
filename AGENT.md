@@ -137,7 +137,8 @@ tokenization/
 │   │   ├── main.py, schemas.py, db.py
 │   ├── gateway/              # Nginx reverse proxy (:8000)
 │   │   ├── Dockerfile        # nginx:1.25-alpine
-│   │   └── default.conf      # Proxy rules, rate limiting, TLS
+│   │   ├── 30-render-cors-map.sh   # Startup: CORS_ALLOWED_ORIGINS (CSV) → cors_map.conf
+│   │   └── gateway.conf            # Routing, CORS preflight + headers on /v1/*
 │   └── frontend/             # React app (spec only, not yet built)
 ├── tests/                    # Cross-service integration & E2E tests
 ├── specs/                    # Architecture, API, DB, frontend, security specs
@@ -968,7 +969,7 @@ Each dependency has health checks (pg_isready, Redis PING, getblockchaininfo).
 6. Configure logging: `configure_structured_logging(...)`.
 7. Configure alerting: `configure_alerting(settings)`.
 8. Add to `infra/docker-compose.local.yml`.
-9. Add proxy rules to `services/gateway/default.conf`.
+9. Add proxy rules to `services/gateway/gateway.conf` (and extend `30-render-cors-map.sh` / `CORS_ALLOWED_ORIGINS` if needed).
 10. Add tests in `tests/test_<service>.py`.
 11. Update `specs/architecture.md` and `README.md`.
 
@@ -1076,7 +1077,7 @@ Each dependency has health checks (pg_isready, Redis PING, getblockchaininfo).
 - **HSM vendor/implementation** — abstract interface exists but no concrete provider.
 - **Production deployment tooling** — mainnet runbook describes process but no CI/CD pipeline for production was found.
 - **WebSocket implementation details** — marketplace `main.py` imports WebSocket support but full implementation was not deeply inspected.
-- **Exact nginx gateway routing rules** — `default.conf` was not fully read.
+- **Exact nginx gateway routing rules** — `gateway.conf` / `30-render-cors-map.sh` were not fully read.
 - **`.env.*.example` template contents** — referenced but not read.
 
 ---

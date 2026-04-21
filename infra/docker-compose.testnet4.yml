@@ -221,10 +221,15 @@ services:
 
   gateway:
     build:
-      context: ./services/gateway
+      context: ../services/gateway
       dockerfile: Dockerfile
     container_name: tokenization-testnet4-gateway
     restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.testnet4.example
+        required: false
+    environment:
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     depends_on:
       - auth
       - wallet

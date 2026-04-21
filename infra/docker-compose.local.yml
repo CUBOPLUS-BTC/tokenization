@@ -272,6 +272,11 @@ services:
       dockerfile: Dockerfile
     container_name: tokenization-gateway
     restart: unless-stopped
+    env_file:
+      - path: ./.env.local
+        required: false
+    environment:
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     depends_on:
       - auth
       - wallet

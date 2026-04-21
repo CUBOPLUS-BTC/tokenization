@@ -23,7 +23,7 @@ def test_public_beta_compose_includes_observability_stack():
 
 
 def test_gateway_exposes_metrics_for_all_services():
-    content = (REPO_ROOT / "services" / "gateway" / "default.conf").read_text(encoding="utf-8")
+    content = (REPO_ROOT / "services" / "gateway" / "gateway.conf").read_text(encoding="utf-8")
 
     assert "/metrics/auth" in content
     assert "/metrics/wallet" in content
