@@ -86,7 +86,7 @@ services:
 
   elementsd:
     build:
-      context: /app/infra/elements
+      context: ./elements
       dockerfile: Dockerfile
     container_name: tokenization-elementsd
     restart: unless-stopped
@@ -234,7 +234,7 @@ services:
 
   gateway:
     build:
-      context: /app/services/gateway
+      context: ../services/gateway
       dockerfile: Dockerfile
     container_name: tokenization-gateway
     restart: unless-stopped
