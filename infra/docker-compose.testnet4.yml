@@ -35,6 +35,7 @@ services:
     user: "0:0"
     command:
       - -datadir=/data/.bitcoin
+      - -conf=/data/.bitcoin/bitcoin.conf
       - -printtoconsole
     restart: unless-stopped
     volumes:
@@ -61,11 +62,15 @@ services:
       - ./infra/lnd/lnd.testnet4.conf:/etc/lnd/lnd.conf:ro
       - testnet4_lnd_data:/data/lnd
     healthcheck:
-      test: ["CMD", "lncli", "--network=testnet", "--rpcserver=localhost:10009", "--tlscertpath=/data/lnd/tls.cert", "--macaroonpath=/data/lnd/data/chain/bitcoin/testnet/admin.macaroon", "getinfo"]
+      test:
+        [
+          "CMD-SHELL",
+          "lncli --network=testnet --rpcserver=localhost:10009 --tlscertpath=/data/lnd/tls.cert --macaroonpath=/data/lnd/data/chain/bitcoin/testnet/admin.macaroon getinfo >/dev/null 2>&1 || exit 1"
+        ]
       interval: 15s
       timeout: 10s
-      retries: 10
-      start_period: 20s
+      retries: 30
+      start_period: 120s
 
   elementsd:
     build:
@@ -221,7 +226,7 @@ services:
 
   gateway:
     build:
-      context: ../services/gateway
+      context: ./services/gateway
       dockerfile: Dockerfile
     container_name: tokenization-testnet4-gateway
     restart: unless-stopped
@@ -230,6 +235,8 @@ services:
         required: false
     environment:
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+    ports:
+      - "8000:8000"
     depends_on:
       - auth
       - wallet

@@ -29,14 +29,6 @@ elementsd \
   -chain="${NETWORK}" \
   -datadir="${DATA_DIR}" \
   -conf="${CONF_FILE}" \
-  -rpcuser="${RPC_USER}" \
-  -rpcpassword="${RPC_PASSWORD}" \
-  -rpcport="${RPC_PORT}" \
-  -validatepegin=0 \
-  -mainchainrpchost=bitcoind \
-  -mainchainrpcport=18443 \
-  -mainchainrpcuser=local_rpc \
-  -mainchainrpcpassword=local_rpc_password \
   -printtoconsole &
 ELEMENTS_PID=$!
 

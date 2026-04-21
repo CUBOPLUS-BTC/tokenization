@@ -137,7 +137,7 @@ services:
 
   gateway:
     build:
-      context: ../services/gateway
+      context: ./services/gateway
       dockerfile: Dockerfile
     restart: unless-stopped
     env_file:
@@ -145,6 +145,8 @@ services:
         required: false
     environment:
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+    ports:
+      - "8000:8000"
     depends_on:
       - auth
       - wallet

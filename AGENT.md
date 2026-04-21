@@ -501,7 +501,7 @@ pip install fastapi uvicorn sqlalchemy asyncpg pydantic-settings python-jose bcr
 cp infra/.env.local.example infra/.env.local
 
 # Start all services + infrastructure
-docker compose -f infra/docker-compose.local.yml up -d
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d
 
 # Verify
 curl http://localhost:8000/health          # Gateway
@@ -511,7 +511,7 @@ curl http://localhost:8000/v1/wallet/health # Wallet via gateway
 ### Shutdown
 
 ```bash
-docker compose -f infra/docker-compose.local.yml down
+docker compose --project-directory . -f infra/docker-compose.local.yml down
 ```
 
 ### Run Tests
@@ -567,7 +567,7 @@ npx markdownlint-cli2 "**/*.md"
 ### Run Observability Stack
 
 ```bash
-docker compose -f infra/docker-compose.observability.yml up -d
+docker compose --project-directory . -f infra/docker-compose.observability.yml up -d
 # Grafana: http://localhost:3000 (admin/admin)
 # Prometheus: http://localhost:9090
 ```
@@ -576,7 +576,7 @@ docker compose -f infra/docker-compose.observability.yml up -d
 
 ```bash
 cp infra/.env.beta.example infra/.env.beta
-docker compose -f infra/docker-compose.public-beta.yml up -d
+docker compose --project-directory . -f infra/docker-compose.public-beta.yml up -d
 ```
 
 ---
@@ -993,11 +993,11 @@ Each dependency has health checks (pg_isready, Redis PING, getblockchaininfo).
 
 ### Debugging Production-Like Issues Locally
 
-1. Start full stack: `docker compose -f infra/docker-compose.local.yml up -d`.
+1. Start full stack: `docker compose --project-directory . -f infra/docker-compose.local.yml up -d`.
 2. Check service health: `curl http://localhost:<port>/health`.
 3. Check readiness: `curl http://localhost:<port>/readiness` (if exposed).
 4. Check metrics: `curl http://localhost:<port>/metrics`.
-5. Tail logs: `docker compose -f infra/docker-compose.local.yml logs -f <service>`.
+5. Tail logs: `docker compose --project-directory . -f infra/docker-compose.local.yml logs -f <service>`.
 6. Query audit logs: `SELECT * FROM audit_logs WHERE action = '...' ORDER BY created_at DESC LIMIT 10;`.
 7. Trace requests by `request_id` across service logs.
 

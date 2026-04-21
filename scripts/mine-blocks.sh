@@ -6,7 +6,7 @@ set -euo pipefail
 # Default is 1 block.
 
 BLOCKS="${1:-1}"
-CONTAINER="${BTC_CONTAINER:-tokenization-bitcoind}"
+CONTAINER="${BTC_CONTAINER:-tokenization-local-bitcoind}"
 
 # Ensure a wallet is loaded
 if ! docker exec "$CONTAINER" bitcoin-cli -regtest -rpcuser=local_rpc -rpcpassword=local_rpc_password listwallets | grep -q "default"; then

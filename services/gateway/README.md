@@ -13,7 +13,7 @@ Reverse proxy and entry point for all client requests.
 ## Local browser clients
 
 1. Set `CORS_ALLOWED_ORIGINS` in the env file used by Compose for the gateway (e.g. [`infra/.env.local`](../infra/.env.local)) or override via Compose `environment` / host env for `${CORS_ALLOWED_ORIGINS:-...}` interpolation.
-2. Rebuild/recreate the gateway: `docker compose -f infra/docker-compose.local.yml up -d --build --force-recreate gateway`
+2. Rebuild/recreate the gateway: `docker compose --project-directory . -f infra/docker-compose.local.yml up -d --build --force-recreate gateway`
 3. Verify preflight: `curl -i -X OPTIONS http://localhost:8000/v1/auth/login -H "Origin: http://localhost:3000" -H "Access-Control-Request-Method: POST"`
 
 ## Technology

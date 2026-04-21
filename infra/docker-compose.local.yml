@@ -3,10 +3,10 @@ name: tokenization-local
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: tokenization-postgres
+    container_name: tokenization-local-postgres
     restart: unless-stopped
     env_file:
-      - path: ./.env.local
+      - path: ./infra/.env.local
         required: false
     ports:
       - "5432:5432"
@@ -22,7 +22,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: tokenization-redis
+    container_name: tokenization-local-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
@@ -39,29 +39,35 @@ services:
 
   bitcoind:
     image: lncm/bitcoind:v28.0
-    container_name: tokenization-bitcoind
+    container_name: tokenization-local-bitcoind
     user: "0:0"
     command:
+      - -regtest
       - -datadir=/data/.bitcoin
+      - -conf=/data/.bitcoin/bitcoin.conf
       - -printtoconsole
     restart: unless-stopped
     volumes:
-      - ./bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
+      - ./infra/bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
       - bitcoin_data:/data/.bitcoin
     ports:
       - "18444:18443"
     healthcheck:
-      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=local_rpc", "-rpcpassword=local_rpc_password", "getblockchaininfo"]
+      test:
+        [
+          "CMD-SHELL",
+          "bitcoin-cli -regtest -datadir=/data/.bitcoin getblockchaininfo >/dev/null 2>&1 || exit 1"
+        ]
       interval: 15s
       timeout: 10s
-      retries: 5
-      start_period: 10s
+      retries: 10
+      start_period: 45s
     networks:
       - platform
 
   lnd:
     image: lightninglabs/lnd:v0.20.0-beta
-    container_name: tokenization-lnd
+    container_name: tokenization-local-lnd
     restart: unless-stopped
     command:
       - --lnddir=/data/lnd
@@ -70,25 +76,29 @@ services:
       bitcoind:
         condition: service_healthy
     volumes:
-      - ./lnd/lnd.conf:/etc/lnd/lnd.conf:ro
+      - ./infra/lnd/lnd.conf:/etc/lnd/lnd.conf:ro
       - lnd_data:/data/lnd
     ports:
       - "10009:10009"
       - "9735:9735"
     healthcheck:
-      test: ["CMD", "lncli", "--network=regtest", "--rpcserver=localhost:10009", "--tlscertpath=/data/lnd/tls.cert", "--macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon", "getinfo"]
+      test:
+        [
+          "CMD-SHELL",
+          "lncli --network=regtest --rpcserver=localhost:10009 --tlscertpath=/data/lnd/tls.cert --macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon getinfo >/dev/null 2>&1 || exit 1"
+        ]
       interval: 15s
       timeout: 10s
-      retries: 10
-      start_period: 20s
+      retries: 30
+      start_period: 120s
     networks:
       - platform
 
   elementsd:
     build:
-      context: ./elements
+      context: ./infra/elements
       dockerfile: Dockerfile
-    container_name: tokenization-elementsd
+    container_name: tokenization-local-elementsd
     restart: unless-stopped
     depends_on:
       bitcoind:
@@ -102,27 +112,31 @@ services:
       ELEMENTS_RPC_PORT: "7041"
       ELEMENTS_WALLET_NAME: platform
     volumes:
-      - ./elements/elements.conf:/etc/elements/elements.conf:ro
+      - ./infra/elements/elements.conf:/etc/elements/elements.conf:ro
       - elements_data:/data/elements
     ports:
       - "7041:7041"
     healthcheck:
-      test: ["CMD", "elements-cli", "-chain=elementsregtest", "-rpcuser=user", "-rpcpassword=pass", "-rpcport=7041", "-rpcwallet=platform", "getwalletinfo"]
+      test:
+        [
+          "CMD-SHELL",
+          "elements-cli -chain=elementsregtest -rpcuser=user -rpcpassword=pass -rpcport=7041 getblockchaininfo >/dev/null 2>&1 || exit 1"
+        ]
       interval: 15s
       timeout: 10s
       retries: 10
-      start_period: 25s
+      start_period: 45s
     networks:
       - platform
 
   migrate:
     build:
-      context: ..
+      context: .
       dockerfile: ./services/migrate/Dockerfile
-    container_name: tokenization-migrate
+    container_name: tokenization-local-migrate
     restart: "no"
     env_file:
-      - path: ./.env.local
+      - path: ./infra/.env.local
         required: false
     depends_on:
       postgres:
@@ -132,12 +146,12 @@ services:
 
   wallet:
     build:
-      context: ..
+      context: .
       dockerfile: ./services/wallet/Dockerfile
-    container_name: tokenization-wallet
+    container_name: tokenization-local-wallet
     restart: unless-stopped
     env_file:
-      - path: ./.env.local
+      - path: ./infra/.env.local
         required: false
     volumes:
       - lnd_data:/run/secrets/lnd:ro
@@ -161,12 +175,12 @@ services:
 
   auth:
     build:
-      context: ..
+      context: .
       dockerfile: ./services/auth/Dockerfile
-    container_name: tokenization-auth
+    container_name: tokenization-local-auth
     restart: unless-stopped
     env_file:
-      - path: ./.env.local
+      - path: ./infra/.env.local
         required: false
     depends_on:
       postgres:
@@ -175,19 +189,17 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    ports:
-      - "8007:8000"
     networks:
       - platform
 
   tokenization:
     build:
-      context: ..
+      context: .
       dockerfile: ./services/tokenization/Dockerfile
-    container_name: tokenization-tokenization
+    container_name: tokenization-local-tokenization
     restart: unless-stopped
     env_file:
-      - path: ./.env.local
+      - path: ./infra/.env.local
         required: false
     depends_on:
       postgres:
@@ -205,12 +217,12 @@ services:
 
   marketplace:
     build:
-      context: ..
+      context: .
       dockerfile: ./services/marketplace/Dockerfile
-    container_name: tokenization-marketplace
+    container_name: tokenization-local-marketplace
     restart: unless-stopped
     env_file:
-      - path: ./.env.local
+      - path: ./infra/.env.local
         required: false
     depends_on:
       postgres:
@@ -226,12 +238,12 @@ services:
 
   nostr:
     build:
-      context: ..
+      context: .
       dockerfile: ./services/nostr/Dockerfile
-    container_name: tokenization-nostr
+    container_name: tokenization-local-nostr
     restart: unless-stopped
     env_file:
-      - path: ./.env.local
+      - path: ./infra/.env.local
         required: false
     depends_on:
       postgres:
@@ -247,12 +259,12 @@ services:
 
   admin:
     build:
-      context: ..
+      context: .
       dockerfile: ./services/admin/Dockerfile
-    container_name: tokenization-admin
+    container_name: tokenization-local-admin
     restart: unless-stopped
     env_file:
-      - path: ./.env.local
+      - path: ./infra/.env.local
         required: false
     depends_on:
       postgres:
@@ -268,12 +280,12 @@ services:
 
   gateway:
     build:
-      context: ../services/gateway
+      context: ./services/gateway
       dockerfile: Dockerfile
-    container_name: tokenization-gateway
+    container_name: tokenization-local-gateway
     restart: unless-stopped
     env_file:
-      - path: ./.env.local
+      - path: ./infra/.env.local
         required: false
     environment:
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
@@ -299,5 +311,3 @@ volumes:
 networks:
   platform:
     driver: bridge
-
-
