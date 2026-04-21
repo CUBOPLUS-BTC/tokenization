@@ -29,6 +29,15 @@ elementsd \
   -chain="${NETWORK}" \
   -datadir="${DATA_DIR}" \
   -conf="${CONF_FILE}" \
+  -validatepegin=0 \
+  -server=1 \
+  -txindex=1 \
+  -fallbackfee=0.00001 \
+  -rpcbind=0.0.0.0 \
+  -rpcallowip=0.0.0.0/0 \
+  -rpcport="${RPC_PORT}" \
+  -rpcuser="${RPC_USER}" \
+  -rpcpassword="${RPC_PASSWORD}" \
   -printtoconsole &
 ELEMENTS_PID=$!
 

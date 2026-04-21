@@ -66,6 +66,14 @@ services:
     command:
       - --lnddir=/data/lnd
       - --configfile=/etc/lnd/lnd.conf
+      - --bitcoin.active
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=bitcoind:18443
+      - --bitcoind.rpcuser=local_rpc
+      - --bitcoind.rpcpass=local_rpc_password
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
     depends_on:
       bitcoind:
         condition: service_healthy

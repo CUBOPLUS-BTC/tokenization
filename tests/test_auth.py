@@ -769,6 +769,8 @@ class TestNostrAuth:
         assert body["kind"] == 22242
         assert body["expires_in"] == 300
         assert body["challenge"].startswith("Sign-in challenge: ")
+        assert body["nonce"]
+        assert body["challenge"].endswith(body["nonce"])
 
     def test_nostr_login_first_time_creates_user(self, client):
         app_client, fake_conn, settings = client
@@ -923,6 +925,65 @@ class TestNostrAuth:
         assert first_response.status_code == 200
         assert second_response.status_code == 401
         assert second_response.json()["error"]["message"] == "Challenge is missing, expired, or already used."
+
+    def test_nostr_login_accepts_challenge_in_tag(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user(email=None, password="")
+        challenge_response = app_client.post("/auth/nostr/challenge")
+        nonce = challenge_response.json()["nonce"]
+
+        with (
+            patch("services.auth.main.validate_nostr_event", MagicMock(return_value=None)),
+            patch("services.auth.main.get_nostr_identity_by_pubkey", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_nostr_user", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.create_nostr_identity", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_refresh_session", AsyncMock(return_value=None)),
+        ):
+            resp = app_client.post(
+                "/auth/nostr",
+                json={
+                    "pubkey": "a" * 64,
+                    "signed_event": {
+                        "id": "b" * 64,
+                        "kind": 22242,
+                        "created_at": 1234567890,
+                        "content": "Login to CUBO Platform",
+                        "tags": [
+                            ["relay", "wss://relay.example.com"],
+                            ["challenge", nonce],
+                        ],
+                        "sig": "c" * 128,
+                    },
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "user" in body
+        _assert_token_structure(body["tokens"])
+
+    def test_nostr_login_rejects_missing_challenge_both(self, client):
+        app_client, *_ = client
+
+        resp = app_client.post(
+            "/auth/nostr",
+            json={
+                "pubkey": "a" * 64,
+                "signed_event": {
+                    "id": "b" * 64,
+                    "kind": 22242,
+                    "created_at": 1234567890,
+                    "content": "Login to CUBO Platform",
+                    "tags": [["relay", "wss://relay.example.com"]],
+                    "sig": "c" * 128,
+                },
+            },
+        )
+
+        assert resp.status_code == 401
+        error = resp.json()["error"]
+        assert error["code"] == "invalid_credentials"
+        assert "Missing challenge" in error["message"]
 
 
 class TestTwoFactor:

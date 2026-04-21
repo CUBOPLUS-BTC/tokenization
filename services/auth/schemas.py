@@ -60,6 +60,7 @@ class NostrLoginRequest(BaseModel):
 
 class NostrChallengeResponse(BaseModel):
     challenge: str
+    nonce: str | None = None
     kind: Literal[22242]
     expires_in: int
 

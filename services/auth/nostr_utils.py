@@ -23,13 +23,59 @@ class NostrValidationError(Exception):
 
 
 _CHALLENGE_PATTERN = re.compile(r"^Sign-in challenge:\s*(\S.*?)\s*$")
+_MISSING_CHALLENGE_MESSAGE = (
+    "Missing challenge: expected 'Sign-in challenge: <nonce>' in content "
+    "or a [\"challenge\", <nonce>] tag."
+)
+
+
+def _extract_challenge_from_content(content: str) -> str | None:
+    """Return the nonce embedded in the event content, or None when absent."""
+    if not content:
+        return None
+    match = _CHALLENGE_PATTERN.fullmatch(content.strip())
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _extract_challenge_from_tags(tags: list[list[str]]) -> str | None:
+    """Return the nonce placed inside a ``["challenge", <nonce>, ...]`` tag."""
+    for tag in tags or []:
+        if not isinstance(tag, list) or len(tag) < 2:
+            continue
+        name, value = tag[0], tag[1]
+        if name == "challenge" and isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+    return None
 
 
 def extract_nostr_challenge(content: str) -> str:
-    match = _CHALLENGE_PATTERN.fullmatch(content.strip())
-    if match is None:
+    """Back-compat helper: parse the nonce out of a content string only.
+
+    Kept for callers/tests that operate on raw content strings.
+    """
+    nonce = _extract_challenge_from_content(content)
+    if nonce is None:
         raise NostrValidationError("Invalid challenge format in event content.")
-    return match.group(1)
+    return nonce
+
+
+def extract_challenge_from_event(event: "NostrSignedEvent") -> str:
+    """Extract the challenge nonce from either ``content`` or the ``challenge`` tag.
+
+    Raises:
+        NostrValidationError: If neither location carries a valid nonce.
+    """
+    nonce = _extract_challenge_from_content(event.content)
+    if nonce is not None:
+        return nonce
+    nonce = _extract_challenge_from_tags(event.tags)
+    if nonce is not None:
+        return nonce
+    raise NostrValidationError(_MISSING_CHALLENGE_MESSAGE)
 
 
 def validate_nostr_event(
@@ -46,7 +92,7 @@ def validate_nostr_event(
     if event.kind != 22242:
         raise NostrValidationError("Event kind must be 22242 for authentication.")
 
-    challenge = extract_nostr_challenge(event.content)
+    challenge = extract_challenge_from_event(event)
     if expected_challenge is not None and challenge != expected_challenge:
         raise NostrValidationError("Event challenge does not match the issued challenge.")
 

@@ -107,7 +107,7 @@ from schemas import (
 from jwt_utils import decode_token, issue_token_pair
 from services.auth.nostr_utils import (
     NostrValidationError,
-    extract_nostr_challenge,
+    extract_challenge_from_event,
     validate_nostr_event,
 )
 from db import (
@@ -832,6 +832,7 @@ async def issue_nostr_challenge():
     challenge = _issue_nostr_challenge()
     return NostrChallengeResponse(
         challenge=f"Sign-in challenge: {challenge}",
+        nonce=challenge,
         kind=22242,
         expires_in=_NOSTR_CHALLENGE_TTL_SECONDS,
     )
@@ -846,7 +847,7 @@ async def issue_nostr_challenge():
 async def nostr_login(body: NostrLoginRequest):
     """Authenticate via Nostr signature challenge."""
     try:
-        challenge = extract_nostr_challenge(body.signed_event.content)
+        challenge = extract_challenge_from_event(body.signed_event)
     except NostrValidationError as e:
         record_business_event("auth_nostr_login", outcome="failure")
         return _error(
