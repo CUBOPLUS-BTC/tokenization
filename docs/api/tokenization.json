@@ -844,6 +844,28 @@
       },
       "AssetTokenizationRequest": {
         "properties": {
+          "liquid_asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Liquid Asset Id"
+          },
+          "taproot_asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Taproot Asset Id"
+          },
           "total_supply": {
             "type": "integer",
             "exclusiveMinimum": 0.0,
