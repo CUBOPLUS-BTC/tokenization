@@ -73,6 +73,11 @@ def test_derivation_path_mainnet(encryption_key):
     path = km_main.get_derivation_path(5)
     assert path == "m/44'/1776'/5'"
 
+def test_derivation_path_testnet4_uses_liquid_testnet(encryption_key):
+    km_testnet4 = KeyManager(encryption_key=encryption_key, bitcoin_network="testnet4")
+    path = km_testnet4.get_derivation_path(2)
+    assert path == "m/44'/1'/2'"
+
 def test_hsm_compatible_backend_marks_seed_non_exportable():
     backend = HsmCompatibleWalletCustody(
         wrapping_key="11" * 32,
@@ -134,4 +139,12 @@ def test_derive_liquid_address_signet_uses_test_prefix(encryption_key):
     assert derived.unconfidential_address.startswith("tex1")
     assert len(derived.script_pubkey) == 44
     assert derived.script_pubkey.startswith("0014")
+
+def test_derive_liquid_address_testnet4_uses_test_prefix(encryption_key):
+    km_testnet4 = KeyManager(encryption_key=encryption_key, bitcoin_network="testnet4")
+    seed = b"0011223344556677" * 4
+    derived = km_testnet4.derive_liquid_address(seed, 0)
+
+    assert derived.confidential_address.startswith("tlq1")
+    assert derived.unconfidential_address.startswith("tex1")
 

@@ -50,7 +50,7 @@ def _network_name(bitcoin_network: str) -> str:
     normalized = bitcoin_network.lower()
     if normalized == "mainnet":
         return "liquidv1"
-    if normalized in {"testnet", "signet"}:
+    if normalized in {"testnet", "testnet4", "signet"}:
         return "liquidtestnet"
     return "elementsregtest"
 
@@ -71,7 +71,7 @@ class KeyManager:
         """
         Initialize the KeyManager.
         :param encryption_key: A 32-byte hex string or bytes object for AES-256.
-        :param bitcoin_network: The paired bitcoin network (mainnet, regtest, testnet) for legacy compatibility.
+        :param bitcoin_network: The paired bitcoin network (mainnet, regtest, testnet, testnet4) for legacy compatibility.
         """
         self.bitcoin_network = bitcoin_network.lower()
         self.elements_network = (elements_network or _network_name(bitcoin_network)).lower()

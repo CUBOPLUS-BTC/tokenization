@@ -88,3 +88,10 @@ def test_readiness_blocks_beta_when_lnd_and_elements_are_down(monkeypatch):
     assert payload["dependencies"]["lnd"]["required"] is True
     assert payload["dependencies"]["lnd"]["blocking"] is True
 
+
+def test_settings_accept_testnet4_network():
+    settings = _settings(bitcoin_network="testnet4", elements_network="liquidtestnet")
+
+    assert settings.bitcoin_network == "testnet4"
+    assert settings.elements_network == "liquidtestnet"
+

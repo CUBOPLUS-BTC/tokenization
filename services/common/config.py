@@ -9,6 +9,10 @@ from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+SUPPORTED_BITCOIN_NETWORKS = {"mainnet", "testnet", "testnet4", "signet", "regtest"}
+SUPPORTED_ELEMENTS_NETWORKS = {"liquidv1", "liquidtestnet", "elementsregtest"}
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file_encoding="utf-8",
@@ -170,10 +174,10 @@ class Settings(BaseSettings):
             if "user:pass@localhost" in self.database_url:
                 raise ValueError("database_url must be overridden for staging/beta/production")
 
-        if self.bitcoin_network.lower() not in {"mainnet", "testnet", "signet", "regtest"}:
-            raise ValueError("bitcoin_network must be one of: mainnet, testnet, signet, regtest")
+        if self.bitcoin_network.lower() not in SUPPORTED_BITCOIN_NETWORKS:
+            raise ValueError("bitcoin_network must be one of: mainnet, testnet, testnet4, signet, regtest")
 
-        if self.elements_network.lower() not in {"liquidv1", "liquidtestnet", "elementsregtest"}:
+        if self.elements_network.lower() not in SUPPORTED_ELEMENTS_NETWORKS:
             raise ValueError("elements_network must be one of: liquidv1, liquidtestnet, elementsregtest")
 
         return self

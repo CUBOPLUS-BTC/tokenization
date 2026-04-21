@@ -220,3 +220,9 @@ def test_sync_lightning_balance_refreshes_each_wallet_individually():
     assert sync_wallet_state.await_count == 2
     record_event.assert_called_once()
     assert record_event.call_args.args[0] == "wallet_lightning_balance_sync"
+
+
+def test_confirmation_threshold_treats_testnet4_like_testnet():
+    settings = SimpleNamespace(bitcoin_network="testnet4")
+
+    assert wallet_reconciliation._confirmation_threshold(settings) == 3

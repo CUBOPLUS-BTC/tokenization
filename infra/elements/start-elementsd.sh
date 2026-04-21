@@ -39,7 +39,7 @@ if [ -n "${WALLET_NAME}" ] && ! cli -rpcwallet="${WALLET_NAME}" getwalletinfo >/
   cli -rpcwallet="${WALLET_NAME}" rescanblockchain >/dev/null 2>&1 || true
 fi
 
-if [ -n "${WALLET_NAME}" ] && [ ! -f "${BOOTSTRAP_MARKER}" ]; then
+if [ "${NETWORK}" = "elementsregtest" ] && [ -n "${WALLET_NAME}" ] && [ ! -f "${BOOTSTRAP_MARKER}" ]; then
   MINE_ADDRESS="$(cli -rpcwallet="${WALLET_NAME}" getnewaddress "bootstrap" "bech32")"
   cli -rpcwallet="${WALLET_NAME}" generatetoaddress 101 "${MINE_ADDRESS}" >/dev/null 2>&1 || \
     cli -rpcwallet="${WALLET_NAME}" generate 101 >/dev/null 2>&1 || true

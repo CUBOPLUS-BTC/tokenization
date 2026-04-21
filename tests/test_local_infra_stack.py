@@ -30,3 +30,28 @@ def test_bitcoin_local_config_exposes_zmq_for_lnd():
     assert "zmqpubrawblock=tcp://0.0.0.0:28332" in content
     assert "zmqpubrawtx=tcp://0.0.0.0:28333" in content
 
+
+def test_regtest_compose_uses_infra_relative_paths():
+    content = (REPO_ROOT / "infra" / "docker-compose.regtest.yml").read_text(encoding="utf-8")
+
+    assert "./.env.local" in content
+    assert "../:/app" in content
+    assert "./bitcoin/bitcoin.conf" in content
+    assert "../services/gateway" in content
+
+
+def test_testnet4_stack_template_and_compose_exist():
+    env_content = (REPO_ROOT / "infra" / ".env.testnet4.example").read_text(encoding="utf-8")
+    compose_content = (REPO_ROOT / "infra" / "docker-compose.testnet4.yml").read_text(encoding="utf-8")
+    bitcoin_content = (REPO_ROOT / "infra" / "bitcoin" / "bitcoin.testnet4.conf").read_text(encoding="utf-8")
+
+    assert "ENV_PROFILE=staging" in env_content
+    assert "BITCOIN_NETWORK=testnet4" in env_content
+    assert "ELEMENTS_NETWORK=liquidtestnet" in env_content
+    assert "bitcoin.testnet=1" in (REPO_ROOT / "infra" / "lnd" / "lnd.testnet4.conf").read_text(encoding="utf-8")
+    assert "testnet4=1" in bitcoin_content
+    assert "rpcport=48332" in bitcoin_content
+    assert "bitcoin-cli" in compose_content
+    assert "-testnet4" in compose_content
+    assert "liquidtestnet" in compose_content
+

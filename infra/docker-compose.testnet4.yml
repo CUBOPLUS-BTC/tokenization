@@ -1,68 +1,68 @@
-name: tokenization-regtest
+name: tokenization-testnet4
 
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: tokenization-postgres
+    container_name: tokenization-testnet4-postgres
     restart: unless-stopped
     env_file:
-      - ./.env.local
+      - ./.env.testnet4.example
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - testnet4_postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - platform
+      - testnet4
 
   redis:
     image: redis:7-alpine
-    container_name: tokenization-redis
+    container_name: tokenization-testnet4-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - redis_data:/data
+      - testnet4_redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - platform
+      - testnet4
 
   db-bootstrap:
     image: python:3.11-slim
-    container_name: tokenization-db-bootstrap
+    container_name: tokenization-testnet4-db-bootstrap
     restart: "no"
     working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r scripts/requirements-migrations.txt -r services/auth/requirements.txt &&
       python scripts/db_bootstrap.py"
     env_file:
-      - ./.env.local
+      - ./.env.testnet4.example
     volumes:
       - ../:/app
     depends_on:
       postgres:
         condition: service_healthy
     networks:
-      - platform
+      - testnet4
 
   wallet:
     image: python:3.11-slim
-    container_name: tokenization-wallet
+    container_name: tokenization-testnet4-wallet
     restart: unless-stopped
     working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
       uvicorn services.wallet.main:app --host 0.0.0.0 --port 8001"
     env_file:
-      - ./.env.local
+      - ./.env.testnet4.example
     volumes:
       - ../:/app
-      - lnd_data:/run/secrets/lnd:ro
+      - testnet4_lnd_data:/run/secrets/lnd:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,18 +77,18 @@ services:
       elementsd:
         condition: service_healthy
     networks:
-      - platform
+      - testnet4
 
   auth:
     image: python:3.11-slim
-    container_name: tokenization-auth
+    container_name: tokenization-testnet4-auth
     restart: unless-stopped
     working_dir: /app/services/auth
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8000"
     env_file:
-      - ./.env.local
+      - ./.env.testnet4.example
     volumes:
       - ../:/app
     depends_on:
@@ -99,18 +99,18 @@ services:
       db-bootstrap:
         condition: service_completed_successfully
     networks:
-      - platform
+      - testnet4
 
   tokenization:
     image: python:3.11-slim
-    container_name: tokenization-tokenization
+    container_name: tokenization-testnet4-tokenization
     restart: unless-stopped
     working_dir: /app/services/tokenization
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8002"
     env_file:
-      - ./.env.local
+      - ./.env.testnet4.example
     volumes:
       - ../:/app
     depends_on:
@@ -123,18 +123,18 @@ services:
       elementsd:
         condition: service_healthy
     networks:
-      - platform
+      - testnet4
 
   marketplace:
     image: python:3.11-slim
-    container_name: tokenization-marketplace
+    container_name: tokenization-testnet4-marketplace
     restart: unless-stopped
     working_dir: /app/services/marketplace
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8003"
     env_file:
-      - ./.env.local
+      - ./.env.testnet4.example
     volumes:
       - ../:/app
     depends_on:
@@ -145,18 +145,18 @@ services:
       db-bootstrap:
         condition: service_completed_successfully
     networks:
-      - platform
+      - testnet4
 
   nostr:
     image: python:3.11-slim
-    container_name: tokenization-nostr
+    container_name: tokenization-testnet4-nostr
     restart: unless-stopped
     working_dir: /app/services/nostr
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8005"
     env_file:
-      - ./.env.local
+      - ./.env.testnet4.example
     volumes:
       - ../:/app
     depends_on:
@@ -167,18 +167,18 @@ services:
       db-bootstrap:
         condition: service_completed_successfully
     networks:
-      - platform
+      - testnet4
 
   admin:
     image: python:3.11-slim
-    container_name: tokenization-admin
+    container_name: tokenization-testnet4-admin
     restart: unless-stopped
     working_dir: /app/services/admin
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8006"
     env_file:
-      - ./.env.local
+      - ./.env.testnet4.example
     volumes:
       - ../:/app
     depends_on:
@@ -189,33 +189,33 @@ services:
       db-bootstrap:
         condition: service_completed_successfully
     networks:
-      - platform
+      - testnet4
 
   bitcoind:
     image: lncm/bitcoind:v28.0
-    container_name: tokenization-bitcoind
+    container_name: tokenization-testnet4-bitcoind
     user: "0:0"
     command:
       - -datadir=/data/.bitcoin
       - -printtoconsole
     restart: unless-stopped
     volumes:
-      - ./bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
-      - bitcoin_data:/data/.bitcoin
+      - ./bitcoin/bitcoin.testnet4.conf:/data/.bitcoin/bitcoin.conf:ro
+      - testnet4_bitcoin_data:/data/.bitcoin
     ports:
-      - "18443:18443"
+      - "48332:48332"
     healthcheck:
-      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=local_rpc", "-rpcpassword=local_rpc_password", "getblockchaininfo"]
+      test: ["CMD", "bitcoin-cli", "-testnet4", "-rpcuser=testnet4_rpc", "-rpcpassword=testnet4_rpc_password", "getblockchaininfo"]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 10s
     networks:
-      - platform
+      - testnet4
 
   lnd:
     image: lightninglabs/lnd:v0.20.0-beta
-    container_name: tokenization-lnd
+    container_name: tokenization-testnet4-lnd
     restart: unless-stopped
     command:
       - --lnddir=/data/lnd
@@ -224,22 +224,25 @@ services:
       bitcoind:
         condition: service_healthy
     volumes:
-      - ./lnd/lnd.conf:/etc/lnd/lnd.conf:ro
-      - lnd_data:/data/lnd
+      - ./lnd/lnd.testnet4.conf:/etc/lnd/lnd.conf:ro
+      - testnet4_lnd_data:/data/lnd
+    ports:
+      - "11009:10009"
+      - "19735:9735"
     healthcheck:
-      test: ["CMD", "lncli", "--network=regtest", "--rpcserver=localhost:10009", "--tlscertpath=/data/lnd/tls.cert", "--macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon", "getinfo"]
+      test: ["CMD", "lncli", "--network=testnet", "--rpcserver=localhost:10009", "--tlscertpath=/data/lnd/tls.cert", "--macaroonpath=/data/lnd/data/chain/bitcoin/testnet/admin.macaroon", "getinfo"]
       interval: 15s
       timeout: 10s
       retries: 10
       start_period: 20s
     networks:
-      - platform
+      - testnet4
 
   elementsd:
     build:
       context: ./elements
       dockerfile: Dockerfile
-    container_name: tokenization-elementsd
+    container_name: tokenization-testnet4-elementsd
     restart: unless-stopped
     depends_on:
       bitcoind:
@@ -247,28 +250,30 @@ services:
     environment:
       ELEMENTS_CONF_FILE: /etc/elements/elements.conf
       ELEMENTS_DATA_DIR: /data/elements
-      ELEMENTS_NETWORK: elementsregtest
+      ELEMENTS_NETWORK: liquidtestnet
       ELEMENTS_RPC_USER: user
       ELEMENTS_RPC_PASSWORD: pass
       ELEMENTS_RPC_PORT: "7041"
       ELEMENTS_WALLET_NAME: platform
     volumes:
-      - ./elements/elements.conf:/etc/elements/elements.conf:ro
-      - elements_data:/data/elements
+      - ./elements/elements.testnet4.conf:/etc/elements/elements.conf:ro
+      - testnet4_elements_data:/data/elements
+    ports:
+      - "17041:7041"
     healthcheck:
-      test: ["CMD", "elements-cli", "-chain=elementsregtest", "-rpcuser=user", "-rpcpassword=pass", "-rpcport=7041", "-rpcwallet=platform", "getwalletinfo"]
+      test: ["CMD", "elements-cli", "-chain=liquidtestnet", "-rpcuser=user", "-rpcpassword=pass", "-rpcport=7041", "-rpcwallet=platform", "getwalletinfo"]
       interval: 15s
       timeout: 10s
       retries: 10
       start_period: 25s
     networks:
-      - platform
+      - testnet4
 
   gateway:
     build:
       context: ../services/gateway
       dockerfile: Dockerfile
-    container_name: tokenization-gateway
+    container_name: tokenization-testnet4-gateway
     restart: unless-stopped
     depends_on:
       - auth
@@ -278,19 +283,17 @@ services:
       - nostr
       - admin
     ports:
-      - "8020:8000"
+      - "8040:8000"
     networks:
-      - platform
+      - testnet4
 
 volumes:
-  postgres_data:
-  redis_data:
-  bitcoin_data:
-  lnd_data:
-  elements_data:
+  testnet4_postgres_data:
+  testnet4_redis_data:
+  testnet4_bitcoin_data:
+  testnet4_lnd_data:
+  testnet4_elements_data:
 
 networks:
-  platform:
+  testnet4:
     driver: bridge
-
-

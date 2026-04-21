@@ -42,7 +42,7 @@ def _utc_now() -> datetime:
 def _confirmation_threshold(settings: Settings) -> int:
     if settings.bitcoin_network == "mainnet":
         return 6
-    if settings.bitcoin_network in {"testnet", "signet"}:
+    if settings.bitcoin_network in {"testnet", "testnet4", "signet"}:
         return 3
     return 1
 
