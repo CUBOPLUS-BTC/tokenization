@@ -171,7 +171,7 @@ services:
     image: python:3.11-slim
     container_name: tokenization-auth
     restart: unless-stopped
-    working_dir: ../services/auth
+    working_dir: /app/services/auth
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8000"
@@ -189,7 +189,7 @@ services:
     image: python:3.11-slim
     container_name: tokenization-tokenization
     restart: unless-stopped
-    working_dir: ../services/tokenization
+    working_dir: /app/services/tokenization
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8002"
@@ -209,7 +209,7 @@ services:
     image: python:3.11-slim
     container_name: tokenization-marketplace
     restart: unless-stopped
-    working_dir: ../services/marketplace
+    working_dir: /app/services/marketplace
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8003"
@@ -227,7 +227,7 @@ services:
     image: python:3.11-slim
     container_name: tokenization-nostr
     restart: unless-stopped
-    working_dir: ../services/nostr
+    working_dir: /app/services/nostr
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8005"
@@ -245,7 +245,7 @@ services:
     image: python:3.11-slim
     container_name: tokenization-admin
     restart: unless-stopped
-    working_dir: ../services/admin
+    working_dir: /app/services/admin
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8006"
@@ -261,7 +261,7 @@ services:
 
   gateway:
     build:
-      context: ../services/gateway
+      context: /app/services/gateway
       dockerfile: Dockerfile
     container_name: tokenization-gateway
     restart: unless-stopped
