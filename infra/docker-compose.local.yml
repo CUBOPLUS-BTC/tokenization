@@ -49,7 +49,7 @@ services:
       - ./infra/bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
       - bitcoin_data:/data/.bitcoin
     ports:
-      - "18443:18443"
+      - "18444:18443"
     healthcheck:
       test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=local_rpc", "-rpcpassword=local_rpc_password", "getblockchaininfo"]
       interval: 15s

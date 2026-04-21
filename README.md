@@ -46,6 +46,7 @@ Quick checks:
 
 - Gateway health: `http://localhost:8000/health`
 - Wallet health via gateway: `http://localhost:8000/v1/wallet/health`
+- Bitcoin Core RPC: `localhost:18444`
 - LND gRPC: `localhost:10009`
 - Elements RPC: `localhost:7041`
 

@@ -50,7 +50,7 @@ This starts:
 
 - `postgres` on `localhost:5432`
 - `redis` on `localhost:6379`
-- `bitcoind` on `localhost:18443`
+- `bitcoind` on `localhost:18444`
 - `lnd` on `localhost:10009`
 - `elementsd` on `localhost:7041`
 - `wallet`, `tokenization`, `marketplace`, `nostr`, `admin`
@@ -84,7 +84,7 @@ docker compose --project-directory . -f infra/docker-compose.local.yml down -v
 
 The local stack includes a pre-configured Bitcoin Core node running in `regtest` mode with ZMQ block and transaction publishers enabled for LND.
 
-- **RPC Endpoint**: `localhost:18443`
+- **RPC Endpoint**: `localhost:18444` (published host port) / `bitcoind:18443` (inside the Compose network)
 - **Default RPC User**: `local_rpc`
 - **Default RPC Password**: `local_rpc_password`
 
