@@ -142,31 +142,6 @@ services:
     networks:
       - platform
 
-  wallet:
-    image: python:3.11-slim
-    container_name: tokenization-wallet
-    restart: unless-stopped
-    working_dir: /app
-    command: >
-      sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
-      uvicorn services.wallet.main:app --host 0.0.0.0 --port 8001"
-    volumes:
-      - ./:/app
-      - lnd_data:/run/secrets/lnd:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      bitcoind:
-        condition: service_healthy
-      lnd:
-        condition: service_healthy
-      elementsd:
-        condition: service_healthy
-    networks:
-      - platform
-
   auth:
     image: python:3.11-slim
     container_name: tokenization-auth
@@ -181,6 +156,31 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+    networks:
+      - platform
+
+  wallet:
+    image: python:3.11-slim
+    container_name: tokenization-wallet
+    restart: unless-stopped
+    working_dir: /app/services/wallet
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt &&
+      uvicorn main:app --host 0.0.0.0 --port 8001"
+    volumes:
+      - ./:/app
+      - lnd_data:/run/secrets/lnd:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      bitcoind:
+        condition: service_healthy
+      lnd:
+        condition: service_healthy
+      elementsd:
         condition: service_healthy
     networks:
       - platform
