@@ -82,7 +82,7 @@ services:
       bitcoind:
         condition: service_healthy
     volumes:
-      - ./infra/lnd/lnd.conf:/etc/lnd/lnd.conf:ro
+      - ./lnd/lnd.conf:/etc/lnd/lnd.conf:ro
       - lnd_data:/data/lnd
     ports:
       - "10009:10009"
@@ -114,7 +114,7 @@ services:
       ELEMENTS_RPC_PORT: "7041"
       ELEMENTS_WALLET_NAME: platform
     volumes:
-      - /app/infra/elements/elements.conf:/etc/elements/elements.conf:ro
+      - ./elements/elements.conf:/etc/elements/elements.conf:ro
       - elements_data:/data/elements
     ports:
       - "7041:7041"
