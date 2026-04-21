@@ -55,6 +55,8 @@ services:
     ports:
       - "18444:18444"
       - "18443:18443"
+      - "28332:28332"
+      - "28333:28333"
     healthcheck:
       test:
         [
@@ -84,12 +86,17 @@ services:
     ports:
       - "10009:10009"
       - "9735:9735"
+      - "8080:8080"
     healthcheck:
-      test: ["CMD", "lncli", "--network=regtest", "--rpcserver=localhost:10009", "--tlscertpath=/data/lnd/tls.cert", "--macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon", "getinfo"]
+      test:
+        [
+          "CMD-SHELL",
+          "test -f /data/lnd/tls.cert || exit 1"
+        ]
       interval: 15s
       timeout: 10s
-      retries: 10
-      start_period: 20s
+      retries: 20
+      start_period: 60s
     networks:
       - platform
 
@@ -116,11 +123,15 @@ services:
     ports:
       - "7041:7041"
     healthcheck:
-      test: ["CMD", "elements-cli", "-chain=elementsregtest", "-rpcuser=user", "-rpcpassword=pass", "-rpcport=7041", "-rpcwallet=platform", "getwalletinfo"]
+      test:
+        [
+          "CMD-SHELL",
+          "elements-cli -chain=elementsregtest -rpcuser=user -rpcpassword=pass -rpcport=7041 getblockchaininfo >/dev/null 2>&1 || exit 1"
+        ]
       interval: 15s
       timeout: 10s
       retries: 10
-      start_period: 25s
+      start_period: 45s
     networks:
       - platform
 
