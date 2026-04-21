@@ -42,23 +42,35 @@ services:
     container_name: tokenization-bitcoind
     user: "0:0"
     command:
+      - -regtest
+      - -server=1
       - -datadir=/data/.bitcoin
+      - -conf=/data/.bitcoin/bitcoin.conf
       - -printtoconsole
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcuser=local_rpc
+      - -rpcpassword=local_rpc_password
     restart: unless-stopped
     volumes:
-      - ./infra/bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
+      - ./bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
       - bitcoin_data:/data/.bitcoin
     ports:
-      - "18444:18443"
+      - "18444:18444"
+      - "18443:18443"
     healthcheck:
-      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=local_rpc", "-rpcpassword=local_rpc_password", "getblockchaininfo"]
+      test:
+        [
+          "CMD-SHELL",
+          "bitcoin-cli -regtest -datadir=/data/.bitcoin -rpcuser=local_rpc -rpcpassword=local_rpc_password getblockchaininfo >/dev/null 2>&1 || exit 1"
+        ]
       interval: 15s
       timeout: 10s
-      retries: 5
-      start_period: 10s
+      retries: 10
+      start_period: 45s
     networks:
       - platform
-
+      
   lnd:
     image: lightninglabs/lnd:v0.20.0-beta
     container_name: tokenization-lnd
