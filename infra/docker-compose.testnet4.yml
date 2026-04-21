@@ -111,6 +111,21 @@ services:
     networks:
       - testnet4
 
+  migrate:
+    build:
+      context: .
+      dockerfile: ./services/migrate/Dockerfile
+    container_name: tokenization-testnet4-migrate
+    restart: "no"
+    env_file:
+      - path: ./infra/.env.testnet4.example
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - testnet4
+
   wallet:
     build:
       context: .
@@ -127,6 +142,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       bitcoind:
         condition: service_healthy
       lnd:
@@ -150,6 +167,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - testnet4
 
@@ -167,6 +186,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       elementsd:
         condition: service_healthy
     networks:
@@ -186,6 +207,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - testnet4
 
@@ -203,6 +226,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - testnet4
 
@@ -220,6 +245,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - testnet4
 
