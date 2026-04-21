@@ -259,21 +259,21 @@ services:
     networks:
       - platform
 
-    gateway:
-      build:
-        context: ../services/gateway
-        dockerfile: Dockerfile
-      container_name: tokenization-gateway
-      restart: unless-stopped
-      depends_on:
-        - auth
-        - wallet
-        - tokenization
-        - marketplace
-        - nostr
-        - admin
-      networks:
-        - platform
+  gateway:
+    build:
+      context: ../services/gateway
+      dockerfile: Dockerfile
+    container_name: tokenization-gateway
+    restart: unless-stopped
+    depends_on:
+      - auth
+      - wallet
+      - tokenization
+      - marketplace
+      - nostr
+      - admin
+    networks:
+      - platform
 
 volumes:
   postgres_data:
