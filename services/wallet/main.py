@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
 from common import get_readiness_payload, get_settings, install_http_security, record_audit_event
 from common import (
     OnRampError,
+    verify_api_key_via_auth_service,
     accrue_pending_yield_for_user,
     create_onramp_session,
     default_onramp_notices,
@@ -49,7 +50,6 @@ from common.metrics import metrics, mount_metrics_endpoint, record_business_even
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
 from auth.kyc_db import get_kyc_status, is_kyc_verified
 
-from wallet_auth import get_current_user_id, require_2fa
 from db import (
     create_onchain_withdrawal,
     create_transaction,
@@ -141,6 +141,10 @@ _withdrawal_idempotency_inflight: set[tuple[str, str]] = set()
 @dataclass(frozen=True)
 class AuthenticatedPrincipal:
     id: str
+    role: str
+    auth_method: str = "jwt"
+    scopes: tuple[str, ...] = ()
+    api_key_id: str | None = None
 
 
 class ContractError(Exception):
@@ -271,6 +275,22 @@ def _invalid_access_token_error() -> ContractError:
     )
 
 
+def _invalid_api_key_error() -> ContractError:
+    return ContractError(
+        code="invalid_api_key",
+        message="API key is invalid, expired, or revoked.",
+        status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+def _auth_service_unavailable_error() -> ContractError:
+    return ContractError(
+        code="auth_service_unavailable",
+        message="API key verification is currently unavailable.",
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
 def _withdrawal_cache_key(wallet_id: str, idempotency_key: str) -> tuple[str, str]:
     return wallet_id, idempotency_key.strip()[:128]
 
@@ -364,33 +384,107 @@ def _render_qr_png(value: str, *, box_size: int = 8, border: int = 4) -> bytes:
 
 async def _get_current_principal(
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer_scheme),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> AuthenticatedPrincipal:
-    if credentials is None:
+    if credentials is None and not x_api_key:
         raise ContractError(
             code="authentication_required",
             message="Authentication is required.",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
+    if credentials is not None:
+        try:
+            claims = jwt.decode(credentials.credentials, _jwt_secret(), algorithms=[_ALGORITHM])
+        except JWTError as exc:
+            raise _invalid_access_token_error() from exc
+
+        if claims.get("type") != "access":
+            raise _invalid_access_token_error()
+
+        user_id = _normalize_uuid_claim(claims.get("sub"))
+        if user_id is None:
+            raise _invalid_access_token_error()
+
+        async with _runtime_engine().connect() as conn:
+            row = await get_user_by_id(conn, user_id)
+
+        if row is None or _row_value(row, "deleted_at") is not None:
+            raise _invalid_access_token_error()
+
+        return AuthenticatedPrincipal(
+            id=user_id,
+            role=str(_row_value(row, "role") or "user"),
+            auth_method="jwt",
+        )
+
     try:
-        claims = jwt.decode(credentials.credentials, _jwt_secret(), algorithms=[_ALGORITHM])
-    except JWTError as exc:
-        raise _invalid_access_token_error() from exc
+        verification = await verify_api_key_via_auth_service(x_api_key or "", settings=settings)
+    except RuntimeError as exc:
+        raise _auth_service_unavailable_error() from exc
 
-    if claims.get("type") != "access":
-        raise _invalid_access_token_error()
-
-    user_id = _normalize_uuid_claim(claims.get("sub"))
-    if user_id is None:
-        raise _invalid_access_token_error()
+    if not verification.valid or verification.user_id is None:
+        raise _invalid_api_key_error()
 
     async with _runtime_engine().connect() as conn:
-        row = await get_user_by_id(conn, user_id)
+        row = await get_user_by_id(conn, verification.user_id)
 
     if row is None or _row_value(row, "deleted_at") is not None:
-        raise _invalid_access_token_error()
+        raise _invalid_api_key_error()
 
-    return AuthenticatedPrincipal(id=user_id)
+    return AuthenticatedPrincipal(
+        id=verification.user_id,
+        role=str(_row_value(row, "role") or "user"),
+        auth_method="api_key",
+        scopes=tuple(verification.scopes),
+        api_key_id=verification.key_id,
+    )
+
+
+def _require_api_key_scopes(*required_scopes: str):
+    async def dependency(
+        principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    ) -> AuthenticatedPrincipal:
+        if principal.auth_method != "api_key":
+            return principal
+        if not all(scope in principal.scopes for scope in required_scopes):
+            raise ContractError(
+                code="forbidden",
+                message="API key does not grant access to this resource.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        return principal
+
+    return dependency
+
+
+def _require_api_key_any_scope(*required_scopes: str):
+    async def dependency(
+        principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    ) -> AuthenticatedPrincipal:
+        if principal.auth_method != "api_key":
+            return principal
+        if not any(scope in principal.scopes for scope in required_scopes):
+            raise ContractError(
+                code="forbidden",
+                message="API key does not grant access to this resource.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        return principal
+
+    return dependency
+
+
+async def _reject_api_key_auth(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+) -> AuthenticatedPrincipal:
+    if principal.auth_method == "api_key":
+        raise ContractError(
+            code="api_key_forbidden",
+            message="API key authentication is not allowed for this operation because two-factor authentication is required.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    return principal
 
 
 def _estimate_onchain_fee(fee_rate_sat_vb: int) -> int:
@@ -573,7 +667,10 @@ async def ready():
 
 
 @app.get("/wallet", response_model=WalletResponse, tags=["Wallet"])
-async def get_wallet_summary(user_id: str = Depends(get_current_user_id)):
+async def get_wallet_summary(
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
+):
+    user_id = principal.id
     async with _runtime_engine().connect() as conn:
         wallet_row = await get_wallet_by_user_id(conn, user_id)
         if not wallet_row:
@@ -632,7 +729,10 @@ async def get_wallet_summary(user_id: str = Depends(get_current_user_id)):
     response_model=YieldSummaryResponse,
     tags=["Wallet"],
 )
-async def get_wallet_yield_summary(user_id: str = Depends(get_current_user_id)):
+async def get_wallet_yield_summary(
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_any_scope("wallet:read", "yield:read")),
+):
+    user_id = principal.id
     async with _runtime_engine().connect() as conn:
         wallet_row = await get_wallet_by_user_id(conn, user_id)
         if not wallet_row:
@@ -683,7 +783,7 @@ async def get_wallet_yield_summary(user_id: str = Depends(get_current_user_id)):
     summary="Return custody posture for the authenticated wallet",
 )
 async def get_wallet_custody_status(
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
     async with _runtime_engine().connect() as conn:
         wallet = await get_or_create_wallet(conn, principal.id)
@@ -714,7 +814,7 @@ async def get_wallet_custody_status(
     summary="List supported fiat-to-BTC on-ramp providers",
 )
 async def list_fiat_onramp_providers(
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
     async with _runtime_engine().connect() as conn:
         kyc_row = await get_kyc_status(conn, principal.id)
@@ -751,7 +851,7 @@ async def list_fiat_onramp_providers(
 async def create_fiat_onramp_session(
     request: Request,
     body: FiatOnRampSessionRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
 ):
     async with _runtime_engine().connect() as conn:
         user = await get_user_by_id(conn, principal.id)
@@ -818,9 +918,10 @@ async def create_fiat_onramp_session(
 @app.post("/lightning/invoices", response_model=Invoice, tags=["Lightning"])
 async def create_invoice(
     req: InvoiceCreate,
-    user_id: str = Depends(get_current_user_id),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
     conn: AsyncConnection = Depends(get_db_conn),
 ):
+    user_id = principal.id
     try:
         resp = lnd_client.create_invoice(memo=req.memo or "", amount_sats=req.amount_sats)
 
@@ -863,11 +964,35 @@ async def create_invoice(
 async def pay_invoice(
     request: Request,
     req: PaymentCreate,
-    user_id: str = Depends(get_current_user_id),
-    _: None = Depends(require_2fa),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
+    _: AuthenticatedPrincipal = Depends(_reject_api_key_auth),
     conn: AsyncConnection = Depends(get_db_conn),
+    x_2fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
 ):
+    user_id = principal.id
     try:
+        user = await get_user_by_id(conn, user_id)
+        if user is None or _row_value(user, "deleted_at") is not None:
+            raise _invalid_access_token_error()
+        if not _row_value(user, "totp_secret"):
+            raise ContractError(
+                code="two_factor_not_enabled",
+                message="Two-factor authentication must be enabled before paying invoices.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        if not x_2fa_code:
+            raise ContractError(
+                code="two_factor_required",
+                message="X-2FA-Code header is required for Lightning payments.",
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        if not _verify_totp_code(_row_value(user, "totp_secret"), x_2fa_code):
+            raise ContractError(
+                code="invalid_2fa_code",
+                message="Two-factor authentication code is invalid.",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+
         wallet = await get_wallet_by_user_id(conn, user_id)
         if not wallet:
             raise HTTPException(status_code=404, detail="Wallet not found")
@@ -944,8 +1069,9 @@ async def pay_invoice(
 @app.get("/lightning/invoices/{r_hash}", response_model=Invoice, tags=["Lightning"])
 async def get_invoice(
     r_hash: str,
-    user_id: str = Depends(get_current_user_id),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
+    user_id = principal.id
     try:
         async with _runtime_engine().connect() as conn:
             wallet = await get_wallet_by_user_id(conn, user_id)
@@ -999,7 +1125,7 @@ async def get_invoice(
 @app.post("/lightning/decode", response_model=Bolt11DecodeResponse, tags=["Lightning"])
 async def decode_bolt11(
     body: Bolt11DecodeRequest,
-    user_id: str = Depends(get_current_user_id),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
     try:
         req = lnd_client.decode_pay_req(payment_request=body.payment_request)
@@ -1050,7 +1176,7 @@ async def decode_bolt11(
     include_in_schema=False,
 )
 async def get_onchain_fees(
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
     liquid_rpc = get_liquid_rpc(settings)
 
@@ -1107,7 +1233,7 @@ async def render_qr_code(
     value: str = Query(min_length=1, max_length=4096),
     box_size: int = Query(default=8, ge=1, le=20),
     border: int = Query(default=4, ge=0, le=20),
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
     payload = _render_qr_png(value, box_size=box_size, border=border)
     record_business_event("wallet_qr_render")
@@ -1126,7 +1252,7 @@ async def render_qr_code(
     include_in_schema=False,
 )
 async def create_onchain_address(
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
 ):
     async with _runtime_engine().connect() as conn:
         wallet = await get_or_create_wallet(conn, principal.id)
@@ -1147,7 +1273,7 @@ async def create_onchain_address(
     summary="Create a mainchain peg-in deposit address",
 )
 async def get_pegin_address(
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
 ):
     liquid_rpc = get_liquid_rpc(settings)
     try:
@@ -1175,7 +1301,7 @@ async def get_pegin_address(
 async def claim_pegin(
     request: Request,
     body: PegInClaimRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
 ):
     liquid_rpc = get_liquid_rpc(settings)
     try:
@@ -1223,7 +1349,8 @@ async def claim_pegin(
 async def withdraw_onchain(
     request: Request,
     body: OnchainWithdrawalRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
+    _: AuthenticatedPrincipal = Depends(_reject_api_key_auth),
     two_fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
 ):
     if not two_fa_code:
@@ -1417,7 +1544,8 @@ async def withdraw_onchain(
 async def pegout_to_mainchain(
     request: Request,
     body: PegOutRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
+    _: AuthenticatedPrincipal = Depends(_reject_api_key_auth),
     two_fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
 ):
     if not two_fa_code:
@@ -1512,7 +1640,7 @@ async def get_transaction_history(
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     transaction_type: TransactionType | None = Query(default=None, alias="type"),
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
     async with _runtime_engine().connect() as conn:
         wallet = await get_or_create_wallet(conn, principal.id)

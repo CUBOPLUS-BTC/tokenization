@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     tokenization_service_url: str
     marketplace_service_url: str
     nostr_service_url: str
+    auth_service_url: str = "http://auth:8000"
 
     postgres_host: str
     postgres_port: int
@@ -87,6 +88,10 @@ class Settings(BaseSettings):
     rate_limit_window_seconds: int = 60
     rate_limit_write_requests: int = 60
     rate_limit_sensitive_requests: int = 10
+    api_key_bcrypt_rounds: int = 12
+    api_key_cache_ttl_seconds: int = 60
+    api_key_prefix_length: int = 8
+    api_key_suffix_bytes: int = 32
 
     # KYC: trade value threshold (sats) above which KYC verification is required.
     # Set to 0 to disable enforcement.  Default 10 000 000 sats (~0.1 BTC).

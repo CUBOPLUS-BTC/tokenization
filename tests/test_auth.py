@@ -44,6 +44,23 @@ FakeUser = namedtuple(
     ],
 )
 
+FakeApiKey = namedtuple(
+    "FakeApiKey",
+    [
+        "id",
+        "user_id",
+        "name",
+        "key_prefix",
+        "key_hash",
+        "scopes",
+        "last_used_at",
+        "expires_at",
+        "revoked",
+        "created_at",
+        "created_by",
+    ],
+)
+
 
 def _make_fake_user(email: str, password: str, *, role: str = "user") -> FakeUser:
     return FakeUser(
@@ -55,6 +72,30 @@ def _make_fake_user(email: str, password: str, *, role: str = "user") -> FakeUse
         referral_code="REF1234567",
         created_at=datetime.now(tz=timezone.utc),
         deleted_at=None,
+    )
+
+
+def _make_fake_api_key(
+    *,
+    user_id: uuid.UUID,
+    name: str = "Integration",
+    raw_key: str = "abc123xy_test-secret-value",
+    scopes: list[str] | None = None,
+    revoked: bool = False,
+    expires_at: datetime | None = None,
+) -> FakeApiKey:
+    return FakeApiKey(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        name=name,
+        key_prefix=raw_key.split("_", 1)[0],
+        key_hash=bcrypt.hashpw(raw_key.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
+        scopes=scopes or ["wallet:read"],
+        last_used_at=None,
+        expires_at=expires_at,
+        revoked=revoked,
+        created_at=datetime.now(tz=timezone.utc),
+        created_by=user_id,
     )
 
 
@@ -941,4 +982,85 @@ class TestOnboardingSummary:
         assert len(body["fiat_onramp_providers"]) == 2
         assert any(provider["provider_id"] == "bank-bridge" for provider in body["fiat_onramp_providers"])
         assert any("provider-hosted checkout" in notice.lower() for notice in body["compliance_notices"])
+
+
+class TestApiKeys:
+    def test_create_api_key_returns_secret_once(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123")
+        stored_row = _make_fake_api_key(
+            user_id=fake_user.id,
+            name="My Integration Key",
+            scopes=["wallet:read", "yield:read"],
+        )
+
+        with (
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.get_api_key_by_name", AsyncMock(return_value=None)),
+            patch("services.auth.main.get_api_key_by_prefix", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_api_key", AsyncMock(return_value=stored_row)),
+            patch("services.auth.main.record_audit_event", AsyncMock()),
+        ):
+            token = _issue_access_token(fake_user, settings.jwt_secret)
+            resp = app_client.post(
+                "/auth/api-keys",
+                headers=_auth_headers(token),
+                json={
+                    "name": "My Integration Key",
+                    "scopes": ["wallet:read", "yield:read"],
+                },
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["name"] == "My Integration Key"
+        assert body["key_prefix"]
+        assert "_" in body["key"]
+        assert body["scopes"] == ["wallet:read", "yield:read"]
+
+    def test_list_api_keys_returns_metadata_without_secret(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123")
+        stored_row = _make_fake_api_key(user_id=fake_user.id)
+
+        with (
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.list_api_keys_for_user", AsyncMock(return_value=[stored_row])),
+        ):
+            token = _issue_access_token(fake_user, settings.jwt_secret)
+            resp = app_client.get("/auth/api-keys", headers=_auth_headers(token))
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["keys"]) == 1
+        assert body["keys"][0]["key_prefix"] == stored_row.key_prefix
+        assert "key" not in body["keys"][0]
+
+    def test_verify_api_key_returns_principal_payload(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123")
+        raw_key = "abc123xy_programmatic-secret"
+        stored_row = _make_fake_api_key(
+            user_id=fake_user.id,
+            raw_key=raw_key,
+            scopes=["wallet:read"],
+        )
+
+        with (
+            patch("services.auth.main.get_api_key_by_prefix", AsyncMock(return_value=stored_row)),
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.touch_api_key_last_used", AsyncMock()),
+            patch("services.auth.main.record_audit_event", AsyncMock()),
+        ):
+            resp = app_client.post(
+                "/internal/api-keys/verify",
+                json={"api_key": raw_key},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["valid"] is True
+        assert body["user_id"] == str(fake_user.id)
+        assert body["scopes"] == ["wallet:read"]
+        assert body["key_id"] == str(stored_row.id)
 

@@ -5,34 +5,6 @@
     "version": "0.1.0"
   },
   "paths": {
-    "/announcements": {
-      "post": {
-        "summary": "Publish Announcement",
-        "operationId": "publish_announcement_announcements_post",
-        "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication Required"
-          },
-          "403": {
-            "description": "Forbidden"
-          },
-          "422": {
-            "description": "Validation Error"
-          },
-          "502": {
-            "description": "Relay Unavailable"
-          }
-        }
-      }
-    },
     "/metrics": {
       "get": {
         "tags": [
@@ -82,6 +54,296 @@
             }
           }
         }
+      }
+    },
+    "/announcements": {
+      "post": {
+        "summary": "Publish a classified announcement to Nostr relays",
+        "operationId": "publish_announcement_announcements_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnnouncementPublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnnouncementPublishResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AnnouncementPublishRequest": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 140,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Content"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 280
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "identifier": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identifier"
+          },
+          "hashtags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 12,
+            "title": "Hashtags"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "price_amount": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Amount"
+          },
+          "price_currency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 8,
+                "minLength": 3
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Currency"
+          },
+          "price_frequency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Frequency"
+          },
+          "reference_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Url"
+          },
+          "image_urls": {
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "format": "uri"
+            },
+            "type": "array",
+            "maxItems": 6,
+            "title": "Image Urls"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "sold"
+            ],
+            "title": "Status",
+            "default": "active"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "content"
+        ],
+        "title": "AnnouncementPublishRequest"
+      },
+      "AnnouncementPublishResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "integer",
+            "const": 30402,
+            "title": "Kind"
+          },
+          "pubkey": {
+            "type": "string",
+            "title": "Pubkey"
+          },
+          "identifier": {
+            "type": "string",
+            "title": "Identifier"
+          },
+          "accepted_relays": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Accepted Relays"
+          },
+          "failed_relays": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failed Relays"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "pubkey",
+          "identifier",
+          "accepted_relays",
+          "failed_relays"
+        ],
+        "title": "AnnouncementPublishResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
       }
     }
   }

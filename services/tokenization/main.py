@@ -10,7 +10,7 @@ import sys
 from typing import Any
 import uuid
 
-from fastapi import Depends, FastAPI, Query, Request, Security, status
+from fastapi import Depends, FastAPI, Header, Query, Request, Security, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -31,6 +31,7 @@ from common import (
     get_settings,
     install_http_security,
     record_audit_event,
+    verify_api_key_via_auth_service,
 )
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
@@ -93,6 +94,9 @@ class ContractError(Exception):
 class AuthenticatedPrincipal:
     id: str
     role: str
+    auth_method: str = "jwt"
+    scopes: tuple[str, ...] = ()
+    api_key_id: str | None = None
 
 
 def _make_async_url(sync_url: str) -> str:
@@ -172,6 +176,22 @@ def _invalid_access_token_error() -> ContractError:
         code="invalid_token",
         message="Access token is invalid or expired.",
         status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+def _invalid_api_key_error() -> ContractError:
+    return ContractError(
+        code="invalid_api_key",
+        message="API key is invalid, expired, or revoked.",
+        status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+def _auth_service_unavailable_error() -> ContractError:
+    return ContractError(
+        code="auth_service_unavailable",
+        message="API key verification is currently unavailable.",
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
     )
 
 
@@ -562,38 +582,79 @@ def _dispatch_asset_evaluation(
 
 async def _get_current_principal(
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer_scheme),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> AuthenticatedPrincipal:
-    if credentials is None:
+    if credentials is None and not x_api_key:
         raise ContractError(
             code="authentication_required",
             message="Authentication is required.",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    try:
-        claims = decode_token(
-            credentials.credentials,
-            _jwt_secret(),
-            expected_type="access",
-        )
-    except JWTError as exc:
-        raise _invalid_access_token_error() from exc
+    if credentials is not None:
+        try:
+            claims = decode_token(
+                credentials.credentials,
+                _jwt_secret(),
+                expected_type="access",
+            )
+        except JWTError as exc:
+            raise _invalid_access_token_error() from exc
 
-    user_id = _normalize_uuid_claim(claims.get("sub"))
-    role = claims.get("role")
-    if user_id is None or not isinstance(role, str):
-        raise _invalid_access_token_error()
+        user_id = _normalize_uuid_claim(claims.get("sub"))
+        role = claims.get("role")
+        if user_id is None or not isinstance(role, str):
+            raise _invalid_access_token_error()
+
+        async with _runtime_engine().connect() as conn:
+            row = await get_user_by_id(conn, user_id)
+
+        if row is None or _row_value(row, "deleted_at") is not None:
+            raise _invalid_access_token_error()
+
+        return AuthenticatedPrincipal(id=user_id, role=role, auth_method="jwt")
+
+    try:
+        verification = await verify_api_key_via_auth_service(x_api_key or "", settings=settings)
+    except RuntimeError as exc:
+        raise _auth_service_unavailable_error() from exc
+
+    if not verification.valid or verification.user_id is None:
+        raise _invalid_api_key_error()
 
     async with _runtime_engine().connect() as conn:
-        row = await get_user_by_id(conn, user_id)
+        row = await get_user_by_id(conn, verification.user_id)
 
     if row is None or _row_value(row, "deleted_at") is not None:
-        raise _invalid_access_token_error()
+        raise _invalid_api_key_error()
 
-    return AuthenticatedPrincipal(id=user_id, role=role)
+    return AuthenticatedPrincipal(
+        id=verification.user_id,
+        role=str(_row_value(row, "role") or "user"),
+        auth_method="api_key",
+        scopes=tuple(verification.scopes),
+        api_key_id=verification.key_id,
+    )
 
 
-def _require_roles(*allowed_roles: str):
+def _require_api_key_scopes(*required_scopes: str):
+    async def dependency(
+        principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    ) -> AuthenticatedPrincipal:
+        if principal.auth_method != "api_key":
+            return principal
+        if not all(scope in principal.scopes for scope in required_scopes):
+            raise ContractError(
+                code="forbidden",
+                message="API key does not grant access to this resource.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        return principal
+
+    return dependency
+
+
+def _require_roles(*allowed_roles: str, api_key_scopes: tuple[str, ...] = ()):
     async def dependency(
         principal: AuthenticatedPrincipal = Depends(_get_current_principal),
     ) -> AuthenticatedPrincipal:
@@ -603,6 +664,13 @@ def _require_roles(*allowed_roles: str):
                 message="You do not have permission to access this resource.",
                 status_code=status.HTTP_403_FORBIDDEN,
             )
+        if principal.auth_method == "api_key" and api_key_scopes:
+            if not all(scope in principal.scopes for scope in api_key_scopes):
+                raise ContractError(
+                    code="forbidden",
+                    message="API key does not grant access to this resource.",
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
         return principal
 
     return dependency
@@ -696,7 +764,7 @@ async def liquid_issuances():
 async def submit_asset(
     request: Request,
     body: AssetCreateRequest,
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin")),
+    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin", api_key_scopes=("tokenization:assets:create",))),
 ):
     async with _runtime_engine().connect() as conn:
         row = await create_asset(
@@ -740,7 +808,7 @@ async def get_assets(
     category: AssetCategory | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("tokenization:assets:read")),
 ):
     async with _runtime_engine().connect() as conn:
         rows = await list_assets(
@@ -765,7 +833,7 @@ async def get_assets(
 async def request_asset_evaluation(
     request: Request,
     asset_id: uuid.UUID,
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin")),
+    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin", api_key_scopes=("tokenization:assets:create",))),
 ):
     async with _runtime_engine().connect() as conn:
         asset_row = await get_asset_by_id(conn, asset_id)
@@ -837,7 +905,7 @@ async def tokenize_asset(
     request: Request,
     asset_id: uuid.UUID,
     body: AssetTokenizationRequest,
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin")),
+    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin", api_key_scopes=("tokenization:assets:create",))),
 ):
     async with _runtime_engine().connect() as conn:
         asset_row = await get_asset_by_id(conn, asset_id)
@@ -965,7 +1033,7 @@ async def tokenize_asset(
 )
 async def get_asset(
     asset_id: uuid.UUID,
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("tokenization:assets:read")),
 ):
     async with _runtime_engine().connect() as conn:
         row = await get_asset_by_id(conn, asset_id)

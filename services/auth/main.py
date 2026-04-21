@@ -14,9 +14,15 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+import base64
+import hashlib
+import ipaddress
 from pathlib import Path
+import secrets
+import string
 import sys
+import time
 import uuid
 
 from typing import Annotated, Optional
@@ -44,6 +50,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from common import get_settings
 from common import (
+    ALL_API_KEY_SCOPES,
+    allowed_api_key_scopes_for_role,
     create_referral_signup_reward,
     default_onramp_notices,
     describe_custody_settings,
@@ -52,7 +60,10 @@ from common import (
     list_onramp_provider_views,
     list_referral_rewards_for_user,
     list_referred_users,
+    record_audit_event,
     summarize_referrals_for_user,
+    extract_api_key_prefix,
+    invalidate_api_key_verify_cache,
 )
 from common.security import install_http_security
 from common.readiness import get_readiness_payload
@@ -61,6 +72,12 @@ from common.metrics import metrics, mount_metrics_endpoint, record_business_even
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
 
 from schemas import (
+    ApiKeyCreateRequest,
+    ApiKeyCreateResponse,
+    ApiKeyListResponse,
+    ApiKeyOut,
+    ApiKeyVerifyRequest,
+    ApiKeyVerifyResponse,
     AuthResponse,
     KycAdminUpdateRequest,
     KycListResponse,
@@ -86,19 +103,27 @@ from schemas import (
     ReferredUserOut,
 )
 from jwt_utils import decode_token, issue_token_pair
-from nostr_utils import validate_nostr_event, NostrValidationError
+from services.auth.nostr_utils import validate_nostr_event, NostrValidationError
 from db import (
+    create_api_key,
     create_nostr_identity,
     create_nostr_user,
     create_refresh_session,
     create_user,
+    get_api_key_by_id,
+    get_api_key_by_name,
+    get_api_key_by_prefix,
     enable_2fa,
     get_nostr_identity_by_pubkey,
     get_user_2fa_secret,
     get_user_by_email,
     get_user_by_id,
+    list_api_keys_for_user,
     revoke_refresh_session,
+    revoke_api_key,
     rotate_refresh_session,
+    rotate_api_key,
+    touch_api_key_last_used,
 )
 from kyc_db import (
     create_kyc_record,
@@ -125,6 +150,8 @@ configure_structured_logging(service_name=settings.service_name, log_level=setti
 configure_alerting(settings)
 
 # bcrypt hashing config (using default rounds)
+_API_KEY_ALPHABET = string.ascii_letters + string.digits
+_API_KEY_VERIFY_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +442,151 @@ def _build_auth_response(row, *, secret: str) -> dict:
         secret=secret,
     )
     return _auth_response_payload(row, tokens)
+
+
+def _row_value(row: object, key: str, default=None):
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None and key in mapping:
+        return mapping[key]
+    return getattr(row, key, default)
+
+
+def _api_key_out(row) -> ApiKeyOut:
+    return ApiKeyOut(
+        id=str(_row_value(row, "id")),
+        name=str(_row_value(row, "name")),
+        key_prefix=str(_row_value(row, "key_prefix")),
+        scopes=list(_row_value(row, "scopes") or []),
+        last_used_at=_row_value(row, "last_used_at"),
+        expires_at=_row_value(row, "expires_at"),
+        revoked=bool(_row_value(row, "revoked")),
+        created_at=_row_value(row, "created_at"),
+    )
+
+
+def _validate_requested_api_key_scopes(*, role: str, scopes: list[str]) -> list[str]:
+    normalized_scopes = [str(scope).strip() for scope in scopes if str(scope).strip()]
+    if not normalized_scopes:
+        raise ContractError(
+            code="invalid_scopes",
+            message="At least one API key scope is required.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
+    unknown_scopes = sorted(set(normalized_scopes) - set(ALL_API_KEY_SCOPES))
+    if unknown_scopes:
+        raise ContractError(
+            code="invalid_scopes",
+            message=f"Unknown API key scopes requested: {', '.join(unknown_scopes)}.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
+    allowed_scopes = allowed_api_key_scopes_for_role(role)
+    disallowed_scopes = sorted(set(normalized_scopes) - allowed_scopes)
+    if disallowed_scopes:
+        raise ContractError(
+            code="invalid_scopes",
+            message=f"Requested scopes are not permitted for this user: {', '.join(disallowed_scopes)}.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    return sorted(set(normalized_scopes))
+
+
+def _api_key_response(row, *, key: str) -> dict:
+    return ApiKeyCreateResponse(
+        id=str(_row_value(row, "id")),
+        name=str(_row_value(row, "name")),
+        key=key,
+        key_prefix=str(_row_value(row, "key_prefix")),
+        scopes=list(_row_value(row, "scopes") or []),
+        expires_at=_row_value(row, "expires_at"),
+        created_at=_row_value(row, "created_at"),
+    ).model_dump(mode="json")
+
+
+async def _generate_api_key_material(conn: AsyncConnection) -> tuple[str, str]:
+    suffix_bytes = max(int(settings.api_key_suffix_bytes), 1)
+    prefix_length = max(int(settings.api_key_prefix_length), 1)
+
+    for _ in range(10):
+        prefix = "".join(secrets.choice(_API_KEY_ALPHABET) for _ in range(prefix_length))
+        if await get_api_key_by_prefix(conn, key_prefix=prefix) is not None:
+            continue
+
+        suffix = base64.urlsafe_b64encode(secrets.token_bytes(suffix_bytes)).rstrip(b"=").decode("ascii")
+        return prefix, f"{prefix}_{suffix}"
+
+    raise ContractError(
+        code="api_key_generation_failed",
+        message="Unable to generate a unique API key prefix.",
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
+def _api_key_hash(raw_key: str) -> str:
+    rounds = max(int(settings.api_key_bcrypt_rounds), 4)
+    return bcrypt.hashpw(
+        raw_key.encode("utf-8"),
+        bcrypt.gensalt(rounds=rounds),
+    ).decode("utf-8")
+
+
+def _api_key_cache_digest(raw_key: str) -> str:
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+
+def _clear_api_key_verify_cache(*, key_id: str | None = None, raw_key: str | None = None) -> None:
+    invalidate_api_key_verify_cache(
+        key_id=key_id,
+        digest=_api_key_cache_digest(raw_key) if raw_key else None,
+    )
+    if raw_key:
+        _API_KEY_VERIFY_CACHE.pop(_api_key_cache_digest(raw_key), None)
+    if key_id:
+        stale_digests = [
+            digest
+            for digest, (_, cached_payload) in _API_KEY_VERIFY_CACHE.items()
+            if cached_payload.get("key_id") == key_id
+        ]
+        for digest in stale_digests:
+            _API_KEY_VERIFY_CACHE.pop(digest, None)
+
+
+def _cache_api_key_verify_result(raw_key: str, payload: dict[str, object]) -> None:
+    _API_KEY_VERIFY_CACHE[_api_key_cache_digest(raw_key)] = (time.monotonic(), payload)
+
+
+def _get_cached_api_key_verify_result(raw_key: str) -> dict[str, object] | None:
+    digest = _api_key_cache_digest(raw_key)
+    cached = _API_KEY_VERIFY_CACHE.get(digest)
+    if cached is None:
+        return None
+
+    cached_at, payload = cached
+    if time.monotonic() - cached_at >= max(int(settings.api_key_cache_ttl_seconds), 1):
+        _API_KEY_VERIFY_CACHE.pop(digest, None)
+        return None
+    return payload
+
+
+def _is_private_network_request(request: Request) -> bool:
+    host = request.client.host if request.client is not None else ""
+    if not host:
+        return settings.env_profile == "local"
+    if host == "testclient":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host in {"localhost", "auth", "gateway"}
+    return any(
+        (
+            address.is_private,
+            address.is_loopback,
+            address.is_link_local,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -780,6 +952,297 @@ async def get_referral_summary(
         referred_users=[_referred_user_out(row) for row in referred_rows],
         rewards=[_referral_reward_out(row) for row in reward_rows],
     ).model_dump(mode="json")
+
+
+def _api_key_target_user_id(
+    principal: AuthenticatedPrincipal,
+    requested_user_id: str | None,
+) -> str:
+    if requested_user_id is None:
+        return principal.id
+    if requested_user_id == principal.id:
+        return principal.id
+    if principal.role != "admin":
+        raise ContractError(
+            code="forbidden",
+            message="Only admins can manage API keys for other users.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    return requested_user_id
+
+
+@app.post(
+    "/auth/api-keys",
+    status_code=status.HTTP_201_CREATED,
+    response_model=ApiKeyCreateResponse,
+    summary="Create a new API key",
+)
+async def create_api_key_endpoint(
+    request: Request,
+    body: ApiKeyCreateRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    if body.expires_at is not None and body.expires_at <= datetime.now(tz=timezone.utc):
+        raise ContractError(
+            code="invalid_expiration",
+            message="API key expiration must be in the future.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
+    scopes = _validate_requested_api_key_scopes(role=principal.role, scopes=body.scopes)
+
+    async with _engine.connect() as conn:
+        existing = await get_api_key_by_name(conn, user_id=principal.id, name=body.name)
+        if existing is not None:
+            raise ContractError(
+                code="api_key_name_taken",
+                message="An API key with that name already exists.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        key_prefix, raw_key = await _generate_api_key_material(conn)
+        row = await create_api_key(
+            conn,
+            user_id=principal.id,
+            name=body.name,
+            key_prefix=key_prefix,
+            key_hash=_api_key_hash(raw_key),
+            scopes=scopes,
+            expires_at=body.expires_at,
+            created_by=principal.id,
+        )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="api_key_create",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="api_key",
+            target_id=_row_value(row, "id"),
+            metadata={
+                "key_prefix": key_prefix,
+                "name": body.name,
+                "scopes": scopes,
+                "expires_at": body.expires_at.isoformat() if body.expires_at else None,
+            },
+        )
+
+    record_business_event("auth_api_key_create")
+    return _api_key_response(row, key=raw_key)
+
+
+@app.get(
+    "/auth/api-keys",
+    status_code=status.HTTP_200_OK,
+    response_model=ApiKeyListResponse,
+    summary="List API keys",
+)
+async def list_api_keys_endpoint(
+    user_id: str | None = None,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    target_user_id = _api_key_target_user_id(principal, user_id)
+    async with _engine.connect() as conn:
+        rows = await list_api_keys_for_user(conn, user_id=target_user_id)
+    return ApiKeyListResponse(keys=[_api_key_out(row) for row in rows]).model_dump(mode="json")
+
+
+@app.delete(
+    "/auth/api-keys/{key_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=MessageResponse,
+    summary="Revoke an API key",
+)
+async def revoke_api_key_endpoint(
+    request: Request,
+    key_id: str,
+    user_id: str | None = None,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    target_user_id = _api_key_target_user_id(principal, user_id)
+    async with _engine.connect() as conn:
+        existing = await get_api_key_by_id(conn, key_id=key_id)
+        if existing is None or str(_row_value(existing, "user_id")) != target_user_id:
+            raise ContractError(
+                code="api_key_not_found",
+                message="API key not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        if bool(_row_value(existing, "revoked")):
+            return MessageResponse(message="Key revoked").model_dump()
+
+        revoked_row = await revoke_api_key(conn, key_id=key_id)
+        if revoked_row is None:
+            raise ContractError(
+                code="api_key_not_found",
+                message="API key not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="api_key_revoke",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="api_key",
+            target_id=key_id,
+            metadata={"owner_id": target_user_id, "key_prefix": _row_value(revoked_row, "key_prefix")},
+        )
+
+    _clear_api_key_verify_cache(key_id=key_id)
+    record_business_event("auth_api_key_revoke")
+    return MessageResponse(message="Key revoked").model_dump()
+
+
+@app.patch(
+    "/auth/api-keys/{key_id}/rotate",
+    status_code=status.HTTP_200_OK,
+    response_model=ApiKeyCreateResponse,
+    summary="Rotate an API key",
+)
+async def rotate_api_key_endpoint(
+    request: Request,
+    key_id: str,
+    user_id: str | None = None,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    target_user_id = _api_key_target_user_id(principal, user_id)
+    async with _engine.connect() as conn:
+        existing = await get_api_key_by_id(conn, key_id=key_id)
+        if existing is None or str(_row_value(existing, "user_id")) != target_user_id:
+            raise ContractError(
+                code="api_key_not_found",
+                message="API key not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        if bool(_row_value(existing, "revoked")):
+            raise ContractError(
+                code="api_key_revoked",
+                message="Revoked API keys cannot be rotated.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        key_prefix, raw_key = await _generate_api_key_material(conn)
+        rotated_row = await rotate_api_key(
+            conn,
+            key_id=key_id,
+            key_prefix=key_prefix,
+            key_hash=_api_key_hash(raw_key),
+        )
+        if rotated_row is None:
+            raise ContractError(
+                code="api_key_not_found",
+                message="API key not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="api_key_rotate",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="api_key",
+            target_id=key_id,
+            metadata={"owner_id": target_user_id, "key_prefix": key_prefix},
+        )
+
+    _clear_api_key_verify_cache(key_id=key_id)
+    record_business_event("auth_api_key_rotate")
+    return _api_key_response(rotated_row, key=raw_key)
+
+
+@app.post(
+    "/internal/api-keys/verify",
+    status_code=status.HTTP_200_OK,
+    response_model=ApiKeyVerifyResponse,
+    summary="Verify an API key for internal services",
+)
+async def verify_api_key_endpoint(
+    request: Request,
+    body: ApiKeyVerifyRequest,
+):
+    if not _is_private_network_request(request):
+        raise ContractError(
+            code="forbidden",
+            message="This endpoint is only available on the internal network.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    cached = _get_cached_api_key_verify_result(body.api_key)
+    if cached is not None:
+        if not bool(cached.get("valid")):
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=cached)
+        return cached
+
+    key_prefix = extract_api_key_prefix(
+        body.api_key,
+        prefix_length=settings.api_key_prefix_length,
+    )
+    if key_prefix is None:
+        payload = {"valid": False, "reason": "not_found"}
+        _cache_api_key_verify_result(body.api_key, payload)
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=payload)
+
+    async with _engine.connect() as conn:
+        row = await get_api_key_by_prefix(conn, key_prefix=key_prefix)
+        if row is None:
+            payload = {"valid": False, "reason": "not_found"}
+            _cache_api_key_verify_result(body.api_key, payload)
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=payload)
+
+        if bool(_row_value(row, "revoked")):
+            payload = {"valid": False, "reason": "revoked"}
+            _cache_api_key_verify_result(body.api_key, payload)
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=payload)
+
+        expires_at = _row_value(row, "expires_at")
+        if expires_at is not None and expires_at <= datetime.now(tz=timezone.utc):
+            payload = {"valid": False, "reason": "expired"}
+            _cache_api_key_verify_result(body.api_key, payload)
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=payload)
+
+        try:
+            valid = bcrypt.checkpw(
+                body.api_key.encode("utf-8"),
+                str(_row_value(row, "key_hash")).encode("utf-8"),
+            )
+        except ValueError:
+            valid = False
+
+        if not valid:
+            payload = {"valid": False, "reason": "not_found"}
+            _cache_api_key_verify_result(body.api_key, payload)
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=payload)
+
+        await touch_api_key_last_used(conn, key_id=str(_row_value(row, "id")))
+        user_row = await get_user_by_id(conn, str(_row_value(row, "user_id")))
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="api_key_authenticate",
+            actor_id=str(_row_value(row, "user_id")),
+            actor_role=_row_value(user_row, "role"),
+            target_type="api_key",
+            target_id=_row_value(row, "id"),
+            metadata={
+                "key_id": str(_row_value(row, "id")),
+                "scopes": list(_row_value(row, "scopes") or []),
+                "key_prefix": str(_row_value(row, "key_prefix")),
+            },
+        )
+
+    payload = ApiKeyVerifyResponse(
+        valid=True,
+        user_id=str(_row_value(row, "user_id")),
+        scopes=list(_row_value(row, "scopes") or []),
+        key_id=str(_row_value(row, "id")),
+    ).model_dump(mode="json")
+    _cache_api_key_verify_result(body.api_key, payload)
+    return payload
 
 
 def _role_response(principal: AuthenticatedPrincipal, *required_roles: str) -> RoleCheckResponse:

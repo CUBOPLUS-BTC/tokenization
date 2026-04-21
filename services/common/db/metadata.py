@@ -45,6 +45,30 @@ users = sa.Table(
     ),
 )
 
+api_keys = sa.Table(
+    "api_keys",
+    metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("name", sa.String(length=100), nullable=False),
+    sa.Column("key_prefix", sa.String(length=12), nullable=False),
+    sa.Column("key_hash", sa.String(length=128), nullable=False),
+    sa.Column("scopes", postgresql.ARRAY(sa.Text()), nullable=False),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("revoked", sa.Boolean(), nullable=False, server_default=sa.false()),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
+    sa.Column("created_by", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.ForeignKeyConstraint(["user_id"], ["users.id"], name="fk_api_keys_user_id_users", ondelete="CASCADE"),
+    sa.ForeignKeyConstraint(["created_by"], ["users.id"], name="fk_api_keys_created_by_users"),
+    sa.UniqueConstraint("key_prefix", name="uq_api_keys_key_prefix"),
+    sa.Index("idx_api_keys_key_prefix", "key_prefix"),
+    sa.Index("idx_api_keys_user_id", "user_id"),
+    sa.Index("idx_api_keys_revoked", "revoked"),
+    sa.CheckConstraint("char_length(trim(name)) > 0", name="name_not_blank"),
+    sa.CheckConstraint("coalesce(array_length(scopes, 1), 0) > 0", name="scopes_non_empty"),
+)
+
 refresh_token_sessions = sa.Table(
     "refresh_token_sessions",
     metadata,

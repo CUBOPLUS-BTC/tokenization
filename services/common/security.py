@@ -37,6 +37,16 @@ def _is_sensitive_key(key: str) -> bool:
     )
 
 
+def _api_key_rate_limit_identifier(request: Request) -> str | None:
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        return None
+    prefix = api_key.split("_", 1)[0].strip()
+    if not prefix or len(prefix) > 32 or not prefix.isalnum():
+        return None
+    return f"api_key:{prefix}"
+
+
 class SensitiveDataFilter(logging.Filter):
     _bearer_pattern = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9\-._~+/]+=*\b")
     _hex_pattern = re.compile(r"\b[a-fA-F0-9]{64,}\b")
@@ -138,7 +148,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         request_id = getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        client_identifier = _client_ip(request)
+        client_identifier = _api_key_rate_limit_identifier(request) or _client_ip(request)
         scope_identifier = request.url.path if rule.scope == "client_path" else "all"
         bucket = f"{rule.name}:{client_identifier}:{scope_identifier}"
         now = time.monotonic()

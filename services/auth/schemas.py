@@ -58,6 +58,16 @@ class NostrLoginRequest(BaseModel):
     signed_event: NostrSignedEvent
 
 
+class ApiKeyCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    scopes: list[str] = Field(min_length=1)
+    expires_at: datetime | None = None
+
+
+class ApiKeyVerifyRequest(BaseModel):
+    api_key: str = Field(min_length=1, max_length=256)
+
+
 # ---------------------------------------------------------------------------
 # Response schemas
 # ---------------------------------------------------------------------------
@@ -210,4 +220,36 @@ class ReferralSummaryResponse(BaseModel):
     total_reward_sat: int
     referred_users: list[ReferredUserOut]
     rewards: list[ReferralRewardOut]
+
+
+class ApiKeyOut(BaseModel):
+    id: str
+    name: str
+    key_prefix: str
+    scopes: list[str]
+    last_used_at: datetime | None = None
+    expires_at: datetime | None = None
+    revoked: bool
+    created_at: datetime
+
+
+class ApiKeyCreateResponse(BaseModel):
+    id: str
+    name: str
+    key: str
+    key_prefix: str
+    scopes: list[str]
+    expires_at: datetime | None = None
+    created_at: datetime
+
+
+class ApiKeyListResponse(BaseModel):
+    keys: list[ApiKeyOut]
+
+
+class ApiKeyVerifyResponse(BaseModel):
+    valid: bool
+    user_id: str
+    scopes: list[str]
+    key_id: str
 

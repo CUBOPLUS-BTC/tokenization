@@ -79,6 +79,7 @@ def test_target_tables_exist(inspector: sa.Inspector) -> None:
 
     assert {
         "users",
+        "api_keys",
         "refresh_token_sessions",
         "nostr_identities",
         "wallets",
@@ -96,6 +97,43 @@ def test_target_tables_exist(inspector: sa.Inspector) -> None:
         "audit_logs",
         "yield_accruals",
     }.issubset(table_names)
+
+
+def test_api_keys_schema_matches_spec(inspector: sa.Inspector) -> None:
+    columns = _column_map(inspector, "api_keys")
+    indexes = _constraint_names(inspector.get_indexes("api_keys"))
+    unique_constraints = _constraint_names(inspector.get_unique_constraints("api_keys"))
+    foreign_keys = inspector.get_foreign_keys("api_keys")
+    checks = _constraint_names(inspector.get_check_constraints("api_keys"))
+
+    assert columns["user_id"]["nullable"] is False
+    assert columns["name"]["nullable"] is False
+    assert columns["key_prefix"]["nullable"] is False
+    assert columns["key_hash"]["nullable"] is False
+    assert columns["scopes"]["nullable"] is False
+    assert columns["last_used_at"]["nullable"] is True
+    assert columns["expires_at"]["nullable"] is True
+    assert columns["revoked"]["default"] is not None
+    assert columns["created_at"]["default"] is not None
+    assert columns["created_by"]["nullable"] is False
+
+    assert {"idx_api_keys_key_prefix", "idx_api_keys_user_id", "idx_api_keys_revoked"}.issubset(indexes)
+    assert "uq_api_keys_key_prefix" in unique_constraints
+    assert {"ck_api_keys_name_not_blank", "ck_api_keys_scopes_non_empty"}.issubset(checks)
+    _assert_foreign_key(
+        foreign_keys,
+        name="fk_api_keys_user_id_users",
+        constrained_columns=["user_id"],
+        referred_table="users",
+        referred_columns=["id"],
+    )
+    _assert_foreign_key(
+        foreign_keys,
+        name="fk_api_keys_created_by_users",
+        constrained_columns=["created_by"],
+        referred_table="users",
+        referred_columns=["id"],
+    )
 
 
 def test_users_schema_matches_spec(inspector: sa.Inspector) -> None:

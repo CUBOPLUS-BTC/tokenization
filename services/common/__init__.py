@@ -19,6 +19,15 @@ from .onramp import (
     list_onramp_provider_views,
 )
 from .audit import record_audit_event
+from .api_keys import (
+    ALL_API_KEY_SCOPES,
+    READ_ONLY_API_KEY_SCOPES,
+    ApiKeyVerificationResult,
+    allowed_api_key_scopes_for_role,
+    extract_api_key_prefix,
+    invalidate_api_key_verify_cache,
+    verify_api_key_via_auth_service,
+)
 from .db import metadata
 from .incentives import (
     REFERRAL_SIGNUP_BONUS_SAT,
@@ -82,6 +91,13 @@ __all__ = [
     "configure_logging",
     "install_http_security",
     "record_audit_event",
+    "ALL_API_KEY_SCOPES",
+    "READ_ONLY_API_KEY_SCOPES",
+    "ApiKeyVerificationResult",
+    "allowed_api_key_scopes_for_role",
+    "extract_api_key_prefix",
+    "invalidate_api_key_verify_cache",
+    "verify_api_key_via_auth_service",
     "accrue_pending_yield_for_user",
     "create_referral_signup_reward",
     "generate_referral_code",

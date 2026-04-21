@@ -43,6 +43,7 @@ from common import (
     get_settings,
     install_http_security,
     record_audit_event,
+    verify_api_key_via_auth_service,
 )
 from common.db.metadata import wallet_addresses as wallet_addresses_table
 from common.logging import configure_structured_logging
@@ -135,6 +136,9 @@ class ContractError(Exception):
 class AuthenticatedPrincipal:
     id: str
     role: str
+    auth_method: str = "jwt"
+    scopes: tuple[str, ...] = ()
+    api_key_id: str | None = None
 
 
 def _make_async_url(sync_url: str) -> str:
@@ -478,6 +482,22 @@ def _invalid_access_token_error() -> ContractError:
         code="invalid_token",
         message="Access token is invalid or expired.",
         status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+def _invalid_api_key_error() -> ContractError:
+    return ContractError(
+        code="invalid_api_key",
+        message="API key is invalid, expired, or revoked.",
+        status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+def _auth_service_unavailable_error() -> ContractError:
+    return ContractError(
+        code="auth_service_unavailable",
+        message="API key verification is currently unavailable.",
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
     )
 
 
@@ -1052,15 +1072,18 @@ async def contract_exception_handler(request: Request, exc: ContractError):
 
 async def _get_current_principal(
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer_scheme),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> AuthenticatedPrincipal:
-    if credentials is None:
+    if credentials is None and not x_api_key:
         raise ContractError(
             code="authentication_required",
             message="Authentication is required.",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    return await _principal_from_access_token(credentials.credentials)
+    if credentials is not None:
+        return await _principal_from_access_token(credentials.credentials)
+    return await _principal_from_api_key(x_api_key or "")
 
 
 async def _principal_from_access_token(access_token: str) -> AuthenticatedPrincipal:
@@ -1084,7 +1107,60 @@ async def _principal_from_access_token(access_token: str) -> AuthenticatedPrinci
     if row is None or _row_value(row, "deleted_at") is not None:
         raise _invalid_access_token_error()
 
-    return AuthenticatedPrincipal(id=user_id, role=role)
+    return AuthenticatedPrincipal(id=user_id, role=role, auth_method="jwt")
+
+
+async def _principal_from_api_key(api_key: str) -> AuthenticatedPrincipal:
+    try:
+        verification = await verify_api_key_via_auth_service(api_key, settings=settings)
+    except RuntimeError as exc:
+        raise _auth_service_unavailable_error() from exc
+
+    if not verification.valid or verification.user_id is None:
+        raise _invalid_api_key_error()
+
+    async with _runtime_engine().connect() as conn:
+        row = await get_user_by_id(conn, verification.user_id)
+
+    if row is None or _row_value(row, "deleted_at") is not None:
+        raise _invalid_api_key_error()
+
+    return AuthenticatedPrincipal(
+        id=verification.user_id,
+        role=str(_row_value(row, "role") or "user"),
+        auth_method="api_key",
+        scopes=tuple(verification.scopes),
+        api_key_id=verification.key_id,
+    )
+
+
+def _require_api_key_scopes(*required_scopes: str):
+    async def dependency(
+        principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    ) -> AuthenticatedPrincipal:
+        if principal.auth_method != "api_key":
+            return principal
+        if not all(scope in principal.scopes for scope in required_scopes):
+            raise ContractError(
+                code="forbidden",
+                message="API key does not grant access to this resource.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        return principal
+
+    return dependency
+
+
+async def _reject_api_key_auth(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+) -> AuthenticatedPrincipal:
+    if principal.auth_method == "api_key":
+        raise ContractError(
+            code="api_key_forbidden",
+            message="API key authentication is not allowed for this operation.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    return principal
 
 
 def _utc_now_iso() -> str:
@@ -1296,7 +1372,7 @@ async def ready():
 async def place_order(
     request: Request,
     body: OrderCreateRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("marketplace:orders:create")),
 ):
     async with _runtime_engine().connect() as conn:
         token_row = await get_token_by_id(conn, body.token_id)
@@ -1466,7 +1542,7 @@ async def get_orders(
     status_filter: str | None = Query(default=None, alias="status", pattern="^(open|partially_filled|filled|cancelled)$"),
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("marketplace:orders:read")),
 ):
     async with _runtime_engine().connect() as conn:
         rows = await list_orders(
@@ -1486,7 +1562,7 @@ async def get_orders(
 @app.get("/orderbook/{token_id}", response_model=OrderBookResponse)
 async def get_order_book(
     token_id: uuid.UUID,
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("marketplace:orders:read")),
 ):
     async with _runtime_engine().connect() as conn:
         token_row = await get_token_by_id(conn, token_id)
@@ -1530,7 +1606,7 @@ async def get_order_book(
 async def delete_order(
     request: Request,
     order_id: uuid.UUID,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("marketplace:orders:cancel")),
 ):
     async with _runtime_engine().connect() as conn:
         existing_order = await get_order_by_id(conn, order_id)
@@ -1577,7 +1653,7 @@ async def delete_order(
 @app.get("/escrows/{trade_id}", response_model=EscrowResponse)
 async def get_escrow_details(
     trade_id: uuid.UUID,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("marketplace:trades:read")),
 ):
     async with _runtime_engine().connect() as conn:
         trade_row = await get_trade_by_id(conn, trade_id)
@@ -1613,7 +1689,7 @@ async def sign_escrow_release(
     trade_id: uuid.UUID,
     body: EscrowSignRequest,
     x_2fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_reject_api_key_auth),
 ):
     async with _runtime_engine().connect() as conn:
         trade_row = await get_trade_by_id(conn, trade_id)
@@ -1803,7 +1879,7 @@ async def get_trade_history(
     token_id: uuid.UUID | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("marketplace:trades:read")),
 ):
     async with _runtime_engine().connect() as conn:
         if token_id is not None and await get_token_by_id(conn, token_id) is None:
@@ -1913,7 +1989,7 @@ async def create_dispute(
     request: Request,
     trade_id: uuid.UUID,
     body: DisputeOpenRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_reject_api_key_auth),
 ):
     async with _runtime_engine().connect() as conn:
         trade_row = await get_trade_by_id(conn, trade_id)
@@ -1988,7 +2064,7 @@ async def resolve_trade_dispute(
     request: Request,
     trade_id: uuid.UUID,
     body: DisputeResolveRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_reject_api_key_auth),
 ):
     if principal.role != "admin":
         raise ContractError(

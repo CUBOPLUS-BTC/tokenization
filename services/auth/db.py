@@ -20,6 +20,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from common.db.metadata import (
+    api_keys as api_keys_table,
     refresh_token_sessions as refresh_token_sessions_table,
     users as users_table,
     wallets as wallets_table,
@@ -47,6 +48,152 @@ async def get_user_by_id(
         sa.select(users_table).where(users_table.c.id == user_id)
     )
     return result.fetchone()
+
+
+async def get_api_key_by_name(
+    conn: AsyncConnection,
+    *,
+    user_id: str,
+    name: str,
+) -> sa.engine.Row | None:
+    result = await conn.execute(
+        sa.select(api_keys_table)
+        .where(api_keys_table.c.user_id == _as_uuid(user_id))
+        .where(api_keys_table.c.name == name)
+    )
+    return result.fetchone()
+
+
+async def get_api_key_by_prefix(
+    conn: AsyncConnection,
+    *,
+    key_prefix: str,
+) -> sa.engine.Row | None:
+    result = await conn.execute(
+        sa.select(api_keys_table)
+        .where(api_keys_table.c.key_prefix == key_prefix)
+    )
+    return result.fetchone()
+
+
+async def get_api_key_by_id(
+    conn: AsyncConnection,
+    *,
+    key_id: str,
+) -> sa.engine.Row | None:
+    result = await conn.execute(
+        sa.select(api_keys_table)
+        .where(api_keys_table.c.id == _as_uuid(key_id))
+    )
+    return result.fetchone()
+
+
+async def create_api_key(
+    conn: AsyncConnection,
+    *,
+    user_id: str,
+    name: str,
+    key_prefix: str,
+    key_hash: str,
+    scopes: list[str],
+    expires_at: datetime | None,
+    created_by: str,
+) -> sa.engine.Row:
+    new_id = uuid.uuid4()
+    now = datetime.now(tz=timezone.utc)
+    await conn.execute(
+        sa.insert(api_keys_table).values(
+            id=new_id,
+            user_id=_as_uuid(user_id),
+            name=name,
+            key_prefix=key_prefix,
+            key_hash=key_hash,
+            scopes=scopes,
+            expires_at=expires_at,
+            revoked=False,
+            created_at=now,
+            created_by=_as_uuid(created_by),
+        )
+    )
+    await conn.commit()
+    row = await get_api_key_by_id(conn, key_id=str(new_id))
+    assert row is not None
+    return row
+
+
+async def list_api_keys_for_user(
+    conn: AsyncConnection,
+    *,
+    user_id: str,
+) -> list[sa.engine.Row]:
+    result = await conn.execute(
+        sa.select(api_keys_table)
+        .where(api_keys_table.c.user_id == _as_uuid(user_id))
+        .order_by(api_keys_table.c.created_at.desc(), api_keys_table.c.id.desc())
+    )
+    return list(result.fetchall())
+
+
+async def revoke_api_key(
+    conn: AsyncConnection,
+    *,
+    key_id: str,
+) -> sa.engine.Row | None:
+    result = await conn.execute(
+        sa.update(api_keys_table)
+        .where(api_keys_table.c.id == _as_uuid(key_id))
+        .where(api_keys_table.c.revoked.is_(False))
+        .values(revoked=True)
+        .returning(api_keys_table)
+    )
+    row = result.fetchone()
+    if row is None:
+        await conn.rollback()
+        return None
+    await conn.commit()
+    return row
+
+
+async def rotate_api_key(
+    conn: AsyncConnection,
+    *,
+    key_id: str,
+    key_prefix: str,
+    key_hash: str,
+) -> sa.engine.Row | None:
+    now = datetime.now(tz=timezone.utc)
+    result = await conn.execute(
+        sa.update(api_keys_table)
+        .where(api_keys_table.c.id == _as_uuid(key_id))
+        .where(api_keys_table.c.revoked.is_(False))
+        .values(
+            key_prefix=key_prefix,
+            key_hash=key_hash,
+            last_used_at=None,
+            created_at=now,
+        )
+        .returning(api_keys_table)
+    )
+    row = result.fetchone()
+    if row is None:
+        await conn.rollback()
+        return None
+    await conn.commit()
+    return row
+
+
+async def touch_api_key_last_used(
+    conn: AsyncConnection,
+    *,
+    key_id: str,
+    used_at: datetime | None = None,
+) -> None:
+    await conn.execute(
+        sa.update(api_keys_table)
+        .where(api_keys_table.c.id == _as_uuid(key_id))
+        .values(last_used_at=used_at or datetime.now(tz=timezone.utc))
+    )
+    await conn.commit()
 
 
 async def enable_2fa(
