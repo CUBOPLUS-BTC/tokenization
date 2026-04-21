@@ -29,3 +29,4 @@ def test_bitcoin_local_config_exposes_zmq_for_lnd():
 
     assert "zmqpubrawblock=tcp://0.0.0.0:28332" in content
     assert "zmqpubrawtx=tcp://0.0.0.0:28333" in content
+

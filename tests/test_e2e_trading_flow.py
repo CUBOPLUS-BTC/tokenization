@@ -38,7 +38,6 @@ def test_settings():
         "WALLET_SERVICE_URL": "http://wallet:8001",
         "TOKENIZATION_SERVICE_URL": "http://tokenization:8002",
         "MARKETPLACE_SERVICE_URL": "http://marketplace:8003",
-        "EDUCATION_SERVICE_URL": "http://education:8004",
         "NOSTR_SERVICE_URL": "http://nostr:8005",
         "POSTGRES_HOST": "localhost",
         "POSTGRES_PORT": "5432",
@@ -400,3 +399,4 @@ class TestEndToEndTradingSuite:
             # Check that the escrow assumes regtest addresses properly
             # In mock it produces 'bcrt1q'
             assert escrow_record["multisig_address"].startswith("bcrt1q"), "Stage 5 broken: Escrow address NOT using regtest format"
+

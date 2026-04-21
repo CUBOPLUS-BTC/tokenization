@@ -88,23 +88,6 @@ services:
     networks:
       - beta
 
-  education:
-    image: python:3.11-slim
-    restart: unless-stopped
-    working_dir: /app/services/education
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8004"
-    env_file:
-      - ./.env.beta
-    volumes:
-      - ../:/app
-    depends_on:
-      - postgres
-      - redis
-    networks:
-      - beta
-
   nostr:
     image: python:3.11-slim
     restart: unless-stopped
@@ -149,7 +132,6 @@ services:
       - wallet
       - tokenization
       - marketplace
-      - education
       - nostr
       - admin
     ports:
@@ -202,3 +184,5 @@ volumes:
 networks:
   beta:
     driver: bridge
+
+

@@ -38,7 +38,7 @@ This starts:
 - `bitcoind` on `localhost:18443`
 - `lnd` on `localhost:10009`
 - `elementsd` on `localhost:7041`
-- `wallet`, `tokenization`, `marketplace`, `education`, `nostr`
+- `wallet`, `tokenization`, `marketplace`, `nostr`, `admin`
 - `gateway` on `localhost:8000`
 
 Stop and clean up:

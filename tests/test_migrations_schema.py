@@ -93,8 +93,6 @@ def test_target_tables_exist(inspector: sa.Inspector) -> None:
         "escrows",
         "referral_rewards",
         "treasury",
-        "courses",
-        "enrollments",
         "audit_logs",
         "yield_accruals",
     }.issubset(table_names)
@@ -325,7 +323,7 @@ def test_tokens_schema_matches_spec(inspector: sa.Inspector) -> None:
     foreign_keys = inspector.get_foreign_keys("tokens")
 
     assert columns["asset_id"]["nullable"] is False
-    assert columns["taproot_asset_id"]["nullable"] is False
+    assert columns["liquid_asset_id"]["nullable"] is False
     assert columns["total_supply"]["nullable"] is False
     assert columns["circulating_supply"]["default"] is not None
     assert columns["unit_price_sat"]["nullable"] is False
@@ -335,7 +333,7 @@ def test_tokens_schema_matches_spec(inspector: sa.Inspector) -> None:
     assert "metadata_json" not in columns
 
     assert "ix_tokens_asset_id" in indexes
-    assert "uq_tokens_taproot_asset_id" in unique_constraints
+    assert "uq_tokens_liquid_asset_id" in unique_constraints
     _assert_foreign_key(
         foreign_keys,
         name="fk_tokens_asset_id_assets",
@@ -614,52 +612,6 @@ def test_yield_accruals_schema_matches_spec(inspector: sa.Inspector) -> None:
     )
 
 
-def test_courses_schema_matches_spec(inspector: sa.Inspector) -> None:
-    columns = _column_map(inspector, "courses")
-    checks = _constraint_names(inspector.get_check_constraints("courses"))
-
-    assert columns["title"]["nullable"] is False
-    assert columns["description"]["nullable"] is False
-    assert columns["content_url"]["nullable"] is False
-    assert columns["category"]["nullable"] is False
-    assert columns["difficulty"]["nullable"] is False
-    assert columns["is_published"]["default"] is not None
-    assert columns["created_at"]["default"] is not None
-    assert columns["updated_at"]["default"] is not None
-
-    assert {"ck_courses_category_allowed", "ck_courses_difficulty_allowed"}.issubset(checks)
-
-
-def test_enrollments_schema_matches_spec(inspector: sa.Inspector) -> None:
-    columns = _column_map(inspector, "enrollments")
-    unique_constraints = _constraint_names(inspector.get_unique_constraints("enrollments"))
-    foreign_keys = inspector.get_foreign_keys("enrollments")
-    checks = _constraint_names(inspector.get_check_constraints("enrollments"))
-
-    assert columns["user_id"]["nullable"] is False
-    assert columns["course_id"]["nullable"] is False
-    assert columns["progress"]["default"] is not None
-    assert columns["enrolled_at"]["default"] is not None
-    assert columns["completed_at"]["nullable"] is True
-
-    assert "uq_enrollments_user_course" in unique_constraints
-    assert "ck_enrollments_progress_range" in checks
-    _assert_foreign_key(
-        foreign_keys,
-        name="fk_enrollments_user_id_users",
-        constrained_columns=["user_id"],
-        referred_table="users",
-        referred_columns=["id"],
-    )
-    _assert_foreign_key(
-        foreign_keys,
-        name="fk_enrollments_course_id_courses",
-        constrained_columns=["course_id"],
-        referred_table="courses",
-        referred_columns=["id"],
-    )
-
-
 def test_audit_logs_schema_matches_spec(inspector: sa.Inspector) -> None:
     columns = _column_map(inspector, "audit_logs")
     indexes = _constraint_names(inspector.get_indexes("audit_logs"))
@@ -684,3 +636,4 @@ def test_audit_logs_schema_matches_spec(inspector: sa.Inspector) -> None:
         referred_table="users",
         referred_columns=["id"],
     )
+

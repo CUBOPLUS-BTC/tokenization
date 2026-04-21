@@ -465,3 +465,4 @@ class TestMainnetEnvironmentSeparation:
         versions_dir = Path(__file__).resolve().parent.parent / "alembic" / "versions"
         migration_files = [f.name for f in versions_dir.iterdir() if "kyc" in f.name.lower()]
         assert len(migration_files) >= 1, f"No KYC migration found in {versions_dir}"
+

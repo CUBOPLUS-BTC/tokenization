@@ -12,7 +12,6 @@ def _settings(**overrides) -> Settings:
         "wallet_service_url": "http://wallet:8001",
         "tokenization_service_url": "http://tokenization:8002",
         "marketplace_service_url": "http://marketplace:8003",
-        "education_service_url": "http://education:8004",
         "nostr_service_url": "http://nostr:8005",
         "postgres_host": "postgres",
         "postgres_port": 5432,
@@ -88,3 +87,4 @@ def test_readiness_blocks_beta_when_lnd_and_elements_are_down(monkeypatch):
     assert payload["dependencies"]["elements"]["blocking"] is True
     assert payload["dependencies"]["lnd"]["required"] is True
     assert payload["dependencies"]["lnd"]["blocking"] is True
+

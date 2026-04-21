@@ -48,3 +48,4 @@ def test_publish_continues_on_relay_failure():
     asyncio.run(connector.publish({"kind": 1, "content": "{}"}, topic="trade.matched"))
 
     assert sent == ["wss://relay.bad.example.com", "wss://relay.good.example.com"]
+

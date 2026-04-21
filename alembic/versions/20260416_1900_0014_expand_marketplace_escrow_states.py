@@ -21,32 +21,32 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.add_column("escrows", sa.Column("refund_txid", sa.String(length=64), nullable=True))
 
-    op.drop_constraint("ck_trades_status_allowed", "trades", type_="check")
+    op.drop_constraint(op.f("ck_trades_status_allowed"), "trades", type_="check")
     op.create_check_constraint(
-        "ck_trades_status_allowed",
+        op.f("ck_trades_status_allowed"),
         "trades",
         "status IN ('pending', 'escrowed', 'settled', 'disputed', 'cancelled')",
     )
 
-    op.drop_constraint("ck_escrows_status_allowed", "escrows", type_="check")
+    op.drop_constraint(op.f("ck_escrows_status_allowed"), "escrows", type_="check")
     op.create_check_constraint(
-        "ck_escrows_status_allowed",
+        op.f("ck_escrows_status_allowed"),
         "escrows",
         "status IN ('created', 'funded', 'inspection_pending', 'released', 'refunded', 'disputed', 'expired')",
     )
 
 
 def downgrade() -> None:
-    op.drop_constraint("ck_escrows_status_allowed", "escrows", type_="check")
+    op.drop_constraint(op.f("ck_escrows_status_allowed"), "escrows", type_="check")
     op.create_check_constraint(
-        "ck_escrows_status_allowed",
+        op.f("ck_escrows_status_allowed"),
         "escrows",
         "status IN ('created', 'funded', 'released', 'refunded', 'disputed')",
     )
 
-    op.drop_constraint("ck_trades_status_allowed", "trades", type_="check")
+    op.drop_constraint(op.f("ck_trades_status_allowed"), "trades", type_="check")
     op.create_check_constraint(
-        "ck_trades_status_allowed",
+        op.f("ck_trades_status_allowed"),
         "trades",
         "status IN ('pending', 'escrowed', 'settled', 'disputed')",
     )

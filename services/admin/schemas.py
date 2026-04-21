@@ -27,34 +27,6 @@ class UpdateUserRoleRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Course Schemas
-# ---------------------------------------------------------------------------
-
-CourseCategory = Literal["bitcoin", "finance", "programming", "entrepreneurship"]
-CourseDifficulty = Literal["beginner", "intermediate", "advanced"]
-
-
-class CreateCourseRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
-    description: str = Field(min_length=1)
-    content_url: str = Field(pattern=r"^https?://")
-    category: CourseCategory
-    difficulty: CourseDifficulty
-
-
-class CourseOut(BaseModel):
-    id: str
-    title: str
-    description: str
-    category: CourseCategory
-    difficulty: CourseDifficulty
-    content_url: str
-
-
-class CourseResponse(BaseModel):
-    course: CourseOut
-
-
 # ---------------------------------------------------------------------------
 # Treasury Schemas
 # ---------------------------------------------------------------------------

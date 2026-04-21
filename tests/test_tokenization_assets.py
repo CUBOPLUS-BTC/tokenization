@@ -140,7 +140,6 @@ def fake_settings():
         "WALLET_SERVICE_URL": "http://wallet:8001",
         "TOKENIZATION_SERVICE_URL": "http://tokenization:8002",
         "MARKETPLACE_SERVICE_URL": "http://marketplace:8003",
-        "EDUCATION_SERVICE_URL": "http://education:8004",
         "NOSTR_SERVICE_URL": "http://nostr:8005",
         "POSTGRES_HOST": "localhost",
         "POSTGRES_PORT": "5432",
@@ -914,3 +913,4 @@ class TestListAssets:
             "code": "invalid_cursor",
             "message": "Cursor does not match an asset in this result set.",
         }
+

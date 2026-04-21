@@ -25,7 +25,6 @@ class Settings(BaseSettings):
     wallet_service_url: str
     tokenization_service_url: str
     marketplace_service_url: str
-    education_service_url: str
     nostr_service_url: str
 
     postgres_host: str

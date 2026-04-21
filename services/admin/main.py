@@ -38,7 +38,6 @@ from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
 from admin.db import (
-    create_course,
     disburse_treasury,
     get_dispute_by_trade_id,
     get_user_by_id,
@@ -48,9 +47,6 @@ from admin.db import (
 )
 from admin.schemas import (
     AdminDisputeResolveRequest,
-    CourseOut,
-    CourseResponse,
-    CreateCourseRequest,
     DisputeOut,
     DisputeResponse,
     ReferralPlatformSummaryResponse,
@@ -285,17 +281,6 @@ def _user_out(row: object) -> UserOut:
     )
 
 
-def _course_out(row: object) -> CourseOut:
-    return CourseOut(
-        id=str(_row_value(row, "id")),
-        title=_row_value(row, "title"),
-        description=_row_value(row, "description"),
-        category=_row_value(row, "category"),
-        difficulty=_row_value(row, "difficulty"),
-        content_url=_row_value(row, "content_url"),
-    )
-
-
 def _treasury_entry_out(row: object) -> TreasuryEntryOut:
     return TreasuryEntryOut(
         id=str(_row_value(row, "id")),
@@ -407,7 +392,6 @@ install_http_security(
     settings,
     sensitive_paths=(
         "/users/",
-        "/courses",
         "/treasury/disburse",
         "/escrows/",
     ),
@@ -508,46 +492,6 @@ async def update_user_role_endpoint(
     record_business_event("admin_user_role_update")
     return _user_out(row)
 
-
-# ---------------------------------------------------------------------------
-# 7.4  Create Course
-# ---------------------------------------------------------------------------
-
-
-@app.post(
-    "/courses",
-    status_code=status.HTTP_201_CREATED,
-    response_model=CourseResponse,
-    summary="Create a new course (admin only)",
-)
-async def create_course_endpoint(
-    request: Request,
-    body: CreateCourseRequest,
-    principal: AuthenticatedPrincipal = Depends(_require_admin),
-):
-    async with _runtime_engine().connect() as conn:
-        row = await create_course(
-            conn,
-            title=body.title,
-            description=body.description,
-            content_url=str(body.content_url),
-            category=body.category,
-            difficulty=body.difficulty,
-        )
-        await record_audit_event(
-            conn,
-            settings=settings,
-            request=request,
-            action="admin.course.create",
-            actor_id=principal.id,
-            actor_role=principal.role,
-            target_type="course",
-            target_id=_row_value(row, "id"),
-            metadata={"category": body.category, "difficulty": body.difficulty},
-        )
-
-    record_business_event("admin_course_create")
-    return CourseResponse(course=_course_out(row)).model_dump(mode="json")
 
 
 # ---------------------------------------------------------------------------
@@ -760,3 +704,4 @@ async def get_yield_user_summary(
 
 if __name__ == "__main__":
     uvicorn.run(app, host=settings.service_host, port=settings.service_port)
+

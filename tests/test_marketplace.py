@@ -178,7 +178,6 @@ def marketplace_settings() -> dict[str, str]:
         "WALLET_SERVICE_URL": "http://wallet:8001",
         "TOKENIZATION_SERVICE_URL": "http://tokenization:8002",
         "MARKETPLACE_SERVICE_URL": "http://marketplace:8003",
-        "EDUCATION_SERVICE_URL": "http://education:8004",
         "NOSTR_SERVICE_URL": "http://nostr:8005",
         "POSTGRES_HOST": "localhost",
         "POSTGRES_PORT": "5432",
@@ -2748,3 +2747,4 @@ def test_resolve_dispute_db_refund_returns_tokens_to_seller(marketplace_settings
     increment_mock.assert_awaited_once_with(fake_conn, user_id=seller_id, token_id=token_id, quantity=8)
     fake_conn.commit.assert_awaited_once()
     fake_conn.rollback.assert_not_awaited()
+

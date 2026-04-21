@@ -29,7 +29,6 @@ def test_gateway_exposes_metrics_for_all_services():
     assert "/metrics/wallet" in content
     assert "/metrics/tokenization" in content
     assert "/metrics/marketplace" in content
-    assert "/metrics/education" in content
     assert "/metrics/nostr" in content
     assert "/metrics/admin" in content
 
@@ -53,3 +52,5 @@ def test_prometheus_and_alertmanager_cover_production_and_beta():
     assert "SettlementFailureDetected" in alerts
     assert "production-settlement" in alertmanager
     assert "beta-settlement" in alertmanager
+
+

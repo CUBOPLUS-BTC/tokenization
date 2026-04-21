@@ -133,28 +133,6 @@ services:
     networks:
       - platform
 
-  education:
-    image: python:3.11-slim
-    container_name: tokenization-education
-    restart: unless-stopped
-    working_dir: /app/services/education
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8004"
-    env_file:
-      - ./.env.local
-    volumes:
-      - ../:/app
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    ports:
-      - "8004:8004"
-    networks:
-      - platform
-
   nostr:
     image: python:3.11-slim
     container_name: tokenization-nostr
@@ -288,7 +266,6 @@ services:
       - wallet
       - tokenization
       - marketplace
-      - education
       - nostr
       - admin
     ports:
@@ -306,3 +283,5 @@ volumes:
 networks:
   platform:
     driver: bridge
+
+

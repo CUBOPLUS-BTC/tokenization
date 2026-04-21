@@ -38,3 +38,4 @@ def test_map_and_sign_internal_event_includes_structured_payload_tags_and_signat
     assert content["topic"] == "trade.matched"
     assert content["occurred_at"] == "2026-04-15T12:00:00Z"
     assert content["payload"] == payload
+

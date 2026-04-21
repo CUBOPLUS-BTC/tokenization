@@ -16,7 +16,6 @@ def fake_settings():
         "WALLET_SERVICE_URL": "http://wallet:8001",
         "TOKENIZATION_SERVICE_URL": "http://tokenization:8002",
         "MARKETPLACE_SERVICE_URL": "http://marketplace:8003",
-        "EDUCATION_SERVICE_URL": "http://education:8004",
         "NOSTR_SERVICE_URL": "http://nostr:8005",
         "POSTGRES_HOST": "localhost",
         "POSTGRES_PORT": "5432",
@@ -163,3 +162,4 @@ def test_pump_events_to_relays_handles_publish_failures_without_raising(fake_set
         asyncio.run(nostr_main._pump_events_to_relays(stop_event, connector))
 
     connector.publish.assert_awaited_once()
+

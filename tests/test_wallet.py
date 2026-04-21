@@ -141,7 +141,6 @@ def fake_settings():
         "WALLET_SERVICE_URL": "http://wallet:8001",
         "TOKENIZATION_SERVICE_URL": "http://tokenization:8002",
         "MARKETPLACE_SERVICE_URL": "http://marketplace:8003",
-        "EDUCATION_SERVICE_URL": "http://education:8004",
         "NOSTR_SERVICE_URL": "http://nostr:8005",
         "POSTGRES_HOST": "localhost",
         "POSTGRES_PORT": "5432",
@@ -693,3 +692,4 @@ class TestQrRendering:
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "image/png"
         assert resp.content.startswith(b"\x89PNG\r\n\x1a\n")
+

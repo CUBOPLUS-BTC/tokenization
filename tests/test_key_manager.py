@@ -134,3 +134,4 @@ def test_derive_liquid_address_signet_uses_test_prefix(encryption_key):
     assert derived.unconfidential_address.startswith("tex1")
     assert len(derived.script_pubkey) == 44
     assert derived.script_pubkey.startswith("0014")
+
