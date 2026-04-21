@@ -261,7 +261,7 @@ services:
 
   gateway:
     build:
-      context: /app/services/gateway
+      context: ../services/gateway
       dockerfile: Dockerfile
     container_name: tokenization-gateway
     restart: unless-stopped
