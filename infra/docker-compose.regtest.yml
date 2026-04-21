@@ -1,9 +1,6 @@
-name: tokenization-regtest
-
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: tokenization-postgres
     restart: unless-stopped
     env_file:
       - path: ./infra/.env.regtest
@@ -20,7 +17,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: tokenization-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
@@ -35,7 +31,6 @@ services:
 
   wallet:
     image: python:3.11-slim
-    container_name: tokenization-wallet
     restart: unless-stopped
     working_dir: /app
     command: >
@@ -63,7 +58,6 @@ services:
 
   auth:
     image: python:3.11-slim
-    container_name: tokenization-auth
     restart: unless-stopped
     working_dir: /app/services/auth
     command: >
@@ -84,7 +78,6 @@ services:
 
   tokenization:
     image: python:3.11-slim
-    container_name: tokenization-tokenization
     restart: unless-stopped
     working_dir: /app/services/tokenization
     command: >
@@ -107,7 +100,6 @@ services:
 
   marketplace:
     image: python:3.11-slim
-    container_name: tokenization-marketplace
     restart: unless-stopped
     working_dir: /app/services/marketplace
     command: >
@@ -128,7 +120,6 @@ services:
 
   nostr:
     image: python:3.11-slim
-    container_name: tokenization-nostr
     restart: unless-stopped
     working_dir: /app/services/nostr
     command: >
@@ -149,7 +140,6 @@ services:
 
   admin:
     image: python:3.11-slim
-    container_name: tokenization-admin
     restart: unless-stopped
     working_dir: /app/services/admin
     command: >
@@ -170,7 +160,6 @@ services:
 
   bitcoind:
     image: lncm/bitcoind:v28.0
-    container_name: tokenization-bitcoind
     user: "0:0"
     command:
       - -datadir=/data/.bitcoin
@@ -202,7 +191,6 @@ services:
 
   lnd:
     image: lightninglabs/lnd:v0.20.0-beta
-    container_name: tokenization-lnd
     restart: unless-stopped
     command:
       - --lnddir=/data/lnd
@@ -226,7 +214,6 @@ services:
     build:
       context: ./infra/elements
       dockerfile: Dockerfile
-    container_name: tokenization-elementsd
     restart: unless-stopped
     depends_on:
       bitcoind:
@@ -255,7 +242,6 @@ services:
     build:
       context: ./services/gateway
       dockerfile: Dockerfile
-    container_name: tokenization-gateway
     restart: unless-stopped
     depends_on:
       - auth
