@@ -9,7 +9,7 @@ from fastapi import Depends, HTTPException, status, Header
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 import pyotp
-from db import get_user_2fa_secret, get_db_conn
+from .db import get_user_2fa_secret, get_db_conn
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 # Add parent directory to path to allow imports from common

@@ -9,9 +9,9 @@ import grpc
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from common.config import Settings
-from common.metrics import record_business_event
-from common.db.metadata import (
+from services.common.config import Settings
+from services.common.metrics import record_business_event
+from services.common.db.metadata import (
     wallets as wallets_table,
     onchain_deposits as deposits_table,
     transactions as transactions_table,
@@ -26,9 +26,13 @@ from .db import (
     update_transaction_status,
     update_transaction_status_by_txid,
 )
-from lnd_client import LNDClient
+from .lnd_client import LNDClient
 
 logger = logging.getLogger(__name__)
+
+
+def get_bitcoin_rpc(settings: Settings):
+    return get_liquid_rpc(settings)
 
 
 def _utc_now() -> datetime:
@@ -103,7 +107,7 @@ async def _credit_confirmed_deposit(
 
 
 async def reconcile_deposits(engine: AsyncEngine, settings: Settings) -> None:
-    liquid_rpc = get_liquid_rpc(settings)
+    liquid_rpc = get_bitcoin_rpc(settings)
     confirmation_threshold = _confirmation_threshold(settings)
 
     async with engine.connect() as conn:

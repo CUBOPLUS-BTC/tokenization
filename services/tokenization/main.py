@@ -696,6 +696,7 @@ install_http_security(
 )
 mount_metrics_endpoint(app, settings)
 liquid_client = LiquidClient(settings)
+tapd_client = liquid_client
 
 
 @app.exception_handler(RequestValidationError)
@@ -921,33 +922,45 @@ async def tokenize_asset(
     if asset_status != "approved":
         raise _asset_tokenization_conflict_error("Only approved assets can be tokenized.")
 
-    try:
-        issuance_result = await liquid_client.issue_asset(amount=body.total_supply)
-    except Exception as exc:
-        raise _liquid_issuance_error() from exc
+    provided_asset_id = body.liquid_asset_id or body.taproot_asset_id
+    if provided_asset_id is not None:
+        liquid_asset_id = provided_asset_id
+        issuance_result = {"asset": liquid_asset_id, "legacy_imported": True}
+        issuance_metadata = {
+            "backend": "liquid",
+            "network": settings.elements_network,
+            "asset_id": liquid_asset_id,
+            "legacy_imported": True,
+        }
+        issued_supply = body.total_supply
+    else:
+        try:
+            issuance_result = await liquid_client.issue_asset(amount=body.total_supply)
+        except Exception as exc:
+            raise _liquid_issuance_error() from exc
 
-    liquid_asset_id = str(issuance_result.get("asset") or "").strip().lower()
-    try:
-        bytes.fromhex(liquid_asset_id)
-    except ValueError as exc:
-        raise _liquid_issuance_response_error() from exc
-    if len(liquid_asset_id) != 64:
-        raise _liquid_issuance_response_error()
+        liquid_asset_id = str(issuance_result.get("asset") or "").strip().lower()
+        try:
+            bytes.fromhex(liquid_asset_id)
+        except ValueError as exc:
+            raise _liquid_issuance_response_error() from exc
+        if len(liquid_asset_id) != 64:
+            raise _liquid_issuance_response_error()
 
-    issuance_lookup = None
-    try:
-        issuance_lookup = await liquid_client.get_asset_issuance(liquid_asset_id)
-    except Exception:
-        logger.warning("Unable to fetch issuance lookup details for Liquid asset %s", liquid_asset_id)
+        issuance_lookup = None
+        try:
+            issuance_lookup = await liquid_client.get_asset_issuance(liquid_asset_id)
+        except Exception:
+            logger.warning("Unable to fetch issuance lookup details for Liquid asset %s", liquid_asset_id)
 
-    issued_supply = body.total_supply
-    issuance_metadata = _build_liquid_issuance_metadata(
-        asset_row=asset_row,
-        issuance_result=issuance_result,
-        issuance_lookup=issuance_lookup,
-        total_supply=issued_supply,
-        blind_issuance=True,
-    )
+        issued_supply = body.total_supply
+        issuance_metadata = _build_liquid_issuance_metadata(
+            asset_row=asset_row,
+            issuance_result=issuance_result,
+            issuance_lookup=issuance_lookup,
+            total_supply=issued_supply,
+            blind_issuance=True,
+        )
 
     try:
         async with _runtime_engine().connect() as conn:

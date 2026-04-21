@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any
 
 import grpc
 
-from lnd_grpc import lightning_pb2 as ln
-from lnd_grpc import lightning_pb2_grpc as lnrpc
+from .lnd_grpc import lightning_pb2 as ln
+from .lnd_grpc import lightning_pb2_grpc as lnrpc
 
 if TYPE_CHECKING:
     from services.common.config import Settings

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from common.config import Settings
-from common.elements_rpc import ElementsRPCClient, ElementsRPCError
+from services.common.config import Settings
+from services.common.elements_rpc import ElementsRPCClient, ElementsRPCError
 
 
 def get_liquid_rpc(settings: Settings) -> ElementsRPCClient:

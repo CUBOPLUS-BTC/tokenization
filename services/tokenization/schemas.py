@@ -40,8 +40,20 @@ class AssetCreateRequest(BaseModel):
 
 
 class AssetTokenizationRequest(BaseModel):
+    liquid_asset_id: str | None = None
+    taproot_asset_id: str | None = None
     total_supply: int = Field(gt=0)
     unit_price_sat: int = Field(gt=0)
+
+    @field_validator("liquid_asset_id", "taproot_asset_id")
+    @classmethod
+    def _validate_optional_asset_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = _normalize_hex_string(value)
+        if len(normalized) != 64:
+            raise ValueError("Asset id must be 64 hexadecimal characters.")
+        return normalized
 
 
 class AssetOut(BaseModel):

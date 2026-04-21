@@ -56,7 +56,6 @@ def downgrade() -> None:
     op.drop_column("escrows", "settlement_metadata")
 
     op.drop_constraint("uq_tokens_liquid_asset_id", "tokens", type_="unique")
-    op.create_unique_constraint("uq_tokens_taproot_asset_id", "tokens", ["taproot_asset_id"])
     op.alter_column(
         "tokens",
         "liquid_asset_id",
@@ -64,3 +63,4 @@ def downgrade() -> None:
         existing_type=sa.String(length=64),
         existing_nullable=False,
     )
+    op.create_unique_constraint("uq_tokens_taproot_asset_id", "tokens", ["taproot_asset_id"])

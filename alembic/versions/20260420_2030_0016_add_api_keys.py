@@ -52,11 +52,11 @@ def upgrade() -> None:
         sa.UniqueConstraint("key_prefix", name="uq_api_keys_key_prefix"),
         sa.CheckConstraint(
             "char_length(trim(name)) > 0",
-            name="ck_api_keys_name_not_blank",
+            name="name_not_blank",
         ),
         sa.CheckConstraint(
             "coalesce(array_length(scopes, 1), 0) > 0",
-            name="ck_api_keys_scopes_non_empty",
+            name="scopes_non_empty",
         ),
     )
     op.create_index("idx_api_keys_key_prefix", "api_keys", ["key_prefix"])
