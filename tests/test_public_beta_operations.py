@@ -34,6 +34,17 @@ def test_gateway_exposes_metrics_for_all_services():
     assert "/metrics/admin" in content
 
 
+def test_gateway_handles_base_service_paths_without_redirects():
+    content = (REPO_ROOT / "services" / "gateway" / "gateway.conf").read_text(encoding="utf-8")
+
+    assert "location = /v1/auth {" in content
+    assert "location = /v1/wallet {" in content
+    assert "location = /v1/tokenization {" in content
+    assert "location = /v1/marketplace {" in content
+    assert "location = /v1/nostr {" in content
+    assert "location = /v1/admin {" in content
+
+
 def test_public_beta_runbook_documents_release_gate():
     content = (REPO_ROOT / "deploy" / "public-beta" / "README.md").read_text(encoding="utf-8")
 
