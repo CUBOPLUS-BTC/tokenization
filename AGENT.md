@@ -366,9 +366,9 @@ graph TB
 | Constants | UPPER_SNAKE_CASE | `REFERRAL_SIGNUP_BONUS_SAT`, `_TOTP_DIGITS` |
 | Module-private | leading underscore | `_runtime_engine()`, `_get_current_principal()` |
 | DB tables | snake_case, plural | `users`, `token_balances`, `yield_accruals` |
-| DB constraints | `ck_<table>_<column>`, `uq_<table>_<columns>`, `fk_<table>_<column>_<ref>` |
-| Branches | `feat/…`, `fix/…`, `docs/…`, `chore/…` |
-| Commits | `type(scope): short description` |
+| DB constraints | `ck_<table>_<column>`, `uq_<table>_<columns>`, `fk_<table>_<column>_<ref>` | `ck_users_status`, `uq_wallets_user_id`, `fk_orders_user_id_users` |
+| Branches | `feat/...`, `fix/...`, `docs/...`, `chore/...` | `feat/marketplace-stop-limit`, `docs/nostr-integration` |
+| Commits | `type(scope): short description` | `feat(wallet): add withdrawal idempotency` |
 
 ### File Organization (per service)
 
