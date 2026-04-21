@@ -174,20 +174,29 @@ services:
     user: "0:0"
     command:
       - -datadir=/data/.bitcoin
-      - -conf=/etc/bitcoin/bitcoin.conf
+      - -regtest=1
+      - -server=1
+      - -txindex=1
+      - -fallbackfee=0.00001
+      - -rpcbind=0.0.0.0
+      - -rpcallowip=0.0.0.0/0
+      - -rpcport=18443
+      - -rpcuser=local_rpc
+      - -rpcpassword=local_rpc_password
+      - -zmqpubrawblock=tcp://0.0.0.0:28332
+      - -zmqpubrawtx=tcp://0.0.0.0:28333
       - -printtoconsole
     restart: unless-stopped
     volumes:
       - bitcoin_data:/data/.bitcoin
-      - ./infra/bitcoin/bitcoin.conf:/etc/bitcoin/bitcoin.conf:ro
     ports:
       - "18443:18443"
     healthcheck:
-      test: ["CMD", "bitcoin-cli", "-conf=/etc/bitcoin/bitcoin.conf", "-regtest", "-rpcconnect=127.0.0.1", "getblockchaininfo"]
+      test: ["CMD-SHELL", "bitcoin-cli -regtest -rpcconnect=127.0.0.1 -rpcport=18443 -rpcuser=local_rpc -rpcpassword=local_rpc_password getblockchaininfo >/dev/null 2>&1 || exit 1"]
       interval: 15s
       timeout: 10s
-      retries: 10
-      start_period: 45s
+      retries: 20
+      start_period: 120s
     networks:
       - platform
 
