@@ -146,12 +146,12 @@ services:
     image: python:3.11-slim
     container_name: tokenization-auth
     restart: unless-stopped
-    working_dir: /app/services/auth
+    working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8000"
     volumes:
-      - ./:/app
+      - ../services/auth:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -164,12 +164,12 @@ services:
     image: python:3.11-slim
     container_name: tokenization-wallet
     restart: unless-stopped
-    working_dir: /app/services/wallet
+    working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8001"
     volumes:
-      - ./:/app
+      - ../services/wallet:/app
       - lnd_data:/run/secrets/lnd:ro
     depends_on:
       postgres:
@@ -189,12 +189,12 @@ services:
     image: python:3.11-slim
     container_name: tokenization-tokenization
     restart: unless-stopped
-    working_dir: /app/services/tokenization
+    working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8002"
     volumes:
-      - ./:/app
+      - ../services/tokenization:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -209,12 +209,12 @@ services:
     image: python:3.11-slim
     container_name: tokenization-marketplace
     restart: unless-stopped
-    working_dir: /app/services/marketplace
+    working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8003"
     volumes:
-      - ./:/app
+      - ../services/marketplace:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -227,12 +227,12 @@ services:
     image: python:3.11-slim
     container_name: tokenization-nostr
     restart: unless-stopped
-    working_dir: /app/services/nostr
+    working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8005"
     volumes:
-      - ./:/app
+      - ../services/nostr:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -245,12 +245,12 @@ services:
     image: python:3.11-slim
     container_name: tokenization-admin
     restart: unless-stopped
-    working_dir: /app/services/admin
+    working_dir: /app
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
       uvicorn main:app --host 0.0.0.0 --port 8006"
     volumes:
-      - ./:/app
+      - ../services/admin:/app
     depends_on:
       postgres:
         condition: service_healthy
@@ -259,21 +259,21 @@ services:
     networks:
       - platform
 
-  gateway:
-    build:
-      context: ../services/gateway
-      dockerfile: Dockerfile
-    container_name: tokenization-gateway
-    restart: unless-stopped
-    depends_on:
-      - auth
-      - wallet
-      - tokenization
-      - marketplace
-      - nostr
-      - admin
-    networks:
-      - platform
+    gateway:
+      build:
+        context: ../services/gateway
+        dockerfile: Dockerfile
+      container_name: tokenization-gateway
+      restart: unless-stopped
+      depends_on:
+        - auth
+        - wallet
+        - tokenization
+        - marketplace
+        - nostr
+        - admin
+      networks:
+        - platform
 
 volumes:
   postgres_data:
