@@ -284,8 +284,6 @@ services:
       CORS_EXPOSE_HEADERS: ${CORS_EXPOSE_HEADERS:-X-Request-ID}
       CORS_MAX_AGE: ${CORS_MAX_AGE:-86400}
       CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-true}
-    ports:
-      - "8000:8000"
     depends_on:
       - auth
       - wallet
