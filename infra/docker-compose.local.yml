@@ -165,7 +165,9 @@ services:
       - path: ./infra/.env.local
         required: false
     volumes:
+      - ./services/wallet:/app/services/wallet
       - lnd_data:/run/secrets/lnd:ro
+    command: ["uvicorn", "services.wallet.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -193,6 +195,9 @@ services:
     env_file:
       - path: ./infra/.env.local
         required: false
+    volumes:
+      - ./services/auth:/app/services/auth
+    command: ["uvicorn", "services.auth.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -212,6 +217,9 @@ services:
     env_file:
       - path: ./infra/.env.local
         required: false
+    volumes:
+      - ./services/tokenization:/app/services/tokenization
+    command: ["uvicorn", "services.tokenization.main:app", "--host", "0.0.0.0", "--port", "8002", "--reload"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -235,6 +243,9 @@ services:
     env_file:
       - path: ./infra/.env.local
         required: false
+    volumes:
+      - ./services/marketplace:/app/services/marketplace
+    command: ["uvicorn", "services.marketplace.main:app", "--host", "0.0.0.0", "--port", "8003", "--reload"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -256,6 +267,9 @@ services:
     env_file:
       - path: ./infra/.env.local
         required: false
+    volumes:
+      - ./services/nostr:/app/services/nostr
+    command: ["uvicorn", "services.nostr.main:app", "--host", "0.0.0.0", "--port", "8005", "--reload"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -277,6 +291,9 @@ services:
     env_file:
       - path: ./infra/.env.local
         required: false
+    volumes:
+      - ./services/admin:/app/services/admin
+    command: ["uvicorn", "services.admin.main:app", "--host", "0.0.0.0", "--port", "8006", "--reload"]
     depends_on:
       postgres:
         condition: service_healthy

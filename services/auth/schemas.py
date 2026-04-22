@@ -13,7 +13,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 # ---------------------------------------------------------------------------
 
 class RegisterRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str = Field(min_length=8, max_length=128)
     display_name: str = Field(min_length=1, max_length=100)
     referrer_code: str | None = Field(default=None, min_length=6, max_length=12)
@@ -32,7 +32,7 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str
 
 
