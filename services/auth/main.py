@@ -19,6 +19,7 @@ import base64
 import hashlib
 import ipaddress
 from pathlib import Path
+import logging
 import secrets
 import string
 import sys
@@ -131,6 +132,7 @@ from db import (
     rotate_api_key,
     touch_api_key_last_used,
 )
+from services.wallet.db import get_or_create_wallet
 from kyc_db import (
     create_kyc_record,
     get_kyc_status,
@@ -150,6 +152,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncConnection
 
 # -------------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings(service_name="auth", default_port=8000)
 configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
@@ -422,6 +426,7 @@ def _require_roles(*allowed_roles: str):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.warning("Validation error: %s", exc.errors())
     return _error(
         code="validation_error",
         message="Request payload failed validation.",
@@ -686,6 +691,13 @@ async def register(body: RegisterRequest):
                 referral_code=referral_code,
                 referrer_id=referrer_id,
             )
+
+            # Auto-provision a wallet for the new user.
+            # We do this within the same transaction context to ensure consistency.
+            try:
+                await get_or_create_wallet(conn, str(row.id))
+            except Exception as exc:
+                logger.warning("Failed to auto-provision wallet for user %s: %s", row.id, exc)
         except IntegrityError:
             return _error(
                 "email_taken",
