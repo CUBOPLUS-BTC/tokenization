@@ -110,6 +110,7 @@ def test_reconcile_deposits_credits_confirmed_utxo_once():
         return_value=[
             {
                 "address": "bcrt1ptestdeposit",
+                "scriptPubKey": "0014abcdef",
                 "txid": "a" * 64,
                 "vout": 0,
                 "amount": 0.001,
@@ -123,7 +124,7 @@ def test_reconcile_deposits_credits_confirmed_utxo_once():
         patch.object(
             wallet_reconciliation,
             "list_imported_wallet_addresses",
-            AsyncMock(return_value=[_RowStub(id=wallet_address_id, address="bcrt1ptestdeposit", wallet_id=wallet_id)]),
+            AsyncMock(return_value=[_RowStub(id=wallet_address_id, address="bcrt1ptestdeposit", wallet_id=wallet_id, script_pubkey="0014abcdef")]),
         ),
         patch.object(wallet_reconciliation, "record_business_event") as record_event,
     ):
@@ -161,6 +162,7 @@ def test_reconcile_deposits_does_not_double_credit_existing_utxo():
         return_value=[
             {
                 "address": "bcrt1ptestdeposit",
+                "scriptPubKey": "0014abcdef",
                 "txid": "a" * 64,
                 "vout": 0,
                 "amount": 0.001,
@@ -174,7 +176,7 @@ def test_reconcile_deposits_does_not_double_credit_existing_utxo():
         patch.object(
             wallet_reconciliation,
             "list_imported_wallet_addresses",
-            AsyncMock(return_value=[_RowStub(id=wallet_address_id, address="bcrt1ptestdeposit", wallet_id=wallet_id)]),
+            AsyncMock(return_value=[_RowStub(id=wallet_address_id, address="bcrt1ptestdeposit", wallet_id=wallet_id, script_pubkey="0014abcdef")]),
         ),
         patch.object(wallet_reconciliation, "record_business_event") as record_event,
     ):
