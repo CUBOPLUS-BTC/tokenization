@@ -60,7 +60,7 @@ class LNDClient:
             
             # Auth interceptor for macaroon
             auth_creds = grpc.metadata_call_credentials(
-                multicall=lambda _, callback: callback([("macaroon", macaroon)], None)
+                lambda _, callback: callback([("macaroon", macaroon)], None)
             )
             
             combined_creds = grpc.composite_channel_credentials(cert_creds, auth_creds)
