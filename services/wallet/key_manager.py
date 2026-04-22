@@ -150,7 +150,7 @@ class KeyManager:
             confidential_address=confidential_address,
             unconfidential_address=unconfidential_address,
             script_pubkey=script_pubkey.data.hex(),
-            blinding_private_key=blinding_private_key.to_string(),
+            blinding_private_key=blinding_private_key.secret.hex(),
             blinding_pubkey=blinding_pubkey.to_string(),
             derivation_path=path,
         )
