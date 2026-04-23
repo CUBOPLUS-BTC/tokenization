@@ -211,6 +211,16 @@ async def enable_2fa(
     await conn.commit()
 
 
+async def set_user_2fa_verified(conn: AsyncConnection, user_id: str) -> None:
+    """Mark the user's 2FA as verified."""
+    await conn.execute(
+        sa.update(users_table)
+        .where(users_table.c.id == _as_uuid(user_id))
+        .values(is_verified=True)
+    )
+    await conn.commit()
+
+
 async def get_user_2fa_secret(
     conn: AsyncConnection, user_id: str
 ) -> str | None:

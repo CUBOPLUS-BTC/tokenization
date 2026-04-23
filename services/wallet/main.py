@@ -839,6 +839,11 @@ async def get_wallet_custody_status(
 ):
     async with _runtime_engine().connect() as conn:
         wallet = await get_or_create_wallet(conn, principal.id)
+        # Check if the user has 2FA enabled AND verified in the shared users table
+        from .db import get_user_by_id
+        user = await get_user_by_id(conn, principal.id)
+        is_2fa_verified = user is not None and getattr(user, "is_verified", False) and getattr(user, "totp_secret", None) is not None
+        print(f"DEBUG: user={principal.id} is_verified={getattr(user, 'is_verified', False)} has_secret={getattr(user, 'totp_secret', None) is not None}")
 
     encrypted_seed = bytes(_row_value(wallet, "encrypted_seed", b""))
     descriptor = describe_custody_record(encrypted_seed)
@@ -853,7 +858,7 @@ async def get_wallet_custody_status(
         signer_key_reference=custody.signer_key_reference,
         derivation_path=str(_row_value(wallet, "derivation_path", "")),
         seed_exportable=descriptor.exportable_seed,
-        withdraw_requires_2fa=True,
+        withdraw_requires_2fa=is_2fa_verified,
         server_compromise_impact=custody.server_compromise_impact,
         disclaimers=list(custody.disclaimers),
     ).model_dump(mode="json")

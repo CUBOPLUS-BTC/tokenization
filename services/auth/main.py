@@ -121,6 +121,7 @@ from db import (
     get_api_key_by_name,
     get_api_key_by_prefix,
     enable_2fa,
+    set_user_2fa_verified,
     get_nostr_identity_by_pubkey,
     get_user_2fa_secret,
     get_user_by_email,
@@ -725,7 +726,10 @@ async def enable_2fa_endpoint(
     """Generate a TOTP secret and backup codes for the user."""
     async with _engine.connect() as conn:
         existing_secret = await get_user_2fa_secret(conn, principal.id)
-        if existing_secret:
+        user = await get_user_by_id(conn, principal.id)
+        is_verified = getattr(user, "is_verified", False) if user else False
+        
+        if existing_secret and is_verified:
             raise ContractError(
                 code="2fa_already_enabled",
                 message="Two-factor authentication is already enabled for this account.",
@@ -785,6 +789,9 @@ async def verify_2fa_endpoint(
             message="The provided two-factor authentication code is invalid or expired.",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+
+    async with _engine.connect() as conn:
+        await set_user_2fa_verified(conn, principal.id)
 
     record_business_event("auth_2fa_verify")
     return {"message": "2FA verification successful."}
