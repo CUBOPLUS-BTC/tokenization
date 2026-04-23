@@ -1,0 +1,28 @@
+# Compose override for using a Polar LND node as the wallet service backend.
+#
+# Usage:
+#   docker compose --project-directory . --env-file infra/.env.polar \
+#     -f infra/docker-compose.local.yml -f infra/docker-compose.polar.yml up -d wallet gateway
+
+services:
+  wallet:
+    depends_on:
+      lnd:
+        condition: service_started
+        required: false
+    environment:
+      LND_GRPC_HOST: ${POLAR_LND_GRPC_HOST:-host.docker.internal}
+      LND_GRPC_PORT: ${POLAR_LND_GRPC_PORT:?Set POLAR_LND_GRPC_PORT in infra/.env.polar}
+      LND_MACAROON_PATH: /run/secrets/polar-lnd/admin.macaroon
+      LND_TLS_CERT_PATH: /run/secrets/polar-lnd/tls.cert
+      LND_TLS_SERVER_NAME: ${POLAR_LND_TLS_SERVER_NAME:-localhost}
+      LND_GRPC_REQUIRED: "true"
+    volumes:
+      - type: bind
+        source: ${POLAR_LND_TLS_CERT_FILE:?Set POLAR_LND_TLS_CERT_FILE in infra/.env.polar}
+        target: /run/secrets/polar-lnd/tls.cert
+        read_only: true
+      - type: bind
+        source: ${POLAR_LND_MACAROON_FILE:?Set POLAR_LND_MACAROON_FILE in infra/.env.polar}
+        target: /run/secrets/polar-lnd/admin.macaroon
+        read_only: true

@@ -171,6 +171,32 @@ On first boot, the entrypoint creates or loads the configured wallet and mines b
 
 For Lightning routing tests, this stack only launches a single LND node. Invoice creation and gRPC integration are real, but multi-hop payment tests require additional peer/channel topology.
 
+### Using Polar for Lightning payments
+
+Use Polar when you want to test real local Lightning payments between nodes. The app keeps PostgreSQL, Redis, the gateway, Elements, and the Python services from this Compose stack, but points `wallet` at one Polar LND node.
+
+1. In Polar, create and start a regtest network with at least two LND nodes.
+2. Fund the payer node, open a channel between the payer and backend nodes, and mine the confirmations Polar requests.
+3. Choose one Polar LND node as the backend node for this app.
+4. Copy `infra/.env.polar.example` to `infra/.env.polar`.
+5. Fill `infra/.env.polar` with the backend node's gRPC port, `tls.cert`, and `admin.macaroon` paths from Polar. On Windows, use forward slashes in file paths.
+6. Start or recreate the wallet service with the Polar override:
+
+```powershell
+./scripts/compose-polar.ps1 up -d --force-recreate wallet gateway
+```
+
+The override in `docker-compose.polar.yml` mounts the Polar node credentials into `wallet` and sets:
+
+- `LND_GRPC_HOST=host.docker.internal`
+- `LND_MACAROON_PATH=/run/secrets/polar-lnd/admin.macaroon`
+- `LND_TLS_CERT_PATH=/run/secrets/polar-lnd/tls.cert`
+- `LND_TLS_SERVER_NAME=localhost`
+
+After that, invoices created through `POST /v1/lightning/invoices` are created on the selected Polar backend node. Pay them from the other Polar node in the Polar UI.
+
+When recreating `wallet`, recreate `gateway` in the same command so nginx resolves the current wallet container IP and avoids stale-upstream `502` responses.
+
 ### Mining Blocks
 
 Since it is a regtest environment, mine blocks to confirm transactions:
