@@ -142,7 +142,9 @@ from kyc_db import (
     is_kyc_verified,
     list_kyc_records,
     update_kyc_status,
+    update_kyc_metadata,
 )
+from ory_kratos import OryKratosAdminClient, OryKratosError
 
 import bcrypt
 
@@ -745,10 +747,7 @@ async def enable_2fa_endpoint(
     """Generate a TOTP secret and backup codes for the user."""
     async with _engine.connect() as conn:
         existing_secret = await get_user_2fa_secret(conn, principal.id)
-        user = await get_user_by_id(conn, principal.id)
-        is_verified = getattr(user, "is_verified", False) if user else False
-        
-        if existing_secret and is_verified:
+        if existing_secret:
             raise ContractError(
                 code="2fa_already_enabled",
                 message="Two-factor authentication is already enabled for this account.",
@@ -1471,6 +1470,67 @@ def _kyc_state_label(row) -> str:
     return str(getattr(row, "status", "not_started"))
 
 
+def _kyc_metadata(row) -> dict[str, object]:
+    mapping = getattr(row, "_mapping", None)
+    value = mapping.get("metadata") if mapping is not None else getattr(row, "metadata", None)
+    return dict(value or {})
+
+
+async def _sync_kyc_to_ory(
+    *,
+    user_row: object,
+    kyc_row: object,
+) -> object:
+    if not settings.ory_kratos_admin_url or not settings.ory_kratos_admin_token:
+        return kyc_row
+
+    metadata = _kyc_metadata(kyc_row)
+    provider_metadata = dict(metadata.get("ory_kratos") or {})
+
+    try:
+        client = OryKratosAdminClient(settings)
+        try:
+            identity = await client.ensure_identity_for_user(user_row)
+            synced_identity = await client.sync_kyc_state(identity=identity, kyc_row=kyc_row)
+        finally:
+            await client.aclose()
+
+        provider_metadata.update(
+            {
+                "identity_id": str(synced_identity.get("id") or identity.get("id")),
+                "external_id": str(synced_identity.get("external_id") or identity.get("external_id") or _user_out(user_row).id),
+                "last_sync_status": "ok",
+                "last_synced_at": datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+                "last_sync_error": None,
+            }
+        )
+    except OryKratosError as exc:
+        provider_metadata.update(
+            {
+                "last_sync_status": "error",
+                "last_sync_error": str(exc),
+                "last_sync_attempt_at": datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+        )
+        logger.exception("Ory Kratos KYC sync failed for user %s", _user_out(user_row).id)
+        await alert_dispatcher.fire(
+            severity=AlertSeverity.ERROR,
+            title="Ory Kratos KYC sync failed",
+            detail=f"Failed to sync KYC state for user {_user_out(user_row).id}: {exc}",
+            source=settings.service_name,
+            tags={"user_id": _user_out(user_row).id},
+        )
+
+    metadata["ory_kratos"] = provider_metadata
+    async with _engine.connect() as conn:
+        updated_row = await update_kyc_metadata(
+            conn,
+            user_id=str(_user_out(user_row).id),
+            metadata=metadata,
+        )
+    return updated_row or kyc_row
+
+
 @app.get(
     "/auth/onboarding/summary",
     status_code=status.HTTP_200_OK,
@@ -1538,6 +1598,7 @@ async def submit_kyc(
     operator reviews and approves/rejects via the admin endpoint.
     """
     async with _engine.connect() as conn:
+        user_row = await get_user_by_id(conn, principal.id)
         existing = await get_kyc_status(conn, principal.id)
         if existing is not None:
             return JSONResponse(
@@ -1545,12 +1606,16 @@ async def submit_kyc(
                 content=KycStatusResponse(kyc=_kyc_out(existing)).model_dump(mode="json"),
             )
 
+        if user_row is None:
+            raise _invalid_access_token_error()
+
         row = await create_kyc_record(
             conn,
             user_id=principal.id,
             document_url=body.document_url,
             notes=body.notes,
         )
+    row = await _sync_kyc_to_ory(user_row=user_row, kyc_row=row)
 
     record_business_event("kyc_submit")
     return KycStatusResponse(kyc=_kyc_out(row)).model_dump(mode="json")
@@ -1613,10 +1678,17 @@ async def update_kyc_admin(
     """Admin-only endpoint to approve, reject, or expire a user's KYC status."""
     async with _engine.connect() as conn:
         existing = await get_kyc_status(conn, user_id)
+        user_row = await get_user_by_id(conn, user_id)
         if existing is None:
             return _error(
                 "kyc_not_found",
                 "No KYC verification record found for this user.",
+                status.HTTP_404_NOT_FOUND,
+            )
+        if user_row is None:
+            return _error(
+                "user_not_found",
+                "User not found.",
                 status.HTTP_404_NOT_FOUND,
             )
 
@@ -1644,6 +1716,7 @@ async def update_kyc_admin(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
+    row = await _sync_kyc_to_ory(user_row=user_row, kyc_row=row)
     record_business_event("kyc_admin_update")
     return KycStatusResponse(kyc=_kyc_out(row)).model_dump(mode="json")
 

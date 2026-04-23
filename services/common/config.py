@@ -105,6 +105,11 @@ class Settings(BaseSettings):
     # KYC: trade value threshold (sats) above which KYC verification is required.
     # Set to 0 to disable enforcement.  Default 10 000 000 sats (~0.1 BTC).
     kyc_trade_threshold_sat: int = 10_000_000
+    ory_kratos_admin_url: str | None = None
+    ory_kratos_admin_token: str | None = None
+    ory_kratos_admin_token_file: str | None = None
+    ory_kratos_identity_schema_id: str | None = None
+    ory_kratos_timeout_seconds: int = 10
     marketplace_escrow_watch_interval_seconds: int = 30
     marketplace_escrow_fee_reserve_sat: int = 5_000
     tokenization_documents_dir: str = "data/tokenization-documents"
@@ -159,6 +164,7 @@ class Settings(BaseSettings):
         self.bitcoin_rpc_password = self._resolve_secret(self.bitcoin_rpc_password, self.bitcoin_rpc_password_file)
         self.elements_rpc_password = self._resolve_secret(self.elements_rpc_password, self.elements_rpc_password_file)
         self.jwt_secret = self._resolve_secret(self.jwt_secret, self.jwt_secret_file)
+        self.ory_kratos_admin_token = self._resolve_secret(self.ory_kratos_admin_token, self.ory_kratos_admin_token_file)
         self.openai_api_key = self._resolve_secret(self.openai_api_key, self.openai_api_key_file)
         self.wallet_encryption_key = self._resolve_secret(self.wallet_encryption_key, self.wallet_encryption_key_file)
         self.custody_hsm_wrapping_key = self._resolve_secret(

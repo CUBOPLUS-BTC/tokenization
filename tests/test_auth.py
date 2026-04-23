@@ -14,6 +14,7 @@ import uuid
 from collections import namedtuple
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -209,6 +210,33 @@ def _issue_access_token(fake_user: FakeUser, secret: str) -> str:
         wallet_id=None,
         secret=secret,
     ).access_token
+
+
+def _make_fake_kyc_row(
+    *,
+    user_id: uuid.UUID,
+    status: str = "pending",
+    metadata: dict | None = None,
+    reviewed_by: uuid.UUID | None = None,
+    reviewed_at: datetime | None = None,
+    document_url: str | None = None,
+    notes: str | None = None,
+    rejection_reason: str | None = None,
+):
+    now = datetime.now(tz=timezone.utc)
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        status=status,
+        reviewed_by=reviewed_by,
+        reviewed_at=reviewed_at,
+        rejection_reason=rejection_reason,
+        notes=notes,
+        document_url=document_url,
+        metadata=metadata,
+        created_at=now,
+        updated_at=now,
+    )
 
 
 class InMemoryRefreshSessions:
@@ -1109,6 +1137,131 @@ class TestTwoFactor:
 
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "2fa_not_enabled"
+
+
+class TestKycOryKratosSync:
+    def test_submit_kyc_syncs_state_to_ory_kratos_when_enabled(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        pending_row = _make_fake_kyc_row(
+            user_id=fake_user.id,
+            status="pending",
+            document_url="https://docs.example.com/kyc/alice.pdf",
+            notes="passport uploaded",
+        )
+        synced_row = _make_fake_kyc_row(
+            user_id=fake_user.id,
+            status="pending",
+            document_url=pending_row.document_url,
+            notes=pending_row.notes,
+            metadata={
+                "ory_kratos": {
+                    "identity_id": "ory-identity-1",
+                    "external_id": str(fake_user.id),
+                    "last_sync_status": "ok",
+                }
+            },
+        )
+
+        mock_ory_client = MagicMock()
+        mock_ory_client.ensure_identity_for_user = AsyncMock(
+            return_value={"id": "ory-identity-1", "external_id": str(fake_user.id)}
+        )
+        mock_ory_client.sync_kyc_state = AsyncMock(
+            return_value={"id": "ory-identity-1", "external_id": str(fake_user.id)}
+        )
+        mock_ory_client.aclose = AsyncMock()
+
+        with (
+            patch.object(settings, "ory_kratos_admin_url", "http://ory.test"),
+            patch.object(settings, "ory_kratos_admin_token", "secret-token"),
+            patch("services.auth.main.get_user_by_id", AsyncMock(side_effect=[fake_user, fake_user])),
+            patch("services.auth.main.get_kyc_status", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_kyc_record", AsyncMock(return_value=pending_row)),
+            patch("services.auth.main.update_kyc_metadata", AsyncMock(return_value=synced_row)) as update_metadata_mock,
+            patch("services.auth.main.OryKratosAdminClient", return_value=mock_ory_client),
+        ):
+            response = app_client.post(
+                "/auth/kyc/submit",
+                headers=_auth_headers(access_token),
+                json={
+                    "document_url": pending_row.document_url,
+                    "notes": pending_row.notes,
+                },
+            )
+
+        assert response.status_code == 201
+        assert response.json()["kyc"]["status"] == "pending"
+        update_metadata_mock.assert_awaited_once()
+        metadata = update_metadata_mock.await_args.kwargs["metadata"]["ory_kratos"]
+        assert metadata["identity_id"] == "ory-identity-1"
+        assert metadata["external_id"] == str(fake_user.id)
+        assert metadata["last_sync_status"] == "ok"
+        mock_ory_client.ensure_identity_for_user.assert_awaited_once_with(fake_user)
+        mock_ory_client.sync_kyc_state.assert_awaited_once()
+        mock_ory_client.aclose.assert_awaited_once()
+
+    def test_admin_kyc_update_syncs_verified_state_to_ory_kratos(self, client):
+        app_client, _, settings = client
+        admin_user = _make_fake_user("admin@example.com", "SecureP@ss123", role="admin")
+        target_user = _make_fake_user("target@example.com", "SecureP@ss123")
+        access_token = _issue_access_token(admin_user, settings.jwt_secret)
+        existing_row = _make_fake_kyc_row(user_id=target_user.id, status="pending")
+        verified_row = _make_fake_kyc_row(
+            user_id=target_user.id,
+            status="verified",
+            reviewed_by=admin_user.id,
+            reviewed_at=datetime.now(tz=timezone.utc),
+        )
+        synced_row = _make_fake_kyc_row(
+            user_id=target_user.id,
+            status="verified",
+            reviewed_by=admin_user.id,
+            reviewed_at=verified_row.reviewed_at,
+            metadata={
+                "ory_kratos": {
+                    "identity_id": "ory-identity-2",
+                    "external_id": str(target_user.id),
+                    "last_sync_status": "ok",
+                }
+            },
+        )
+
+        mock_ory_client = MagicMock()
+        mock_ory_client.ensure_identity_for_user = AsyncMock(
+            return_value={"id": "ory-identity-2", "external_id": str(target_user.id)}
+        )
+        mock_ory_client.sync_kyc_state = AsyncMock(
+            return_value={"id": "ory-identity-2", "external_id": str(target_user.id)}
+        )
+        mock_ory_client.aclose = AsyncMock()
+
+        with (
+            patch.object(settings, "ory_kratos_admin_url", "http://ory.test"),
+            patch.object(settings, "ory_kratos_admin_token", "secret-token"),
+            patch("services.auth.main.get_user_by_id", AsyncMock(side_effect=[admin_user, target_user])),
+            patch("services.auth.main.get_kyc_status", AsyncMock(return_value=existing_row)),
+            patch("services.auth.main.update_kyc_status", AsyncMock(return_value=verified_row)),
+            patch("services.auth.main.create_referral_signup_reward", AsyncMock()),
+            patch("services.auth.main.update_kyc_metadata", AsyncMock(return_value=synced_row)) as update_metadata_mock,
+            patch("services.auth.main.OryKratosAdminClient", return_value=mock_ory_client),
+        ):
+            response = app_client.put(
+                f"/auth/kyc/admin/{target_user.id}",
+                headers=_auth_headers(access_token),
+                json={"status": "verified"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["kyc"]["status"] == "verified"
+        metadata = update_metadata_mock.await_args.kwargs["metadata"]["ory_kratos"]
+        assert metadata["identity_id"] == "ory-identity-2"
+        assert metadata["external_id"] == str(target_user.id)
+        assert metadata["last_sync_status"] == "ok"
+        mock_ory_client.ensure_identity_for_user.assert_awaited_once_with(target_user)
+        mock_ory_client.sync_kyc_state.assert_awaited_once()
+        mock_ory_client.aclose.assert_awaited_once()
 
 
 class TestOnboardingSummary:
