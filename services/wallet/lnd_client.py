@@ -81,7 +81,7 @@ class LNDClient:
     def create_invoice(self, memo: str, amount_sats: int) -> ln.AddInvoiceResponse:
         stub = self._get_stub()
         invoice = ln.Invoice(memo=memo, value=amount_sats)
-        return stub.AddInvoice(invoice)
+        return stub.AddInvoice(invoice, timeout=10)
 
     def pay_invoice(self, payment_request: str) -> ln.SendResponse:
         stub = self._get_stub()
