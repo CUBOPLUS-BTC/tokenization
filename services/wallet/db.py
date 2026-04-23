@@ -111,6 +111,18 @@ async def get_wallet_by_id(
     return result.fetchone()
 
 
+async def lock_wallet(
+    conn: AsyncConnection,
+    wallet_id: str | uuid.UUID,
+) -> None:
+    """Lock the wallet row for update to serialize operations like address generation."""
+    await conn.execute(
+        sa.select(wallets_table.c.id)
+        .where(wallets_table.c.id == _as_uuid(wallet_id))
+        .with_for_update()
+    )
+
+
 async def list_wallets(conn: AsyncConnection) -> list[sa.engine.Row]:
     result = await conn.execute(sa.select(wallets_table))
     return list(result.fetchall())

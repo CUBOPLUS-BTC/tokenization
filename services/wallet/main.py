@@ -74,6 +74,7 @@ from .db import (
     reserve_onchain_balance,
     save_wallet_address,
     spend_campaign_balance,
+    lock_wallet,
 )
 import asyncio
 from .reconciliation import reconciliation_loop, lightning_sync_loop, sync_wallet_lightning_state
@@ -554,6 +555,7 @@ async def _create_real_onchain_address(conn: AsyncConnection, wallet: sa.engine.
             status_code=500,
         ) from exc
 
+    await lock_wallet(conn, str(_row_value(wallet, "id")))
     idx = await get_next_derivation_index(conn, str(_row_value(wallet, "id")))
     derived_address = key_mgr.derive_liquid_address(seed, idx)
 
@@ -1599,7 +1601,7 @@ async def render_qr_code(
 async def create_onchain_address(
     principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
 ):
-    async with _runtime_engine().connect() as conn:
+    async with _runtime_engine().begin() as conn:
         wallet = await get_or_create_wallet(conn, principal.id)
         address_bundle = await _create_real_onchain_address(conn, wallet)
 
@@ -1705,7 +1707,7 @@ async def withdraw_onchain(
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    async with _runtime_engine().connect() as conn:
+    async with _runtime_engine().begin() as conn:
         user = await get_user_by_id(conn, principal.id)
         if user is None or _row_value(user, "deleted_at") is not None:
             raise _invalid_access_token_error()
