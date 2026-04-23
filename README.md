@@ -34,7 +34,7 @@ The complete design is documented in [specs/](specs), including architecture, AP
 
 ## Local Infrastructure Startup
 
-The local profile now boots the full platform stack, including Bitcoin Core on `regtest`, LND wired to `bitcoind` over RPC + ZMQ, and an `elementsregtest` node wired back to the same Bitcoin node for Liquid-style RPC flows:
+The local profile boots the backend platform stack, including Bitcoin Core on `regtest`, LND wired to `bitcoind` over RPC + ZMQ, and an `elementsregtest` node wired back to the same Bitcoin node for Liquid-style RPC flows. It exposes APIs through the gateway, but it does not boot a frontend service from this repository:
 
 ```bash
 docker compose --project-directory . -f infra/docker-compose.local.yml up -d postgres redis bitcoind lnd elementsd
