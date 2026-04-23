@@ -45,6 +45,15 @@ def test_gateway_handles_base_service_paths_without_redirects():
     assert "location = /v1/admin {" in content
 
 
+def test_gateway_docs_describe_api_only_local_stack_and_api_key_browser_headers():
+    content = (REPO_ROOT / "services" / "gateway" / "README.md").read_text(encoding="utf-8")
+
+    assert "does not boot a bundled frontend service" in content
+    assert "X-API-Key" in content
+    assert "X-2FA-Code" in content
+    assert "X-Idempotency-Key" in content
+
+
 def test_public_beta_runbook_documents_release_gate():
     content = (REPO_ROOT / "deploy" / "public-beta" / "README.md").read_text(encoding="utf-8")
 

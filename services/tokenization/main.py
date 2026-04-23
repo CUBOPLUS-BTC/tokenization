@@ -10,9 +10,9 @@ import sys
 from typing import Any
 import uuid
 
-from fastapi import Depends, FastAPI, Header, Query, Request, Security, status
+from fastapi import Depends, FastAPI, File, Form, Header, Query, Request, Security, UploadFile, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy.exc import IntegrityError
@@ -54,6 +54,7 @@ from tokenization.schemas import (
     AssetCreateRequest,
     AssetDetailOut,
     AssetDetailResponse,
+    AssetDocumentOut,
     AssetEvaluationRequestResponse,
     AssetListResponse,
     AssetOut,
@@ -62,6 +63,7 @@ from tokenization.schemas import (
     AssetTokenOut,
     AssetTokenizationRequest,
 )
+from tokenization.storage import resolve_document_path, store_pdf_document
 
 settings = get_settings(service_name="tokenization", default_port=8002)
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -356,6 +358,18 @@ def _build_liquid_issuance_metadata(
     }
 
 
+def _asset_document_out(row: object) -> AssetDocumentOut | None:
+    storage_key = _optional_row_value(row, "documents_storage_key")
+    if not storage_key:
+        return None
+    return AssetDocumentOut(
+        storage_key=str(storage_key),
+        filename=str(_optional_row_value(row, "documents_filename") or "document.pdf"),
+        content_type=str(_optional_row_value(row, "documents_content_type") or "application/pdf"),
+        size_bytes=int(_optional_row_value(row, "documents_size_bytes") or 0),
+    )
+
+
 def _asset_out(row: object) -> AssetOut:
     created_at = _aware_datetime(_row_value(row, "created_at"))
     updated_at = _aware_datetime(_row_value(row, "updated_at"))
@@ -368,6 +382,7 @@ def _asset_out(row: object) -> AssetOut:
         category=_row_value(row, "category"),
         valuation_sat=_row_value(row, "valuation_sat"),
         documents_url=_optional_row_value(row, "documents_url"),
+        document=_asset_document_out(row),
         status=_row_value(row, "status"),
         created_at=created_at,
         updated_at=updated_at,
@@ -390,6 +405,7 @@ def _asset_token_out(row: object) -> AssetTokenOut | None:
         total_supply=_row_value(row, "total_supply"),
         circulating_supply=_row_value(row, "circulating_supply"),
         unit_price_sat=_row_value(row, "unit_price_sat"),
+        visibility=_optional_row_value(row, "visibility") or "public",
         issuance_metadata=_optional_row_value(row, "token_metadata"),
         minted_at=minted_at,
     )
@@ -792,6 +808,101 @@ async def submit_asset(
     return AssetResponse(asset=_asset_out(row)).model_dump(mode="json")
 
 
+@app.post(
+    "/assets/upload",
+    status_code=status.HTTP_201_CREATED,
+    response_model=AssetResponse,
+    summary="Submit an asset with an uploaded PDF document",
+)
+async def submit_asset_with_document(
+    request: Request,
+    name: str = Form(...),
+    description: str = Form(...),
+    category: AssetCategory = Form(...),
+    valuation_sat: int = Form(..., gt=0),
+    document: UploadFile = File(...),
+    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin", api_key_scopes=("tokenization:assets:create",))),
+):
+    normalized_name = name.strip()
+    normalized_description = description.strip()
+    if not normalized_name or not normalized_description:
+        raise ContractError(
+            code="validation_error",
+            message="Name and description are required.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
+    if (document.content_type or "").lower() != "application/pdf":
+        raise ContractError(
+            code="invalid_document_type",
+            message="Only PDF documents are supported.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
+    payload = await document.read()
+    if not payload:
+        raise ContractError(
+            code="invalid_document",
+            message="Uploaded PDF is empty.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+    if len(payload) > int(settings.tokenization_max_document_size_bytes):
+        raise ContractError(
+            code="document_too_large",
+            message="Uploaded PDF exceeds the configured size limit.",
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        )
+
+    asset_id = uuid.uuid4()
+    stored_document = store_pdf_document(
+        settings=settings,
+        asset_id=str(asset_id),
+        filename=document.filename,
+        payload=payload,
+        content_type=document.content_type,
+    )
+
+    async with _runtime_engine().connect() as conn:
+        row = await create_asset(
+            conn,
+            asset_id=asset_id,
+            owner_id=principal.id,
+            name=normalized_name,
+            description=normalized_description,
+            category=category,
+            valuation_sat=valuation_sat,
+            documents_url=f"/assets/{asset_id}/document",
+            documents_storage_key=stored_document.storage_key,
+            documents_filename=stored_document.filename,
+            documents_content_type=stored_document.content_type,
+            documents_size_bytes=stored_document.size_bytes,
+        )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="tokenization.asset.submit",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="asset",
+            target_id=_row_value(row, "id"),
+            metadata={
+                "category": category,
+                "valuation_sat": valuation_sat,
+                "document_filename": stored_document.filename,
+                "document_size_bytes": stored_document.size_bytes,
+            },
+        )
+
+    try:
+        await _publish_asset_created(row)
+    except Exception:
+        logger.exception("Asset created event publish failed for asset %s", _row_value(row, "id"))
+
+    record_business_event("asset_submit", outcome="document_upload")
+    return AssetResponse(asset=_asset_out(row)).model_dump(mode="json")
+
+
 @app.get(
     "/assets",
     status_code=status.HTTP_200_OK,
@@ -917,6 +1028,7 @@ async def tokenize_asset(
         raise _asset_tokenization_conflict_error("Only approved assets can be tokenized.")
 
     provided_asset_id = body.liquid_asset_id or body.taproot_asset_id
+    multisig_mode = "external_api" if body.visibility == "private" else "standard"
     if provided_asset_id is not None:
         liquid_asset_id = provided_asset_id
         issuance_result = {"asset": liquid_asset_id, "legacy_imported": True}
@@ -925,6 +1037,8 @@ async def tokenize_asset(
             "network": settings.elements_network,
             "asset_id": liquid_asset_id,
             "legacy_imported": True,
+            "visibility": body.visibility,
+            "multisig_mode": multisig_mode,
         }
         issued_supply = body.total_supply
     else:
@@ -955,6 +1069,8 @@ async def tokenize_asset(
             total_supply=issued_supply,
             blind_issuance=True,
         )
+        issuance_metadata["visibility"] = body.visibility
+        issuance_metadata["multisig_mode"] = multisig_mode
 
     try:
         async with _runtime_engine().connect() as conn:
@@ -966,6 +1082,7 @@ async def tokenize_asset(
                 total_supply=issued_supply,
                 circulating_supply=issued_supply,
                 unit_price_sat=body.unit_price_sat,
+                visibility=body.visibility,
                 issuance_metadata=issuance_metadata,
             )
             if tokenized_row is not None:
@@ -984,6 +1101,7 @@ async def tokenize_asset(
                         "issuance_txid": issuance_result.get("txid"),
                         "total_supply": issued_supply,
                         "unit_price_sat": body.unit_price_sat,
+                        "visibility": body.visibility,
                     },
                 )
     except IntegrityError as exc:
@@ -1029,6 +1147,58 @@ async def tokenize_asset(
     return AssetDetailResponse(asset=_asset_detail_out(tokenized_row)).model_dump(
         mode="json",
         exclude_none=True,
+    )
+
+
+@app.get(
+    "/assets/{asset_id}/document",
+    summary="Download the managed PDF document for an asset",
+)
+async def download_asset_document(
+    asset_id: uuid.UUID,
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("tokenization:assets:read")),
+):
+    async with _runtime_engine().connect() as conn:
+        row = await get_asset_by_id(conn, asset_id)
+
+    if row is None:
+        raise _asset_not_found_error()
+
+    if principal.role != "admin" and str(_row_value(row, "owner_id")) != principal.id:
+        raise ContractError(
+            code="forbidden",
+            message="You do not have permission to access this document.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    storage_key = _optional_row_value(row, "documents_storage_key")
+    if not storage_key:
+        raise ContractError(
+            code="document_not_found",
+            message="Asset does not have a managed document.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    try:
+        file_path = resolve_document_path(settings=settings, storage_key=str(storage_key))
+    except ValueError as exc:
+        raise ContractError(
+            code="document_unavailable",
+            message="Managed document path is invalid.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        ) from exc
+
+    if not file_path.exists():
+        raise ContractError(
+            code="document_not_found",
+            message="Managed document file is missing.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    return FileResponse(
+        path=file_path,
+        media_type=str(_optional_row_value(row, "documents_content_type") or "application/pdf"),
+        filename=str(_optional_row_value(row, "documents_filename") or "document.pdf"),
     )
 
 

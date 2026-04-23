@@ -8,6 +8,7 @@ from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
 
 AssetCategory = Literal["real_estate", "commodity", "invoice", "art", "other"]
 AssetStatus = Literal["pending", "evaluating", "approved", "rejected", "tokenized"]
+AssetTokenVisibility = Literal["public", "private"]
 
 
 def _strip_and_require_text(value: str) -> str:
@@ -44,6 +45,7 @@ class AssetTokenizationRequest(BaseModel):
     taproot_asset_id: str | None = None
     total_supply: int = Field(gt=0)
     unit_price_sat: int = Field(gt=0)
+    visibility: AssetTokenVisibility = "public"
 
     @field_validator("liquid_asset_id", "taproot_asset_id")
     @classmethod
@@ -56,6 +58,13 @@ class AssetTokenizationRequest(BaseModel):
         return normalized
 
 
+class AssetDocumentOut(BaseModel):
+    storage_key: str
+    filename: str
+    content_type: str
+    size_bytes: int
+
+
 class AssetOut(BaseModel):
     id: str
     owner_id: str
@@ -64,6 +73,7 @@ class AssetOut(BaseModel):
     category: AssetCategory
     valuation_sat: int
     documents_url: str | None
+    document: AssetDocumentOut | None = None
     status: AssetStatus
     created_at: datetime
     updated_at: datetime
@@ -79,6 +89,7 @@ class AssetTokenOut(BaseModel):
     total_supply: int
     circulating_supply: int
     unit_price_sat: int
+    visibility: AssetTokenVisibility
     issuance_metadata: dict[str, Any] | None = None
     minted_at: datetime
 

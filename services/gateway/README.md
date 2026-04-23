@@ -30,7 +30,7 @@ Everything about CORS is configurable with environment variables. The gateway im
 | --- | --- | --- |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated list of browser `Origin` values allowed. Each entry is mapped exactly (no wildcards). |
 | `CORS_ALLOWED_METHODS` | `GET, POST, PUT, PATCH, DELETE, OPTIONS` | Value for `Access-Control-Allow-Methods` (preflight). |
-| `CORS_ALLOWED_HEADERS` | `Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Request-ID` | Value for `Access-Control-Allow-Headers` (preflight). |
+| `CORS_ALLOWED_HEADERS` | `Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Request-ID, X-Correlation-ID, X-API-Key, X-2FA-Code, X-Idempotency-Key` | Value for `Access-Control-Allow-Headers` (preflight). Includes the headers needed for the platform SPA (`Authorization`, `X-2FA-Code`, `X-Idempotency-Key`) and external integrations (`X-API-Key`). |
 | `CORS_EXPOSE_HEADERS` | `X-Request-ID` | Value for `Access-Control-Expose-Headers` (responses). |
 | `CORS_MAX_AGE` | `86400` | Value for `Access-Control-Max-Age` in seconds (preflight cache). |
 | `CORS_ALLOW_CREDENTIALS` | `true` | Value for `Access-Control-Allow-Credentials`. |
@@ -63,6 +63,8 @@ Optionally add matching entries in the `/health/<svc>`, `/ready/<svc>` and `/met
 
 ## Local browser clients
 
+The local Compose stack exposes backend APIs through the gateway, but it does not boot a bundled frontend service. A separate SPA can still call the gateway directly.
+
 1. Set `CORS_ALLOWED_ORIGINS` (and any other `CORS_*` override) in the env file used by Compose for the gateway (e.g. [`infra/.env.local`](../../infra/.env.local)) or via host env for `${CORS_ALLOWED_ORIGINS:-...}` interpolation.
 2. **Rebuild the gateway** — this is mandatory any time `gateway.conf`, the render scripts, or any `CORS_*` env var changes, because those are baked at image build time (and the entrypoint scripts only run on container (re)create):
 
@@ -82,7 +84,8 @@ Optionally add matching entries in the `/health/<svc>`, `/ready/<svc>` and `/met
    # Preflight (expected: 204 with Access-Control-* headers)
    curl -i -X OPTIONS http://localhost:8000/v1/wallet/onchain/address \
      -H "Origin: http://localhost:3000" \
-     -H "Access-Control-Request-Method: POST"
+     -H "Access-Control-Request-Method: POST" \
+     -H "Access-Control-Request-Headers: authorization, x-2fa-code, x-idempotency-key, x-api-key"
 
    # Regular request (expected: 200/401/4xx with Access-Control-Allow-Origin)
    curl -i http://localhost:8000/v1/wallet/onchain/address \

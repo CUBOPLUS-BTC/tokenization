@@ -14,6 +14,8 @@ TradeStatus = Literal["pending", "escrowed", "settled", "disputed", "cancelled"]
 EscrowStatus = Literal["created", "funded", "inspection_pending", "released", "refunded", "disputed", "expired"]
 DisputeStatus = Literal["open", "resolved"]
 DisputeResolution = Literal["refund", "release"]
+TokenVisibility = Literal["public", "private"]
+ExternalEscrowSignerRole = Literal["buyer", "seller", "platform"]
 
 
 class OrderCreateRequest(BaseModel):
@@ -106,6 +108,7 @@ class EscrowOut(BaseModel):
     refund_txid: str | None = None
     status: EscrowStatus
     expires_at: datetime
+    multisig_mode: Literal["standard", "external_api"] = "standard"
     settlement_metadata: dict[str, Any] | None = None
 
 
@@ -115,6 +118,10 @@ class EscrowResponse(BaseModel):
 
 class EscrowSignRequest(BaseModel):
     pset: str | None = Field(default=None, min_length=1)
+
+
+class ExternalEscrowSignRequest(EscrowSignRequest):
+    signer_role: ExternalEscrowSignerRole
 
 
 class DisputeOpenRequest(BaseModel):

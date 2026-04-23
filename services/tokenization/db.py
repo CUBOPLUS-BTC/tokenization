@@ -42,24 +42,33 @@ async def get_user_by_id(
 async def create_asset(
     conn: AsyncConnection,
     *,
+    asset_id: uuid.UUID | None = None,
     owner_id: str,
     name: str,
     description: str,
     category: str,
     valuation_sat: int,
-    documents_url: str,
+    documents_url: str | None,
+    documents_storage_key: str | None = None,
+    documents_filename: str | None = None,
+    documents_content_type: str | None = None,
+    documents_size_bytes: int | None = None,
 ) -> sa.engine.Row:
     now = _utc_now()
     result = await conn.execute(
         sa.insert(assets_table)
         .values(
-            id=uuid.uuid4(),
+            id=asset_id or uuid.uuid4(),
             owner_id=_as_uuid(owner_id),
             name=name,
             description=description,
             category=category,
             valuation_sat=valuation_sat,
             documents_url=documents_url,
+            documents_storage_key=documents_storage_key,
+            documents_filename=documents_filename,
+            documents_content_type=documents_content_type,
+            documents_size_bytes=documents_size_bytes,
             status="pending",
             created_at=now,
             updated_at=now,
@@ -84,6 +93,7 @@ async def get_asset_by_id(
             tokens_table.c.total_supply,
             tokens_table.c.circulating_supply,
             tokens_table.c.unit_price_sat,
+            tokens_table.c.visibility,
             tokens_table.c.metadata.label("token_metadata"),
             tokens_table.c.minted_at,
         )
@@ -196,6 +206,7 @@ async def create_asset_token(
     total_supply: int,
     circulating_supply: int,
     unit_price_sat: int,
+    visibility: str,
     issuance_metadata: dict[str, object] | None,
 ) -> sa.engine.Row | None:
     now = _utc_now()
@@ -228,6 +239,7 @@ async def create_asset_token(
                 total_supply=total_supply,
                 circulating_supply=circulating_supply,
                 unit_price_sat=unit_price_sat,
+                visibility=visibility,
                 metadata=issuance_metadata,
                 minted_at=now,
                 created_at=now,

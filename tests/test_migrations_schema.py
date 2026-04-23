@@ -339,6 +339,10 @@ def test_assets_schema_matches_spec(inspector: sa.Inspector) -> None:
     assert columns["category"]["nullable"] is False
     assert columns["valuation_sat"]["nullable"] is False
     assert columns["documents_url"]["nullable"] is True
+    assert columns["documents_storage_key"]["nullable"] is True
+    assert columns["documents_filename"]["nullable"] is True
+    assert columns["documents_content_type"]["nullable"] is True
+    assert columns["documents_size_bytes"]["nullable"] is True
     assert columns["status"]["default"] is not None
 
     assert {"ix_assets_owner_id", "ix_assets_status", "ix_assets_category"}.issubset(indexes)
@@ -346,6 +350,7 @@ def test_assets_schema_matches_spec(inspector: sa.Inspector) -> None:
         "ck_assets_category_allowed",
         "ck_assets_status_allowed",
         "ck_assets_ai_score_range",
+        "ck_assets_documents_size_non_negative",
     }.issubset(checks)
     _assert_foreign_key(
         foreign_keys,
@@ -367,13 +372,15 @@ def test_tokens_schema_matches_spec(inspector: sa.Inspector) -> None:
     assert columns["total_supply"]["nullable"] is False
     assert columns["circulating_supply"]["default"] is not None
     assert columns["unit_price_sat"]["nullable"] is False
+    assert columns["visibility"]["nullable"] is False
     assert columns["minted_at"]["default"] is not None
     assert columns["created_at"]["default"] is not None
     assert "metadata" in columns
     assert "metadata_json" not in columns
 
-    assert "ix_tokens_asset_id" in indexes
+    assert {"ix_tokens_asset_id", "ix_tokens_visibility"}.issubset(indexes)
     assert "uq_tokens_liquid_asset_id" in unique_constraints
+    assert "ck_tokens_visibility_allowed" in _constraint_names(inspector.get_check_constraints("tokens"))
     _assert_foreign_key(
         foreign_keys,
         name="fk_tokens_asset_id_assets",
@@ -515,6 +522,7 @@ def test_escrows_schema_matches_spec(inspector: sa.Inspector) -> None:
     assert columns["platform_pubkey"]["nullable"] is False
     assert columns["locked_amount_sat"]["nullable"] is False
     assert columns["status"]["default"] is not None
+    assert columns["multisig_mode"]["nullable"] is False
     assert columns["refund_txid"]["nullable"] is True
     assert columns["expires_at"]["nullable"] is False
     assert columns["created_at"]["default"] is not None
@@ -522,7 +530,7 @@ def test_escrows_schema_matches_spec(inspector: sa.Inspector) -> None:
 
     assert "ix_escrows_status" in indexes
     assert "uq_escrows_trade_id" in unique_constraints
-    assert "ck_escrows_status_allowed" in checks
+    assert {"ck_escrows_status_allowed", "ck_escrows_multisig_mode_allowed"}.issubset(checks)
     _assert_foreign_key(
         foreign_keys,
         name="fk_escrows_trade_id_trades",

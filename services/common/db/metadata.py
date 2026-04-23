@@ -368,6 +368,10 @@ assets = sa.Table(
     sa.Column("category", sa.String(length=50), nullable=False),
     sa.Column("valuation_sat", sa.BigInteger(), nullable=False),
     sa.Column("documents_url", sa.Text(), nullable=True),
+    sa.Column("documents_storage_key", sa.Text(), nullable=True),
+    sa.Column("documents_filename", sa.String(length=255), nullable=True),
+    sa.Column("documents_content_type", sa.String(length=100), nullable=True),
+    sa.Column("documents_size_bytes", sa.BigInteger(), nullable=True),
     sa.Column("ai_score", sa.Numeric(precision=5, scale=2), nullable=True),
     sa.Column("ai_analysis", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column("projected_roi", sa.Numeric(precision=5, scale=2), nullable=True),
@@ -390,6 +394,10 @@ assets = sa.Table(
         "ai_score IS NULL OR (ai_score >= 0 AND ai_score <= 100)",
         name="ai_score_range",
     ),
+    sa.CheckConstraint(
+        "documents_size_bytes IS NULL OR documents_size_bytes >= 0",
+        name="documents_size_non_negative",
+    ),
 )
 
 tokens = sa.Table(
@@ -401,12 +409,18 @@ tokens = sa.Table(
     sa.Column("total_supply", sa.BigInteger(), nullable=False),
     sa.Column("circulating_supply", sa.BigInteger(), nullable=False, server_default="0"),
     sa.Column("unit_price_sat", sa.BigInteger(), nullable=False),
+    sa.Column("visibility", sa.String(length=20), nullable=False, server_default="public"),
     sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column("minted_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.ForeignKeyConstraint(["asset_id"], ["assets.id"], name="fk_tokens_asset_id_assets"),
     sa.UniqueConstraint("liquid_asset_id", name="uq_tokens_liquid_asset_id"),
     sa.Index("ix_tokens_asset_id", "asset_id"),
+    sa.Index("ix_tokens_visibility", "visibility"),
+    sa.CheckConstraint(
+        "visibility IN ('public', 'private')",
+        name="visibility_allowed",
+    ),
 )
 
 token_balances = sa.Table(
@@ -503,6 +517,7 @@ escrows = sa.Table(
     sa.Column("funding_txid", sa.String(length=64), nullable=True),
     sa.Column("release_txid", sa.String(length=64), nullable=True),
     sa.Column("refund_txid", sa.String(length=64), nullable=True),
+    sa.Column("multisig_mode", sa.String(length=20), nullable=False, server_default="standard"),
     sa.Column("collected_signatures", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column("settlement_metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column("status", sa.String(length=20), nullable=False, server_default="created"),
@@ -515,6 +530,10 @@ escrows = sa.Table(
     sa.CheckConstraint(
         "status IN ('created', 'funded', 'inspection_pending', 'released', 'refunded', 'disputed', 'expired')",
         name="status_allowed",
+    ),
+    sa.CheckConstraint(
+        "multisig_mode IN ('standard', 'external_api')",
+        name="multisig_mode_allowed",
     ),
 )
 

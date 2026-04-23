@@ -59,6 +59,17 @@ def test_regtest_environment_template_is_dedicated():
     assert "LND_MACAROON_PATH=/run/secrets/lnd/data/chain/bitcoin/regtest/admin.macaroon" in content
 
 
+def test_gateway_cors_defaults_allow_api_keys_and_browser_security_headers():
+    gateway_dockerfile = (REPO_ROOT / "services" / "gateway" / "Dockerfile").read_text(encoding="utf-8")
+    local_compose = (REPO_ROOT / "infra" / "docker-compose.local.yml").read_text(encoding="utf-8")
+    env_template = (REPO_ROOT / "infra" / ".env.local.example").read_text(encoding="utf-8")
+
+    expected_headers = "X-Correlation-ID, X-API-Key, X-2FA-Code, X-Idempotency-Key"
+    assert expected_headers in gateway_dockerfile
+    assert expected_headers in local_compose
+    assert expected_headers in env_template
+
+
 def test_testnet4_stack_template_and_compose_exist():
     env_content = (REPO_ROOT / "infra" / ".env.testnet4.example").read_text(encoding="utf-8")
     compose_content = (REPO_ROOT / "infra" / "docker-compose.testnet4.yml").read_text(encoding="utf-8")

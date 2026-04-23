@@ -14,7 +14,7 @@ RUN sed -i 's/\r$//' /docker-entrypoint.d/30-render-cors-map.sh \
 
 ENV CORS_ALLOWED_ORIGINS=http://localhost:3000 \
     CORS_ALLOWED_METHODS="GET, POST, PUT, PATCH, DELETE, OPTIONS" \
-    CORS_ALLOWED_HEADERS="Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Request-ID" \
+    CORS_ALLOWED_HEADERS="Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Request-ID, X-Correlation-ID, X-API-Key, X-2FA-Code, X-Idempotency-Key" \
     CORS_EXPOSE_HEADERS="X-Request-ID" \
     CORS_MAX_AGE=86400 \
     CORS_ALLOW_CREDENTIALS=true

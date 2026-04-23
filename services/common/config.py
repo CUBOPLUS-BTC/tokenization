@@ -107,6 +107,8 @@ class Settings(BaseSettings):
     kyc_trade_threshold_sat: int = 10_000_000
     marketplace_escrow_watch_interval_seconds: int = 30
     marketplace_escrow_fee_reserve_sat: int = 5_000
+    tokenization_documents_dir: str = "data/tokenization-documents"
+    tokenization_max_document_size_bytes: int = 10 * 1024 * 1024
 
     @property
     def nostr_relay_list(self) -> list[str]:

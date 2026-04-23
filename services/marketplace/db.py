@@ -16,6 +16,7 @@ from common import get_settings
 from common import build_platform_signer
 from common.custody import derive_platform_signing_material, derive_wallet_escrow_material
 from common.db.metadata import escrows as escrows_table
+from common.db.metadata import assets as assets_table
 from common.db.metadata import nostr_identities as nostr_identities_table
 from common.db.metadata import orders as orders_table
 from common.db.metadata import token_balances as token_balances_table
@@ -115,7 +116,13 @@ async def get_token_by_id(
     token_id: str | uuid.UUID,
 ) -> sa.engine.Row | None:
     result = await conn.execute(
-        sa.select(tokens_table).where(tokens_table.c.id == _as_uuid(token_id))
+        sa.select(
+            tokens_table,
+            assets_table.c.owner_id.label("asset_owner_id"),
+            assets_table.c.status.label("asset_status"),
+        )
+        .select_from(tokens_table.join(assets_table, assets_table.c.id == tokens_table.c.asset_id))
+        .where(tokens_table.c.id == _as_uuid(token_id))
     )
     return result.fetchone()
 
@@ -784,6 +791,7 @@ async def create_trade_escrow(
     quantity: int,
     price_sat: int,
     fee_sat: int = 0,
+    multisig_mode: str = "standard",
 ) -> tuple[sa.engine.Row, sa.engine.Row]:
     _validate_trade_inputs(
         buy_order=buy_order,
@@ -847,6 +855,7 @@ async def create_trade_escrow(
                 funding_txid=None,
                 release_txid=None,
                 refund_txid=None,
+                multisig_mode=multisig_mode,
                 status="created",
                 settlement_metadata={
                     "unconfidential_address": escrow_details.unconfidential_address,
@@ -858,6 +867,7 @@ async def create_trade_escrow(
                     "marketplace_fee_amount_sat": int(fee_sat),
                     "fee_reserve_sat": _ESCROW_FEE_RESERVE_SAT,
                     "funding_amount_sat": locked_amount_sat,
+                    "multisig_mode": multisig_mode,
                 },
                 expires_at=now + _ESCROW_EXPIRATION,
                 created_at=now,
@@ -1006,6 +1016,7 @@ async def record_escrow_signature(
         _row_value(escrow_row, "settlement_metadata") or {},
         settlement_metadata,
     )
+    multisig_mode = str(updated_metadata.get("multisig_mode") or _row_value(escrow_row, "multisig_mode") or "standard")
     next_status = "inspection_pending" if _row_value(escrow_row, "status") == "funded" else _row_value(escrow_row, "status")
 
     try:
@@ -1016,6 +1027,7 @@ async def record_escrow_signature(
             .values(
                 collected_signatures=updated_signatures,
                 settlement_metadata=updated_metadata,
+                multisig_mode=multisig_mode,
                 status=next_status,
                 updated_at=now,
             )
@@ -1050,6 +1062,7 @@ async def process_escrow_signature(
         _row_value(escrow_row, "settlement_metadata") or {},
         settlement_metadata,
     )
+    multisig_mode = str(updated_metadata.get("multisig_mode") or _row_value(escrow_row, "multisig_mode") or "standard")
 
     try:
         escrow_result = await conn.execute(
@@ -1059,6 +1072,7 @@ async def process_escrow_signature(
             .values(
                 collected_signatures=collected_signatures,
                 settlement_metadata=updated_metadata,
+                multisig_mode=multisig_mode,
                 release_txid=release_txid,
                 status="released",
                 updated_at=now,

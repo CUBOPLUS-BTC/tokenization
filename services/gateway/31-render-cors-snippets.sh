@@ -9,7 +9,7 @@ set -eu
 #   /etc/nginx/snippets/cors-headers.conf   <- legacy, kept for backwards-compat
 
 CORS_ALLOWED_METHODS="${CORS_ALLOWED_METHODS:-GET, POST, PUT, PATCH, DELETE, OPTIONS}"
-CORS_ALLOWED_HEADERS="${CORS_ALLOWED_HEADERS:-Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Request-ID}"
+CORS_ALLOWED_HEADERS="${CORS_ALLOWED_HEADERS:-Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Request-ID, X-Correlation-ID, X-API-Key, X-2FA-Code, X-Idempotency-Key}"
 CORS_EXPOSE_HEADERS="${CORS_EXPOSE_HEADERS:-X-Request-ID}"
 CORS_MAX_AGE="${CORS_MAX_AGE:-86400}"
 CORS_ALLOW_CREDENTIALS="${CORS_ALLOW_CREDENTIALS:-true}"
