@@ -67,7 +67,16 @@ class LNDClient:
 
             # Create channel
             target = f"{self.settings.lnd_grpc_host}:{self.settings.lnd_grpc_port}"
-            self._channel = grpc.secure_channel(target, combined_creds)
+            channel_options: list[tuple[str, str]] = []
+            if self.settings.lnd_tls_server_name:
+                channel_options.extend(
+                    [
+                        ("grpc.ssl_target_name_override", self.settings.lnd_tls_server_name),
+                        ("grpc.default_authority", self.settings.lnd_tls_server_name),
+                    ]
+                )
+
+            self._channel = grpc.secure_channel(target, combined_creds, options=channel_options)
             self._stub = lnrpc.LightningStub(self._channel)
             
             return self._stub

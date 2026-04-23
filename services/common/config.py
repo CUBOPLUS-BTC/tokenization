@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     lnd_grpc_port: int
     lnd_macaroon_path: str
     lnd_tls_cert_path: str
+    lnd_tls_server_name: str | None = None
     lnd_grpc_required: bool | None = None
 
     nostr_relays: str
