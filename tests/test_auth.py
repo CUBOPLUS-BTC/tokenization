@@ -168,6 +168,7 @@ def client(fake_settings):
             patch.object(auth_main, "generate_referral_code", AsyncMock(return_value="REFCODE1234")),
             patch.object(auth_main, "rotate_refresh_session", AsyncMock(return_value=True)),
             patch.object(auth_main, "revoke_refresh_session", AsyncMock(return_value=True)),
+            patch.object(auth_main, "get_nostr_identity_by_user_id", AsyncMock(return_value=None)),
         ):
             app = auth_main.app
 
@@ -753,6 +754,22 @@ class TestProtectedEndpoints:
         assert body["email"] == fake_user.email
         assert body["role"] == "seller"
 
+    def test_me_includes_nostr_pubkey_when_identity_exists(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123", role="seller")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        identity_row = MagicMock(pubkey="a" * 64)
+
+        with (
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.get_nostr_identity_by_user_id", AsyncMock(return_value=identity_row)),
+        ):
+            resp = app_client.get("/auth/me", headers=_auth_headers(access_token))
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["nostr_pubkey"] == "a" * 64
+
 
 # ---------------------------------------------------------------------------
 # POST /auth/nostr
@@ -1122,6 +1139,64 @@ class TestOnboardingSummary:
         assert len(body["fiat_onramp_providers"]) == 2
         assert any(provider["provider_id"] == "bank-bridge" for provider in body["fiat_onramp_providers"])
         assert any("provider-hosted checkout" in notice.lower() for notice in body["compliance_notices"])
+
+    def test_onboarding_summary_includes_nostr_pubkey_when_identity_exists(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user("alice@example.com", "password")
+        kyc_row = MagicMock()
+        kyc_row._mapping = {"status": "verified"}
+        identity_row = MagicMock(pubkey="b" * 64)
+
+        with (
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.get_kyc_status", AsyncMock(return_value=kyc_row)),
+            patch("services.auth.main.get_nostr_identity_by_user_id", AsyncMock(return_value=identity_row)),
+        ):
+            token_pair = issue_token_pair(
+                user_id=str(fake_user.id),
+                role=fake_user.role,
+                wallet_id=None,
+                secret=settings.jwt_secret,
+            )
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
+            resp = app_client.get("/auth/onboarding/summary", headers=headers)
+
+        assert resp.status_code == 200
+        assert resp.json()["user"]["nostr_pubkey"] == "b" * 64
+
+    def test_onboarding_summary_handles_custody_errors_as_contract_error(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user("alice@example.com", "password")
+        kyc_row = MagicMock()
+        kyc_row._mapping = {"status": "verified"}
+        from services.auth.main import CustodyError
+
+        with (
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.get_kyc_status", AsyncMock(return_value=kyc_row)),
+            patch(
+                "services.auth.main.describe_custody_settings",
+                MagicMock(
+                    side_effect=CustodyError(
+                        code="platform_signer_unavailable",
+                        message="embit is required for secp256k1 platform signing.",
+                        backend="software",
+                    )
+                ),
+            ),
+        ):
+            token_pair = issue_token_pair(
+                user_id=str(fake_user.id),
+                role=fake_user.role,
+                wallet_id=None,
+                secret=settings.jwt_secret,
+            )
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
+            resp = app_client.get("/auth/onboarding/summary", headers=headers)
+
+        assert resp.status_code == 503
+        body = resp.json()
+        assert body["error"]["code"] == "platform_signer_unavailable"
 
 
 class TestApiKeys:

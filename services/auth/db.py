@@ -364,6 +364,17 @@ async def get_nostr_identity_by_pubkey(
     return result.fetchone()
 
 
+async def get_nostr_identity_by_user_id(
+    conn: AsyncConnection, user_id: str
+) -> sa.engine.Row | None:
+    result = await conn.execute(
+        sa.select(nostr_identities_table).where(
+            nostr_identities_table.c.user_id == _as_uuid(user_id)
+        )
+    )
+    return result.fetchone()
+
+
 async def create_nostr_user(
     conn: AsyncConnection,
     *,

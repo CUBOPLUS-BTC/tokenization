@@ -85,6 +85,7 @@ class UserOut(BaseModel):
     display_name: str
     role: str
     referral_code: str | None = None
+    nostr_pubkey: str | None = None
     created_at: datetime
 
 

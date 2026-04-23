@@ -52,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import get_settings
 from common import (
     ALL_API_KEY_SCOPES,
+    CustodyError,
     allowed_api_key_scopes_for_role,
     create_referral_signup_reward,
     default_onramp_notices,
@@ -123,6 +124,7 @@ from db import (
     enable_2fa,
     set_user_2fa_verified,
     get_nostr_identity_by_pubkey,
+    get_nostr_identity_by_user_id,
     get_user_2fa_secret,
     get_user_by_email,
     get_user_by_id,
@@ -272,6 +274,7 @@ def _user_out(row) -> UserOut:
         display_name=row.display_name,
         role=row.role,
         referral_code=getattr(row, "referral_code", None),
+        nostr_pubkey=getattr(row, "nostr_pubkey", None),
         created_at=row.created_at,
     )
 
@@ -300,9 +303,11 @@ def _referral_reward_out(row) -> ReferralRewardOut:
     )
 
 
-def _auth_response_payload(row, tokens) -> dict:
+def _auth_response_payload(row, tokens, *, nostr_pubkey: str | None = None) -> dict:
+    user = _user_out(row)
+    resolved_nostr_pubkey = nostr_pubkey if nostr_pubkey is not None else getattr(row, "nostr_pubkey", None)
     return AuthResponse(
-        user=_user_out(row),
+        user=user.model_copy(update={"nostr_pubkey": resolved_nostr_pubkey}),
         tokens=TokensOut(
             access_token=tokens.access_token,
             refresh_token=tokens.refresh_token,
@@ -340,9 +345,14 @@ async def _issue_auth_response(row, *, conn: AsyncConnection, status_code: int) 
         token_jti=tokens.refresh_token_jti,
         expires_at=tokens.refresh_expires_at,
     )
+    identity_row = await get_nostr_identity_by_user_id(conn, str(row.id))
     return JSONResponse(
         status_code=status_code,
-        content=_auth_response_payload(row, tokens),
+        content=_auth_response_payload(
+            row,
+            tokens,
+            nostr_pubkey=getattr(identity_row, "pubkey", None),
+        ),
     )
 
 
@@ -438,6 +448,15 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(ContractError)
 async def contract_exception_handler(request: Request, exc: ContractError):
     return _error(exc.code, exc.message, exc.status_code)
+
+
+@app.exception_handler(CustodyError)
+async def custody_exception_handler(request: Request, exc: CustodyError):
+    return _error(
+        exc.code,
+        exc.message,
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
 
 
 @app.exception_handler(HTTPException)
@@ -975,6 +994,7 @@ async def refresh(body: RefreshRequest):
             replacement_token_jti=tokens.refresh_token_jti,
             replacement_expires_at=tokens.refresh_expires_at,
         )
+        identity_row = await get_nostr_identity_by_user_id(conn, user_id)
 
     if not rotated:
         record_business_event("auth_refresh", outcome="failure")
@@ -983,7 +1003,11 @@ async def refresh(body: RefreshRequest):
     record_business_event("auth_refresh")
     return JSONResponse(
         status_code=status.HTTP_200_OK,
-        content=_auth_response_payload(row, tokens),
+        content=_auth_response_payload(
+            row,
+            tokens,
+            nostr_pubkey=getattr(identity_row, "pubkey", None),
+        ),
     )
 
 
@@ -1028,11 +1052,15 @@ async def logout(body: LogoutRequest):
 async def get_current_user(
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
+    async with _engine.connect() as conn:
+        identity_row = await get_nostr_identity_by_user_id(conn, principal.id)
+
     return UserOut(
         id=principal.id,
-        email=principal.email or "",
+        email=principal.email,
         display_name=principal.display_name,
         role=principal.role,
+        nostr_pubkey=getattr(identity_row, "pubkey", None),
         created_at=principal.created_at,
     )
 
@@ -1455,6 +1483,7 @@ async def onboarding_summary(
     async with _engine.connect() as conn:
         user_row = await get_user_by_id(conn, principal.id)
         kyc_row = await get_kyc_status(conn, principal.id)
+        identity_row = await get_nostr_identity_by_user_id(conn, principal.id)
 
     if user_row is None:
         raise _invalid_access_token_error()
@@ -1463,7 +1492,7 @@ async def onboarding_summary(
     providers = list_onramp_provider_views(kyc_verified=is_kyc_verified(kyc_row))
     record_business_event("auth_onboarding_summary")
     return OnboardingSummaryResponse(
-        user=_user_out(user_row),
+        user=_user_out(user_row).model_copy(update={"nostr_pubkey": getattr(identity_row, "pubkey", None)}),
         kyc_status=_kyc_state_label(kyc_row),
         custody=OnboardingCustodyOut(
             configured_backend=custody.backend,
