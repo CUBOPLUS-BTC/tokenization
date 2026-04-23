@@ -843,7 +843,6 @@ async def get_wallet_custody_status(
         from .db import get_user_by_id
         user = await get_user_by_id(conn, principal.id)
         is_2fa_verified = user is not None and getattr(user, "is_verified", False) and getattr(user, "totp_secret", None) is not None
-        print(f"DEBUG: user={principal.id} is_verified={getattr(user, 'is_verified', False)} has_secret={getattr(user, 'totp_secret', None) is not None}")
 
     encrypted_seed = bytes(_row_value(wallet, "encrypted_seed", b""))
     descriptor = describe_custody_record(encrypted_seed)
