@@ -791,7 +791,7 @@ async def liquid_issuances():
 async def submit_asset(
     request: Request,
     body: AssetCreateRequest,
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin", api_key_scopes=("tokenization:assets:create",))),
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
     async with _runtime_engine().connect() as conn:
         row = await create_asset(
@@ -837,7 +837,7 @@ async def submit_asset_with_document(
     category: AssetCategory = Form(...),
     valuation_sat: int = Form(..., gt=0),
     document: UploadFile = File(...),
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin", api_key_scopes=("tokenization:assets:create",))),
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
     normalized_name = name.strip()
     normalized_description = description.strip()

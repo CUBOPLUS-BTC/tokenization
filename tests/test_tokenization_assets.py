@@ -355,12 +355,17 @@ class TestSubmitAsset:
         assert body["error"]["code"] == "validation_error"
         assert any(detail["field"] == "category" for detail in body["error"]["details"])
 
-    def test_non_seller_role_is_rejected(self, client):
+    def test_authenticated_user_can_create_asset(self, client):
         app_client, settings = client
         fake_user = _make_fake_user(role="user")
+        fake_asset = _make_fake_asset(fake_user.id)
         access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        create_asset_mock = AsyncMock(return_value=fake_asset)
 
-        with patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)):
+        with (
+            patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.tokenization.main.create_asset", create_asset_mock),
+        ):
             resp = app_client.post(
                 "/assets",
                 headers=_auth_headers(access_token),
@@ -373,8 +378,9 @@ class TestSubmitAsset:
                 },
             )
 
-        assert resp.status_code == 403
-        assert resp.json()["error"]["code"] == "forbidden"
+        assert resp.status_code == 201
+        assert resp.json()["asset"]["owner_id"] == str(fake_user.id)
+        create_asset_mock.assert_awaited_once()
 
     def test_missing_bearer_token_is_rejected(self, client):
         app_client, _ = client
@@ -452,6 +458,58 @@ class TestSubmitAsset:
         }
         assert create_asset_mock.await_args.kwargs["documents_storage_key"] == f"{asset_id}/prospectus.pdf"
         assert create_asset_mock.await_args.kwargs["documents_filename"] == "prospectus.pdf"
+
+    def test_authenticated_user_can_upload_pdf_document_for_asset_submission(self, client):
+        app_client, settings = client
+        fake_user = _make_fake_user(role="user")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        asset_id = uuid.uuid4()
+        now = datetime.now(tz=timezone.utc)
+        uploaded_asset = FakeAsset(
+            id=asset_id,
+            owner_id=fake_user.id,
+            name="Warehouse",
+            description="Industrial warehouse with signed lease.",
+            category="real_estate",
+            valuation_sat=200_000_000,
+            documents_url=f"/assets/{asset_id}/document",
+            documents_storage_key=f"{asset_id}/prospectus.pdf",
+            documents_filename="prospectus.pdf",
+            documents_content_type="application/pdf",
+            documents_size_bytes=512,
+            status="pending",
+            created_at=now,
+            updated_at=now,
+        )
+
+        with (
+            patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch(
+                "services.tokenization.main.store_pdf_document",
+                return_value=SimpleNamespace(
+                    storage_key=f"{asset_id}/prospectus.pdf",
+                    filename="prospectus.pdf",
+                    content_type="application/pdf",
+                    size_bytes=512,
+                ),
+            ),
+            patch("services.tokenization.main.uuid.uuid4", return_value=asset_id),
+            patch("services.tokenization.main.create_asset", AsyncMock(return_value=uploaded_asset)),
+        ):
+            response = app_client.post(
+                "/assets/upload",
+                headers=_auth_headers(access_token),
+                data={
+                    "name": uploaded_asset.name,
+                    "description": uploaded_asset.description,
+                    "category": uploaded_asset.category,
+                    "valuation_sat": str(uploaded_asset.valuation_sat),
+                },
+                files={"document": ("prospectus.pdf", b"%PDF-1.7", "application/pdf")},
+            )
+
+        assert response.status_code == 201
+        assert response.json()["asset"]["owner_id"] == str(fake_user.id)
 
 
 class TestGetAssetDetails:
