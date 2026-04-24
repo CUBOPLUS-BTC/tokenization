@@ -125,7 +125,23 @@ def _runtime_engine() -> AsyncEngine | object:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     engine = _runtime_engine()
-    await ensure_schema_ready(engine, ("users", "assets", "tokens"))
+    await ensure_schema_ready(
+        engine,
+        ("users", "assets", "tokens"),
+        required_columns={
+            "tokens": (
+                "asset_id",
+                "ticker",
+                "liquid_asset_id",
+                "total_supply",
+                "circulating_supply",
+                "unit_price_sat",
+                "visibility",
+                "metadata",
+                "minted_at",
+            ),
+        },
+    )
     yield
     tasks = tuple(_background_tasks)
     for task in tasks:
