@@ -166,6 +166,7 @@ services:
         required: false
     volumes:
       - ./services/wallet:/app/services/wallet
+      - ./services/common:/app/services/common
       - lnd_data:/run/secrets/lnd:ro
     command: ["uvicorn", "services.wallet.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
     depends_on:
@@ -197,6 +198,7 @@ services:
         required: false
     volumes:
       - ./services/auth:/app/services/auth
+      - ./services/common:/app/services/common
     command: ["uvicorn", "services.auth.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     depends_on:
       postgres:
@@ -219,6 +221,7 @@ services:
         required: false
     volumes:
       - ./services/tokenization:/app/services/tokenization
+      - ./services/common:/app/services/common
     command: ["uvicorn", "services.tokenization.main:app", "--host", "0.0.0.0", "--port", "8002", "--reload"]
     depends_on:
       postgres:
@@ -245,6 +248,7 @@ services:
         required: false
     volumes:
       - ./services/marketplace:/app/services/marketplace
+      - ./services/common:/app/services/common
     command: ["uvicorn", "services.marketplace.main:app", "--host", "0.0.0.0", "--port", "8003", "--reload"]
     depends_on:
       postgres:
@@ -269,6 +273,7 @@ services:
         required: false
     volumes:
       - ./services/nostr:/app/services/nostr
+      - ./services/common:/app/services/common
     command: ["uvicorn", "services.nostr.main:app", "--host", "0.0.0.0", "--port", "8005", "--reload"]
     depends_on:
       postgres:
@@ -293,6 +298,7 @@ services:
         required: false
     volumes:
       - ./services/admin:/app/services/admin
+      - ./services/common:/app/services/common
     command: ["uvicorn", "services.admin.main:app", "--host", "0.0.0.0", "--port", "8006", "--reload"]
     depends_on:
       postgres:
