@@ -637,6 +637,24 @@ class TestLogin:
         )
         assert resp.status_code == 422
 
+    def test_login_accepts_local_test_seed_email(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("admin@local.test", "LocalAdmin123!", role="admin")
+
+        with patch(
+            "services.auth.main.get_user_by_email",
+            AsyncMock(return_value=fake_user),
+        ):
+            resp = app_client.post(
+                "/auth/login",
+                json={"email": "admin@local.test", "password": "LocalAdmin123!"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        _assert_user_structure(body["user"], "admin@local.test")
+        _assert_token_structure(body["tokens"])
+
 
 class TestRefreshTokens:
     def test_refresh_rotation_rejects_token_reuse(self, client):
