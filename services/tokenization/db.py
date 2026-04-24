@@ -89,6 +89,7 @@ async def get_asset_by_id(
         sa.select(
             assets_table,
             tokens_table.c.id.label("token_id"),
+            tokens_table.c.ticker,
             tokens_table.c.liquid_asset_id,
             tokens_table.c.total_supply,
             tokens_table.c.circulating_supply,
@@ -184,7 +185,22 @@ async def list_assets(
     asset_status: str | None = None,
     category: str | None = None,
 ) -> list[sa.engine.Row]:
-    stmt = sa.select(assets_table)
+    stmt = (
+        sa.select(
+            assets_table,
+            tokens_table.c.id.label("token_id"),
+            tokens_table.c.liquid_asset_id,
+            tokens_table.c.total_supply,
+            tokens_table.c.circulating_supply,
+            tokens_table.c.unit_price_sat,
+            tokens_table.c.visibility,
+            tokens_table.c.metadata.label("token_metadata"),
+            tokens_table.c.minted_at,
+        )
+        .select_from(
+            assets_table.outerjoin(tokens_table, tokens_table.c.asset_id == assets_table.c.id)
+        )
+    )
 
     if asset_status is not None:
         stmt = stmt.where(assets_table.c.status == asset_status)
@@ -202,6 +218,7 @@ async def create_asset_token(
     *,
     asset_id: str | uuid.UUID,
     owner_id: str | uuid.UUID,
+    ticker: str,
     liquid_asset_id: str,
     total_supply: int,
     circulating_supply: int,
@@ -235,6 +252,7 @@ async def create_asset_token(
             sa.insert(tokens_table).values(
                 id=token_id,
                 asset_id=_as_uuid(asset_id),
+                ticker=ticker,
                 liquid_asset_id=resolved_asset_id,
                 total_supply=total_supply,
                 circulating_supply=circulating_supply,

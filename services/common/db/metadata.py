@@ -406,6 +406,7 @@ tokens = sa.Table(
     sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
     sa.Column("asset_id", postgresql.UUID(as_uuid=True), nullable=False),
     sa.Column("liquid_asset_id", sa.String(length=64), nullable=False),
+    sa.Column("ticker", sa.String(length=10), nullable=False),
     sa.Column("total_supply", sa.BigInteger(), nullable=False),
     sa.Column("circulating_supply", sa.BigInteger(), nullable=False, server_default="0"),
     sa.Column("unit_price_sat", sa.BigInteger(), nullable=False),
