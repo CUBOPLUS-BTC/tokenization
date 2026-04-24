@@ -4,7 +4,7 @@
 
 Enumerates the strategic goals that guide roadmap prioritization and resource allocation.
 
-> **Wiki**: [Long-Term-Objectives](https://github.com/caeher/tokenization/wiki/Long-Term-Objectives)
+> **Wiki**: [Long-Term-Objectives](https://github.com/CUBOPLUS-BTC/tokenization/wiki/Long-Term-Objectives)
 
 ---
 
@@ -16,10 +16,3 @@ Enumerates the strategic goals that guide roadmap prioritization and resource al
 4. Maintain wiki-quality documentation for contributors, users, and administrators.
 5. Support a smooth path from beta readiness to mainnet deployment.
 6. Preserve Bitcoin-first design while allowing future expansion into optional integrations.
-
-## Change Log
-
-| Date | Description |
-|------|-------------|
-| 2026-04-14 | Added the first long-term objective set for the tokenization platform. |
-| 2026-04-23 | docs(strategy): remove navigation links |
