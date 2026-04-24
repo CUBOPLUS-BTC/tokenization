@@ -1,4 +1,4 @@
-FROM nginx:1.25-alpine
+FROM docker.io/library/nginx:1.25-alpine
 
 COPY gateway.conf /etc/nginx/conf.d/gateway.conf
 COPY 30-render-cors-map.sh /docker-entrypoint.d/30-render-cors-map.sh
