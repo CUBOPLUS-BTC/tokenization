@@ -1,5 +1,13 @@
 # Action Plan
 
+## Purpose
+
+Breaks the long-term objectives into phased, actionable milestones tied to the current issue roadmap.
+
+> **Wiki**: [Action-Plan](https://github.com/CUBOPLUS-BTC/tokenization/wiki/Action-Plan)
+
+---
+
 ## Phase 1: Release Readiness
 
 - Complete regtest end-to-end coverage for the marketplace journey.
@@ -17,7 +25,3 @@
 - Prepare beta and mainnet workflows.
 - Expand custody, compliance, and developer access capabilities.
 - Support future growth features only after the core platform is stable.
-
-## logs
-
-- 2026-04-14: Created the initial action plan tied to the current issue roadmap.

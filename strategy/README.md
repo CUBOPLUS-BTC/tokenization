@@ -2,9 +2,11 @@
 
 This directory captures the project strategy at a glance:
 
-- mission-vision.md
-- long-term-objectives.md
-- action-plan.md
+- [mission-vision.md](mission-vision.md)
+- [long-term-objectives.md](long-term-objectives.md)
+- [action-plan.md](action-plan.md)
+
+📄 **Source Document**: [PLAN B2B FLOW](https://docs.google.com/document/d/116HPtsxnYZW1-cddy96j2gTEaUH3fsr1aGUly2Y4isE/edit?tab=t.0#heading=h.q2b1ginb0rno)
 
 Each document uses a simple wiki-style layout with:
 
