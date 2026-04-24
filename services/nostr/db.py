@@ -112,6 +112,28 @@ async def list_campaigns_for_user(conn: AsyncConnection, user_id: str) -> list[s
     return list(result.fetchall())
 
 
+async def list_active_campaigns(conn: AsyncConnection) -> list[sa.engine.Row]:
+    now = _utc_now()
+    result = await conn.execute(
+        sa.select(nostr_campaigns_table)
+        .where(nostr_campaigns_table.c.status == "active")
+        .where(
+            sa.or_(
+                nostr_campaigns_table.c.start_at.is_(None),
+                nostr_campaigns_table.c.start_at <= now,
+            )
+        )
+        .where(
+            sa.or_(
+                nostr_campaigns_table.c.end_at.is_(None),
+                nostr_campaigns_table.c.end_at > now,
+            )
+        )
+        .order_by(nostr_campaigns_table.c.created_at.asc(), nostr_campaigns_table.c.id.asc())
+    )
+    return list(result.fetchall())
+
+
 async def get_campaign_by_id(
     conn: AsyncConnection,
     *,
@@ -172,6 +194,44 @@ async def list_campaign_matches(conn: AsyncConnection, campaign_id: str) -> list
         .order_by(nostr_campaign_matches_table.c.created_at.desc(), nostr_campaign_matches_table.c.id.desc())
     )
     return list(result.fetchall())
+
+
+async def create_campaign_match(
+    conn: AsyncConnection,
+    *,
+    campaign_id: str,
+    relay_url: str,
+    event_id: str,
+    event_pubkey: str,
+    event_kind: int,
+    match_fingerprint: str,
+    status: str = "matched",
+    ignore_reason: str | None = None,
+) -> sa.engine.Row | None:
+    try:
+        result = await conn.execute(
+            sa.insert(nostr_campaign_matches_table)
+            .values(
+                id=uuid.uuid4(),
+                campaign_id=_as_uuid(campaign_id),
+                relay_url=relay_url,
+                event_id=event_id,
+                event_pubkey=event_pubkey,
+                event_kind=event_kind,
+                match_fingerprint=match_fingerprint,
+                status=status,
+                ignore_reason=ignore_reason,
+                created_at=_utc_now(),
+            )
+            .returning(nostr_campaign_matches_table)
+        )
+    except sa.exc.IntegrityError:
+        await conn.rollback()
+        return None
+
+    row = result.fetchone()
+    await conn.commit()
+    return row
 
 
 async def list_campaign_payouts(conn: AsyncConnection, campaign_id: str) -> list[sa.engine.Row]:

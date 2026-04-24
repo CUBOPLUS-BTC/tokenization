@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import datetime, timezone
 import hashlib
 import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+import secrets
+import re
 import sys
 import uuid
 
@@ -15,7 +18,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
-import uvicorn
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -33,10 +35,12 @@ from common.alerting import configure_alerting
 from common.metrics import mount_metrics_endpoint, record_business_event
 from common.db.schema_check import ensure_schema_ready
 from nostr.db import (
+    create_campaign_match,
     create_campaign,
     get_db_conn,
     get_engine,
     get_campaign_by_id as get_campaign_row,
+    list_active_campaigns,
     list_campaign_fundings,
     list_campaign_matches,
     list_campaign_payouts,
@@ -63,6 +67,9 @@ settings = get_settings(service_name="nostr", default_port=8005)
 configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
 logger = logging.getLogger(__name__)
 TOPICS = ("asset.created", "ai.evaluation.complete", "trade.matched", "token.minted")
+RELAY_POLL_INTERVAL_SECONDS = 15
+RELAY_READ_TIMEOUT_SECONDS = 2
+_HASHTAG_SLUG = re.compile(r"[^a-z0-9]+")
 configure_alerting(settings)
 _bearer_scheme = HTTPBearer(auto_error=False)
 _connector: NostrRelayConnector | None = None
@@ -196,11 +203,32 @@ async def _pump_events_to_relays(stop_event: asyncio.Event, connector: NostrRela
                         logger.exception("Failed to parse stream payload JSON", extra={"topic": topic, "record_id": record_id})
                         continue
 
+                    logger.info(
+                        "Received internal event from Redis stream",
+                        extra={
+                            "topic": topic,
+                            "record_id": record_id,
+                            "payload": payload,
+                        },
+                    )
+
                     nostr_event = map_and_sign_internal_event(
                         topic,
                         payload,
                         source_service=settings.service_name,
                         private_key_hex=_nostr_private_key(),
+                    )
+                    logger.info(
+                        "Mapped internal event to Nostr event",
+                        extra={
+                            "topic": topic,
+                            "record_id": record_id,
+                            "event_id": nostr_event["id"],
+                            "kind": nostr_event["kind"],
+                            "pubkey": nostr_event["pubkey"],
+                            "tags": nostr_event["tags"],
+                            "content": nostr_event["content"],
+                        },
                     )
                     try:
                         relay_statuses = await connector.publish(nostr_event, topic=topic)
@@ -211,6 +239,7 @@ async def _pump_events_to_relays(stop_event: asyncio.Event, connector: NostrRela
                                 "topic": topic,
                                 "record_id": record_id,
                                 "event_id": nostr_event["id"],
+                                "payload": payload,
                                 "accepted_relays": [relay for relay, ok in relay_statuses.items() if ok],
                                 "failed_relays": [relay for relay, ok in relay_statuses.items() if not ok],
                             },
@@ -254,13 +283,23 @@ async def _lifespan(app: FastAPI):
 
     stop_event = asyncio.Event()
     worker = asyncio.create_task(_pump_events_to_relays(stop_event, connector))
+    since_state = {relay: int(datetime.now(tz=timezone.utc).timestamp()) - 3600 for relay in settings.nostr_relay_list}
+    relay_workers = [
+        asyncio.create_task(_poll_relay_for_campaign_matches(stop_event, relay_url=relay, since_state=since_state))
+        for relay in settings.nostr_relay_list
+    ]
     try:
         yield
     finally:
         stop_event.set()
         worker.cancel()
+        for relay_worker in relay_workers:
+            relay_worker.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await worker
+        for relay_worker in relay_workers:
+            with contextlib.suppress(asyncio.CancelledError):
+                await relay_worker
         await engine.dispose()
 
 
@@ -289,6 +328,231 @@ def _row_value(row: object, key: str, default: object = None) -> object:
     if isinstance(row, dict):
         return row.get(key, default)
     return getattr(row, key, default)
+
+
+def _normalize_hashtag(value: str) -> str:
+    normalized = _HASHTAG_SLUG.sub("-", value.strip().lower()).strip("-")
+    return normalized
+
+
+def _parse_csv_values(value: str, *, case_sensitive: bool) -> list[str]:
+    items = [item.strip() for item in value.split(",")]
+    normalized = [item for item in items if item]
+    if case_sensitive:
+        return normalized
+    return [item.lower() for item in normalized]
+
+
+def _event_hashtags(event: dict[str, object]) -> list[str]:
+    tags = event.get("tags")
+    if not isinstance(tags, list):
+        return []
+    values: list[str] = []
+    for tag in tags:
+        if isinstance(tag, list) and len(tag) >= 2 and str(tag[0]) == "t":
+            normalized = _normalize_hashtag(str(tag[1]))
+            if normalized:
+                values.append(normalized)
+    return values
+
+
+def _event_tag_strings(event: dict[str, object]) -> list[str]:
+    tags = event.get("tags")
+    if not isinstance(tags, list):
+        return []
+    rendered: list[str] = []
+    for tag in tags:
+        if not isinstance(tag, list) or len(tag) < 2:
+            continue
+        key = str(tag[0])
+        values = [str(item) for item in tag[1:]]
+        rendered.append(":".join([key, *values]))
+        rendered.extend(values)
+    return rendered
+
+
+def _string_matches(*, haystacks: list[str], needle: str, operator: str, case_sensitive: bool) -> bool:
+    if case_sensitive:
+        normalized_haystacks = haystacks
+        normalized_needle = needle
+    else:
+        normalized_haystacks = [item.lower() for item in haystacks]
+        normalized_needle = needle.lower()
+
+    if operator == "equals":
+        return normalized_needle in normalized_haystacks
+    if operator == "contains":
+        return any(normalized_needle in item for item in normalized_haystacks)
+    if operator == "in":
+        values = _parse_csv_values(needle, case_sensitive=case_sensitive)
+        return any(item in values for item in normalized_haystacks)
+    return False
+
+
+def _event_matches_trigger(event: dict[str, object], trigger_row: object) -> bool:
+    trigger_type = str(_row_value(trigger_row, "trigger_type"))
+    operator = str(_row_value(trigger_row, "operator"))
+    value = str(_row_value(trigger_row, "value"))
+    case_sensitive = bool(_row_value(trigger_row, "case_sensitive"))
+
+    if trigger_type == "hashtag":
+        return _string_matches(
+            haystacks=_event_hashtags(event),
+            needle=_normalize_hashtag(value),
+            operator=operator,
+            case_sensitive=False,
+        )
+
+    if trigger_type == "tag":
+        return _string_matches(
+            haystacks=_event_tag_strings(event),
+            needle=value,
+            operator=operator,
+            case_sensitive=case_sensitive,
+        )
+
+    if trigger_type == "content_substring":
+        return _string_matches(
+            haystacks=[str(event.get("content") or "")],
+            needle=value,
+            operator=operator,
+            case_sensitive=case_sensitive,
+        )
+
+    if trigger_type == "author_pubkey":
+        return _string_matches(
+            haystacks=[str(event.get("pubkey") or "")],
+            needle=value,
+            operator=operator,
+            case_sensitive=case_sensitive,
+        )
+
+    if trigger_type == "event_kind":
+        return _string_matches(
+            haystacks=[str(event.get("kind") or "")],
+            needle=value,
+            operator=operator,
+            case_sensitive=True,
+        )
+
+    return False
+
+
+def _event_matches_campaign(event: dict[str, object], trigger_rows: list[object]) -> bool:
+    return any(_event_matches_trigger(event, trigger_row) for trigger_row in trigger_rows)
+
+
+def _match_fingerprint(campaign_id: str, event: dict[str, object]) -> str:
+    raw = f"{campaign_id}:{event.get('id')}:{event.get('pubkey')}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _event_created_at(event: dict[str, object]) -> datetime | None:
+    created_at = event.get("created_at")
+    if not isinstance(created_at, int):
+        return None
+    return datetime.fromtimestamp(created_at, tz=timezone.utc)
+
+
+async def _process_relay_event(conn: AsyncConnection, *, relay_url: str, event: dict[str, object]) -> None:
+    if not isinstance(event.get("id"), str) or not isinstance(event.get("pubkey"), str):
+        return
+    if not isinstance(event.get("kind"), int):
+        return
+
+    event_time = _event_created_at(event)
+    active_campaigns = await list_active_campaigns(conn)
+    for campaign_row in active_campaigns:
+        if event_time is not None:
+            start_at = _row_value(campaign_row, "start_at")
+            end_at = _row_value(campaign_row, "end_at")
+            if start_at is not None and event_time < start_at:
+                continue
+            if end_at is not None and event_time >= end_at:
+                continue
+
+        campaign_id = str(_row_value(campaign_row, "id"))
+        trigger_rows = await list_campaign_triggers(conn, campaign_id)
+        if not trigger_rows or not _event_matches_campaign(event, trigger_rows):
+            continue
+
+        row = await create_campaign_match(
+            conn,
+            campaign_id=campaign_id,
+            relay_url=relay_url,
+            event_id=str(event["id"]),
+            event_pubkey=str(event["pubkey"]),
+            event_kind=int(event["kind"]),
+            match_fingerprint=_match_fingerprint(campaign_id, event),
+        )
+        if row is None:
+            continue
+
+        logger.info(
+            "Detected Nostr campaign match",
+            extra={
+                "campaign_id": campaign_id,
+                "campaign_name": _row_value(campaign_row, "name"),
+                "relay_url": relay_url,
+                "event_id": event["id"],
+                "event_pubkey": event["pubkey"],
+                "event_kind": event["kind"],
+                "content": event.get("content"),
+                "tags": event.get("tags"),
+            },
+        )
+
+
+async def _poll_relay_for_campaign_matches(
+    stop_event: asyncio.Event,
+    *,
+    relay_url: str,
+    since_state: dict[str, int],
+) -> None:
+    try:
+        from websockets import connect
+    except ImportError:
+        logger.warning("websockets package not installed; relay match subscriber disabled")
+        return
+
+    while not stop_event.is_set():
+        try:
+            subscription_id = f"campaigns-{secrets.token_hex(4)}"
+            since = since_state.get(relay_url, int(datetime.now(tz=timezone.utc).timestamp()) - 3600)
+            async with connect(relay_url, open_timeout=5, close_timeout=3) as websocket:
+                await websocket.send(json.dumps(["REQ", subscription_id, {"kinds": [1], "since": since, "limit": 200}]))
+                while not stop_event.is_set():
+                    try:
+                        raw_message = await asyncio.wait_for(websocket.recv(), timeout=RELAY_READ_TIMEOUT_SECONDS)
+                    except asyncio.TimeoutError:
+                        break
+
+                    message = json.loads(raw_message)
+                    if not isinstance(message, list) or not message:
+                        continue
+                    if message[0] == "EOSE":
+                        break
+                    if message[0] != "EVENT" or len(message) < 3 or not isinstance(message[2], dict):
+                        continue
+
+                    event = message[2]
+                    created_at = event.get("created_at")
+                    if isinstance(created_at, int):
+                        since_state[relay_url] = max(since_state.get(relay_url, since), created_at + 1)
+
+                    async with get_engine().connect() as conn:
+                        await _process_relay_event(conn, relay_url=relay_url, event=event)
+
+                await websocket.send(json.dumps(["CLOSE", subscription_id]))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed while polling relay for campaign matches", extra={"relay_url": relay_url})
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=RELAY_POLL_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            continue
 
 
 async def _campaign_response(conn: AsyncConnection, campaign_row: object) -> dict[str, object]:
@@ -731,4 +995,6 @@ async def publish_announcement(
 
 
 if __name__ == "__main__":
+    import uvicorn
+
     uvicorn.run(app, host=settings.service_host, port=settings.service_port)

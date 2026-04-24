@@ -184,3 +184,57 @@ def test_activate_campaign_requires_reserved_balance(client):
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "campaign_not_funded"
+
+
+def test_event_matches_campaign_for_hashtag_and_content(client):
+    _app_client, nostr_main = client
+    event = {
+        "id": "e" * 64,
+        "pubkey": "f" * 64,
+        "kind": 1,
+        "content": "Humberto habla de bitcoin y tokenizacion",
+        "tags": [["t", "bitcoin"], ["p", "abc"]],
+    }
+    triggers = [
+        {"trigger_type": "hashtag", "operator": "equals", "value": "bitcoin", "case_sensitive": False},
+        {"trigger_type": "content_substring", "operator": "contains", "value": "token", "case_sensitive": False},
+    ]
+
+    assert nostr_main._event_matches_campaign(event, triggers) is True
+
+
+def test_process_relay_event_persists_match_for_active_campaign(client):
+    _app_client, nostr_main = client
+    conn = AsyncMock()
+    campaign_id = str(uuid.uuid4())
+    event = {
+        "id": "1" * 64,
+        "pubkey": "2" * 64,
+        "kind": 1,
+        "content": "bitcoin para todos",
+        "tags": [["t", "bitcoin"]],
+        "created_at": int(datetime.now(tz=timezone.utc).timestamp()),
+    }
+
+    nostr_main.list_active_campaigns = AsyncMock(
+        return_value=[
+            _campaign_row(
+                user_id=str(uuid.uuid4()),
+                campaign_id=campaign_id,
+                status="active",
+                reserved_sat=1000,
+            )
+        ]
+    )
+    nostr_main.list_campaign_triggers = AsyncMock(
+        return_value=[
+            {"trigger_type": "hashtag", "operator": "equals", "value": "bitcoin", "case_sensitive": False}
+        ]
+    )
+    nostr_main.create_campaign_match = AsyncMock(return_value={"id": uuid.uuid4()})
+
+    import asyncio
+
+    asyncio.run(nostr_main._process_relay_event(conn, relay_url="wss://relay.example.com", event=event))
+
+    nostr_main.create_campaign_match.assert_awaited_once()
