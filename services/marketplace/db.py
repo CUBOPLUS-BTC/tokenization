@@ -248,22 +248,8 @@ async def list_trades(
     *,
     token_id: str | uuid.UUID | None = None,
 ) -> list[sa.engine.Row]:
-    buy_orders = orders_table.alias("buy_orders")
-    sell_orders = orders_table.alias("sell_orders")
-    
     order_column = sa.func.coalesce(trades_table.c.settled_at, trades_table.c.created_at)
-    stmt = (
-        sa.select(
-            trades_table,
-            buy_orders.c.user_id.label("buyer_id"),
-            sell_orders.c.user_id.label("seller_id"),
-        )
-        .select_from(
-            trades_table
-            .join(buy_orders, trades_table.c.buy_order_id == buy_orders.c.id)
-            .join(sell_orders, trades_table.c.sell_order_id == sell_orders.c.id)
-        )
-    )
+    stmt = sa.select(trades_table)
 
     if token_id is not None:
         stmt = stmt.where(trades_table.c.token_id == _as_uuid(token_id))

@@ -84,8 +84,6 @@ class OrderBookResponse(BaseModel):
 class TradeOut(BaseModel):
     id: UUID
     token_id: UUID
-    buyer_id: UUID | None = None
-    seller_id: UUID | None = None
     quantity: int
     price_sat: int
     total_sat: int

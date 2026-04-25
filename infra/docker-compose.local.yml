@@ -1,3 +1,4 @@
+name: tokenization-local
 
 services:
   postgres:
@@ -5,9 +6,10 @@ services:
     container_name: tokenization-local-postgres
     restart: unless-stopped
     env_file:
-      - .env.local
+      - path: ./infra/.env.local
+        required: false
     ports:
-      - "5433:5432"
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -145,7 +147,8 @@ services:
     labels:
       - "com.tokenization.migrate.role=one-shot"
     env_file:
-      - .env.local
+      - path: ./infra/.env.local
+        required: false
     depends_on:
       postgres:
         condition: service_healthy
@@ -159,7 +162,8 @@ services:
     container_name: tokenization-local-wallet
     restart: unless-stopped
     env_file:
-      - .env.local
+      - path: ./infra/.env.local
+        required: false
     volumes:
       - ./services/wallet:/app/services/wallet
       - ./services/common:/app/services/common
@@ -190,7 +194,8 @@ services:
     container_name: tokenization-local-auth
     restart: unless-stopped
     env_file:
-      - .env.local
+      - path: ./infra/.env.local
+        required: false
     volumes:
       - ./services/auth:/app/services/auth
       - ./services/common:/app/services/common
@@ -212,7 +217,8 @@ services:
     container_name: tokenization-local-tokenization
     restart: unless-stopped
     env_file:
-      - .env.local
+      - path: ./infra/.env.local
+        required: false
     volumes:
       - ./services/tokenization:/app/services/tokenization
       - ./services/common:/app/services/common
@@ -238,7 +244,8 @@ services:
     container_name: tokenization-local-marketplace
     restart: unless-stopped
     env_file:
-      - .env.local
+      - path: ./infra/.env.local
+        required: false
     volumes:
       - ./services/marketplace:/app/services/marketplace
       - ./services/common:/app/services/common
@@ -262,7 +269,8 @@ services:
     container_name: tokenization-local-nostr
     restart: unless-stopped
     env_file:
-      - .env.local
+      - path: ./infra/.env.local
+        required: false
     volumes:
       - ./services/nostr:/app/services/nostr
       - ./services/common:/app/services/common
@@ -286,7 +294,8 @@ services:
     container_name: tokenization-local-admin
     restart: unless-stopped
     env_file:
-      - .env.local
+      - path: ./infra/.env.local
+        required: false
     volumes:
       - ./services/admin:/app/services/admin
       - ./services/common:/app/services/common
@@ -310,7 +319,8 @@ services:
     container_name: tokenization-local-gateway
     restart: unless-stopped
     env_file:
-      - .env.local
+      - path: ./infra/.env.local
+        required: false
     environment:
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       CORS_ALLOWED_METHODS: ${CORS_ALLOWED_METHODS:-GET, POST, PUT, PATCH, DELETE, OPTIONS}

@@ -253,8 +253,6 @@ def _trade_out(row: object) -> TradeOut:
     return TradeOut(
         id=_row_value(row, "id"),
         token_id=_row_value(row, "token_id"),
-        buyer_id=_row_value(row, "buyer_id"),
-        seller_id=_row_value(row, "seller_id"),
         quantity=int(_row_value(row, "quantity", 0)),
         price_sat=int(_row_value(row, "price_sat", 0)),
         total_sat=int(_row_value(row, "total_sat", 0)),
