@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
+import re
 import sys
 from typing import Any
 import uuid
@@ -125,7 +126,23 @@ def _runtime_engine() -> AsyncEngine | object:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     engine = _runtime_engine()
-    await ensure_schema_ready(engine, ("users", "assets", "tokens"))
+    await ensure_schema_ready(
+        engine,
+        ("users", "assets", "tokens"),
+        required_columns={
+            "tokens": (
+                "asset_id",
+                "ticker",
+                "liquid_asset_id",
+                "total_supply",
+                "circulating_supply",
+                "unit_price_sat",
+                "visibility",
+                "metadata",
+                "minted_at",
+            ),
+        },
+    )
     yield
     tasks = tuple(_background_tasks)
     for task in tasks:
@@ -207,10 +224,18 @@ def _asset_not_found_error() -> ContractError:
     )
 
 
-def _asset_ownership_error() -> ContractError:
+def _asset_evaluation_admin_only_error() -> ContractError:
     return ContractError(
         code="forbidden",
-        message="Only the owning seller can evaluate this asset.",
+        message="Only admins can evaluate assets.",
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def _asset_tokenization_ownership_error() -> ContractError:
+    return ContractError(
+        code="forbidden",
+        message="Only the asset owner can tokenize this asset.",
         status_code=status.HTTP_403_FORBIDDEN,
     )
 
@@ -368,6 +393,15 @@ def _asset_document_out(row: object) -> AssetDocumentOut | None:
         content_type=str(_optional_row_value(row, "documents_content_type") or "application/pdf"),
         size_bytes=int(_optional_row_value(row, "documents_size_bytes") or 0),
     )
+
+
+def _build_token_ticker(asset_name: object) -> str:
+    words = re.findall(r"[A-Za-z0-9]+", str(asset_name or ""))
+    ticker = "".join(word[0] for word in words if word).upper()[:10]
+    if ticker:
+        return ticker
+    compact = re.sub(r"[^A-Za-z0-9]+", "", str(asset_name or "")).upper()[:10]
+    return compact or "TKN"
 
 
 def _asset_out(row: object) -> AssetOut:
@@ -775,7 +809,7 @@ async def liquid_issuances():
 async def submit_asset(
     request: Request,
     body: AssetCreateRequest,
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin", api_key_scopes=("tokenization:assets:create",))),
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
     async with _runtime_engine().connect() as conn:
         row = await create_asset(
@@ -821,7 +855,7 @@ async def submit_asset_with_document(
     category: AssetCategory = Form(...),
     valuation_sat: int = Form(..., gt=0),
     document: UploadFile = File(...),
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin", api_key_scopes=("tokenization:assets:create",))),
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
     normalized_name = name.strip()
     normalized_description = description.strip()
@@ -925,7 +959,7 @@ async def get_assets(
 
     page, next_cursor = _build_asset_page(rows, cursor=cursor, limit=limit)
     return AssetListResponse(
-        assets=[_asset_out(row) for row in page],
+        assets=[_asset_detail_out(row) for row in page],
         next_cursor=next_cursor,
     ).model_dump(mode="json")
 
@@ -934,19 +968,17 @@ async def get_assets(
     "/assets/{asset_id}/evaluate",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=AssetEvaluationRequestResponse,
-    summary="Request AI evaluation for an owned asset",
+    summary="Request AI evaluation for an asset",
 )
 async def request_asset_evaluation(
     request: Request,
     asset_id: uuid.UUID,
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin", api_key_scopes=("tokenization:assets:create",))),
+    principal: AuthenticatedPrincipal = Depends(_require_roles("admin", api_key_scopes=("tokenization:assets:create",))),
 ):
     async with _runtime_engine().connect() as conn:
         asset_row = await get_asset_by_id(conn, asset_id)
         if asset_row is None:
             raise _asset_not_found_error()
-        if str(_row_value(asset_row, "owner_id")) != principal.id:
-            raise _asset_ownership_error()
 
         previous_status = _row_value(asset_row, "status")
         if previous_status == "evaluating":
@@ -957,7 +989,6 @@ async def request_asset_evaluation(
         queued_row = await begin_asset_evaluation(
             conn,
             asset_id=asset_id,
-            owner_id=principal.id,
         )
         if queued_row is not None:
             await record_audit_event(
@@ -1011,7 +1042,7 @@ async def tokenize_asset(
     request: Request,
     asset_id: uuid.UUID,
     body: AssetTokenizationRequest,
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin", api_key_scopes=("tokenization:assets:create",))),
+    principal: AuthenticatedPrincipal = Depends(_require_roles("user", "seller", "admin", api_key_scopes=("tokenization:assets:create",))),
 ):
     async with _runtime_engine().connect() as conn:
         asset_row = await get_asset_by_id(conn, asset_id)
@@ -1019,7 +1050,7 @@ async def tokenize_asset(
     if asset_row is None:
         raise _asset_not_found_error()
     if str(_row_value(asset_row, "owner_id")) != principal.id:
-        raise _asset_ownership_error()
+        raise _asset_tokenization_ownership_error()
 
     asset_status = _row_value(asset_row, "status")
     if _optional_row_value(asset_row, "token_id") is not None or asset_status == "tokenized":
@@ -1078,6 +1109,7 @@ async def tokenize_asset(
                 conn,
                 asset_id=asset_id,
                 owner_id=principal.id,
+                ticker=_build_token_ticker(_row_value(asset_row, "name")),
                 liquid_asset_id=liquid_asset_id,
                 total_supply=issued_supply,
                 circulating_supply=issued_supply,

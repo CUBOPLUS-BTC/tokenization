@@ -355,12 +355,17 @@ class TestSubmitAsset:
         assert body["error"]["code"] == "validation_error"
         assert any(detail["field"] == "category" for detail in body["error"]["details"])
 
-    def test_non_seller_role_is_rejected(self, client):
+    def test_authenticated_user_can_create_asset(self, client):
         app_client, settings = client
         fake_user = _make_fake_user(role="user")
+        fake_asset = _make_fake_asset(fake_user.id)
         access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        create_asset_mock = AsyncMock(return_value=fake_asset)
 
-        with patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)):
+        with (
+            patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.tokenization.main.create_asset", create_asset_mock),
+        ):
             resp = app_client.post(
                 "/assets",
                 headers=_auth_headers(access_token),
@@ -373,8 +378,9 @@ class TestSubmitAsset:
                 },
             )
 
-        assert resp.status_code == 403
-        assert resp.json()["error"]["code"] == "forbidden"
+        assert resp.status_code == 201
+        assert resp.json()["asset"]["owner_id"] == str(fake_user.id)
+        create_asset_mock.assert_awaited_once()
 
     def test_missing_bearer_token_is_rejected(self, client):
         app_client, _ = client
@@ -452,6 +458,58 @@ class TestSubmitAsset:
         }
         assert create_asset_mock.await_args.kwargs["documents_storage_key"] == f"{asset_id}/prospectus.pdf"
         assert create_asset_mock.await_args.kwargs["documents_filename"] == "prospectus.pdf"
+
+    def test_authenticated_user_can_upload_pdf_document_for_asset_submission(self, client):
+        app_client, settings = client
+        fake_user = _make_fake_user(role="user")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        asset_id = uuid.uuid4()
+        now = datetime.now(tz=timezone.utc)
+        uploaded_asset = FakeAsset(
+            id=asset_id,
+            owner_id=fake_user.id,
+            name="Warehouse",
+            description="Industrial warehouse with signed lease.",
+            category="real_estate",
+            valuation_sat=200_000_000,
+            documents_url=f"/assets/{asset_id}/document",
+            documents_storage_key=f"{asset_id}/prospectus.pdf",
+            documents_filename="prospectus.pdf",
+            documents_content_type="application/pdf",
+            documents_size_bytes=512,
+            status="pending",
+            created_at=now,
+            updated_at=now,
+        )
+
+        with (
+            patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch(
+                "services.tokenization.main.store_pdf_document",
+                return_value=SimpleNamespace(
+                    storage_key=f"{asset_id}/prospectus.pdf",
+                    filename="prospectus.pdf",
+                    content_type="application/pdf",
+                    size_bytes=512,
+                ),
+            ),
+            patch("services.tokenization.main.uuid.uuid4", return_value=asset_id),
+            patch("services.tokenization.main.create_asset", AsyncMock(return_value=uploaded_asset)),
+        ):
+            response = app_client.post(
+                "/assets/upload",
+                headers=_auth_headers(access_token),
+                data={
+                    "name": uploaded_asset.name,
+                    "description": uploaded_asset.description,
+                    "category": uploaded_asset.category,
+                    "valuation_sat": str(uploaded_asset.valuation_sat),
+                },
+                files={"document": ("prospectus.pdf", b"%PDF-1.7", "application/pdf")},
+            )
+
+        assert response.status_code == 201
+        assert response.json()["asset"]["owner_id"] == str(fake_user.id)
 
 
 class TestGetAssetDetails:
@@ -580,10 +638,10 @@ class TestGetAssetDetails:
 
 
 class TestRequestAssetEvaluation:
-    def test_owner_can_request_asset_evaluation(self, client):
+    def test_admin_can_request_asset_evaluation_for_any_asset(self, client):
         app_client, settings = client
-        fake_user = _make_fake_user(role="seller")
-        pending_asset = _make_fake_asset(fake_user.id, status="pending")
+        fake_user = _make_fake_user(role="admin")
+        pending_asset = _make_fake_asset(uuid.uuid4(), status="pending")
         queued_asset = pending_asset._replace(status="evaluating")
         access_token = _issue_access_token(fake_user, settings.jwt_secret)
 
@@ -609,22 +667,20 @@ class TestRequestAssetEvaluation:
         begin_evaluation_mock.assert_awaited_once()
         assert begin_evaluation_mock.await_args.kwargs == {
             "asset_id": pending_asset.id,
-            "owner_id": str(fake_user.id),
         }
         dispatch_mock.assert_called_once_with(
             pending_asset.id,
             fallback_status="pending",
         )
 
-    def test_non_owner_cannot_request_asset_evaluation(self, client):
+    def test_seller_cannot_request_asset_evaluation(self, client):
         app_client, settings = client
         fake_user = _make_fake_user(role="seller")
-        other_owner_asset = _make_fake_asset(uuid.uuid4(), status="pending")
+        other_owner_asset = _make_fake_asset(fake_user.id, status="pending")
         access_token = _issue_access_token(fake_user, settings.jwt_secret)
 
         with (
             patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
-            patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=other_owner_asset)),
             patch("services.tokenization.main.begin_asset_evaluation", AsyncMock()),
         ):
             resp = app_client.post(
@@ -635,7 +691,7 @@ class TestRequestAssetEvaluation:
         assert resp.status_code == 403
         assert resp.json()["error"] == {
             "code": "forbidden",
-            "message": "Only the owning seller can evaluate this asset.",
+            "message": "Only admins can evaluate assets.",
         }
 
 
@@ -711,6 +767,7 @@ class TestTokenizeAsset:
         assert create_asset_token_mock.await_args.kwargs["circulating_supply"] == 1_000
         assert create_asset_token_mock.await_args.kwargs["unit_price_sat"] == 100_000
         assert create_asset_token_mock.await_args.kwargs["visibility"] == "public"
+        assert create_asset_token_mock.await_args.kwargs["ticker"] == "DOB"
         issuance_metadata = create_asset_token_mock.await_args.kwargs["issuance_metadata"]
         assert issuance_metadata["backend"] == "liquid"
         assert issuance_metadata["asset_id"] == liquid_asset_id
@@ -1067,6 +1124,35 @@ class TestListAssets:
         assert list_assets_mock.await_args.kwargs == {
             "asset_status": "approved",
             "category": "art",
+        }
+
+    def test_asset_catalog_includes_token_details_for_tokenized_assets(self, client):
+        app_client, settings = client
+        fake_user = _make_fake_user(role="user")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        tokenized_asset = _make_fake_asset(fake_user.id, status="tokenized", tokenized=True)
+
+        with (
+            patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.tokenization.main.list_assets", AsyncMock(return_value=[tokenized_asset])),
+        ):
+            resp = app_client.get(
+                "/assets?status=tokenized",
+                headers=_auth_headers(access_token),
+            )
+
+        assert resp.status_code == 200
+        asset = resp.json()["assets"][0]
+        assert asset["status"] == "tokenized"
+        assert asset["token"] == {
+            "id": str(tokenized_asset.token_id),
+            "liquid_asset_id": tokenized_asset.liquid_asset_id,
+            "total_supply": tokenized_asset.total_supply,
+            "circulating_supply": tokenized_asset.circulating_supply,
+            "unit_price_sat": tokenized_asset.unit_price_sat,
+            "visibility": "public",
+            "issuance_metadata": tokenized_asset.token_metadata,
+            "minted_at": tokenized_asset.minted_at.isoformat().replace("+00:00", "Z"),
         }
 
     def test_asset_catalog_supports_cursor_pagination(self, client):

@@ -32,8 +32,18 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str
+
+    @field_validator("email")
+    @classmethod
+    def _allow_local_login_emails(cls, v: str) -> str:
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError("value is not a valid email address")
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
+            raise ValueError("value is not a valid email address")
+        return normalized.casefold()
 
 
 class RefreshRequest(BaseModel):
