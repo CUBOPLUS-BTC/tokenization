@@ -41,7 +41,7 @@ class AssetCreateRequest(BaseModel):
 
 
 class AssetTokenizationRequest(BaseModel):
-    ticker: str = Field(min_length=1, max_length=10)
+    ticker: str | None = Field(default=None, min_length=1, max_length=10)
     liquid_asset_id: str | None = None
     taproot_asset_id: str | None = None
     total_supply: int = Field(gt=0)
@@ -50,7 +50,9 @@ class AssetTokenizationRequest(BaseModel):
 
     @field_validator("ticker")
     @classmethod
-    def _validate_ticker(cls, value: str) -> str:
+    def _validate_ticker(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return _strip_and_require_text(value).upper()
 
     @field_validator("liquid_asset_id", "taproot_asset_id")

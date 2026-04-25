@@ -1061,6 +1061,7 @@ async def tokenize_asset(
 
     provided_asset_id = body.liquid_asset_id or body.taproot_asset_id
     multisig_mode = "external_api" if body.visibility == "private" else "standard"
+    ticker = body.ticker or _build_token_ticker(_row_value(asset_row, "name"))
     if provided_asset_id is not None:
         liquid_asset_id = provided_asset_id
         issuance_result = {"asset": liquid_asset_id, "legacy_imported": True}
@@ -1110,7 +1111,7 @@ async def tokenize_asset(
                 conn,
                 asset_id=asset_id,
                 owner_id=principal.id,
-                ticker=body.ticker,
+                ticker=ticker,
                 liquid_asset_id=liquid_asset_id,
                 total_supply=issued_supply,
                 circulating_supply=issued_supply,
