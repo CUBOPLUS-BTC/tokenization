@@ -95,3 +95,11 @@ tapd-data/
 # Test artifacts
 playwright-report/
 test-results/
+
+# Agent Skills and Workflows
+.agents/
+skills-lock.json
+*.js
+!generate_deck.js
+!generate_demo_deck.js
+

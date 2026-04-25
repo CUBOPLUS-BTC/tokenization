@@ -417,6 +417,7 @@ def _asset_out(row: object) -> AssetOut:
         valuation_sat=_row_value(row, "valuation_sat"),
         documents_url=_optional_row_value(row, "documents_url"),
         document=_asset_document_out(row),
+        token=_asset_token_out(row),
         status=_row_value(row, "status"),
         created_at=created_at,
         updated_at=updated_at,
@@ -435,6 +436,7 @@ def _asset_token_out(row: object) -> AssetTokenOut | None:
 
     return AssetTokenOut(
         id=str(token_id),
+        ticker=str(_row_value(row, "ticker") or "TKN"),
         liquid_asset_id=liquid_asset_id,
         total_supply=_row_value(row, "total_supply"),
         circulating_supply=_row_value(row, "circulating_supply"),
@@ -452,7 +454,6 @@ def _asset_detail_out(row: object) -> AssetDetailOut:
         ai_score=_optional_float(_optional_row_value(row, "ai_score")),
         ai_analysis=_optional_row_value(row, "ai_analysis"),
         projected_roi=_optional_float(_optional_row_value(row, "projected_roi")),
-        token=_asset_token_out(row),
     )
 
 
@@ -1109,7 +1110,7 @@ async def tokenize_asset(
                 conn,
                 asset_id=asset_id,
                 owner_id=principal.id,
-                ticker=_build_token_ticker(_row_value(asset_row, "name")),
+                ticker=body.ticker,
                 liquid_asset_id=liquid_asset_id,
                 total_supply=issued_supply,
                 circulating_supply=issued_supply,

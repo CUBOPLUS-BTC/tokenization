@@ -41,11 +41,17 @@ class AssetCreateRequest(BaseModel):
 
 
 class AssetTokenizationRequest(BaseModel):
+    ticker: str = Field(min_length=1, max_length=10)
     liquid_asset_id: str | None = None
     taproot_asset_id: str | None = None
     total_supply: int = Field(gt=0)
     unit_price_sat: int = Field(gt=0)
     visibility: AssetTokenVisibility = "public"
+
+    @field_validator("ticker")
+    @classmethod
+    def _validate_ticker(cls, value: str) -> str:
+        return _strip_and_require_text(value).upper()
 
     @field_validator("liquid_asset_id", "taproot_asset_id")
     @classmethod
@@ -65,26 +71,9 @@ class AssetDocumentOut(BaseModel):
     size_bytes: int
 
 
-class AssetOut(BaseModel):
-    id: str
-    owner_id: str
-    name: str
-    description: str
-    category: AssetCategory
-    valuation_sat: int
-    documents_url: str | None
-    document: AssetDocumentOut | None = None
-    status: AssetStatus
-    created_at: datetime
-    updated_at: datetime
-
-
-class AssetResponse(BaseModel):
-    asset: AssetOut
-
-
 class AssetTokenOut(BaseModel):
     id: str
+    ticker: str
     liquid_asset_id: str
     total_supply: int
     circulating_supply: int
@@ -94,11 +83,29 @@ class AssetTokenOut(BaseModel):
     minted_at: datetime
 
 
+class AssetOut(BaseModel):
+    id: str
+    owner_id: str
+    name: str
+    description: str
+    category: AssetCategory
+    valuation_sat: int
+    documents_url: str | None = None
+    document: AssetDocumentOut | None = None
+    token: AssetTokenOut | None = None
+    status: AssetStatus
+    created_at: datetime
+    updated_at: datetime
+
+
+class AssetResponse(BaseModel):
+    asset: AssetOut
+
+
 class AssetDetailOut(AssetOut):
     ai_score: float | None = None
     ai_analysis: dict[str, Any] | None = None
     projected_roi: float | None = None
-    token: AssetTokenOut | None = None
 
 
 class AssetDetailResponse(BaseModel):

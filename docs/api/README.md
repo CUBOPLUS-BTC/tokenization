@@ -26,3 +26,32 @@ foreach ($s in @('auth', 'wallet', 'tokenization', 'marketplace', 'nostr', 'admi
     python scripts/generate_openapi.py $s
 }
 ```
+
+## Command list (manual generation)
+
+Run these commands from the repository root to generate each schema individually:
+
+```powershell
+python scripts/generate_openapi.py auth
+python scripts/generate_openapi.py admin
+python scripts/generate_openapi.py marketplace
+python scripts/generate_openapi.py tokenization
+python scripts/generate_openapi.py wallet
+python scripts/generate_openapi.py nostr
+```
+
+If you get an error related to form data, install the missing dependency once:
+
+```powershell
+python -m pip install python-multipart
+```
+
+## Copy generated files to Desktop (Windows)
+
+After generating JSON files, you can copy them to a Desktop folder with:
+
+```powershell
+$target = "$HOME\Desktop\tokenization-openapi-json"
+New-Item -ItemType Directory -Force -Path $target | Out-Null
+Copy-Item docs/api/auth.json, docs/api/admin.json, docs/api/marketplace.json, docs/api/tokenization.json, docs/api/wallet.json, docs/api/nostr.json -Destination $target -Force
+```

@@ -688,6 +688,16 @@
               }
             ]
           },
+          "token": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssetTokenOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -742,16 +752,6 @@
               }
             ],
             "title": "Projected Roi"
-          },
-          "token": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AssetTokenOut"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "type": "object",
@@ -762,7 +762,6 @@
           "description",
           "category",
           "valuation_sat",
-          "documents_url",
           "status",
           "created_at",
           "updated_at"
@@ -910,6 +909,16 @@
               }
             ]
           },
+          "token": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssetTokenOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -940,7 +949,6 @@
           "description",
           "category",
           "valuation_sat",
-          "documents_url",
           "status",
           "created_at",
           "updated_at"
@@ -964,6 +972,10 @@
           "id": {
             "type": "string",
             "title": "Id"
+          },
+          "ticker": {
+            "type": "string",
+            "title": "Ticker"
           },
           "liquid_asset_id": {
             "type": "string",
@@ -1010,6 +1022,7 @@
         "type": "object",
         "required": [
           "id",
+          "ticker",
           "liquid_asset_id",
           "total_supply",
           "circulating_supply",
@@ -1021,6 +1034,12 @@
       },
       "AssetTokenizationRequest": {
         "properties": {
+          "ticker": {
+            "type": "string",
+            "maxLength": 10,
+            "minLength": 1,
+            "title": "Ticker"
+          },
           "liquid_asset_id": {
             "anyOf": [
               {
@@ -1065,6 +1084,7 @@
         },
         "type": "object",
         "required": [
+          "ticker",
           "total_supply",
           "unit_price_sat"
         ],
