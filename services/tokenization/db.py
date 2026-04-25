@@ -110,19 +110,22 @@ async def begin_asset_evaluation(
     conn: AsyncConnection,
     *,
     asset_id: str | uuid.UUID,
-    owner_id: str | uuid.UUID,
+    owner_id: str | uuid.UUID | None = None,
 ) -> sa.engine.Row | None:
     now = _utc_now()
-    result = await conn.execute(
+    stmt = (
         sa.update(assets_table)
         .where(assets_table.c.id == _as_uuid(asset_id))
-        .where(assets_table.c.owner_id == _as_uuid(owner_id))
         .where(assets_table.c.status.in_(_EVALUABLE_ASSET_STATUSES))
-        .values(
+    )
+    if owner_id is not None:
+        stmt = stmt.where(assets_table.c.owner_id == _as_uuid(owner_id))
+
+    result = await conn.execute(
+        stmt.values(
             status="evaluating",
             updated_at=now,
-        )
-        .returning(assets_table)
+        ).returning(assets_table)
     )
     row = result.fetchone()
     await conn.commit()
