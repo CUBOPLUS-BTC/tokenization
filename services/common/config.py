@@ -9,6 +9,10 @@ from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+SUPPORTED_BITCOIN_NETWORKS = {"mainnet", "testnet", "testnet4", "signet", "regtest"}
+SUPPORTED_ELEMENTS_NETWORKS = {"liquidv1", "liquidtestnet", "elementsregtest"}
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file_encoding="utf-8",
@@ -16,7 +20,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    env_profile: Literal["local", "staging", "beta", "production"] = "local"
+    env_profile: Literal["local", "regtest", "staging", "beta", "production"] = "local"
 
     service_name: str
     service_host: str = "0.0.0.0"
@@ -25,8 +29,8 @@ class Settings(BaseSettings):
     wallet_service_url: str
     tokenization_service_url: str
     marketplace_service_url: str
-    education_service_url: str
     nostr_service_url: str
+    auth_service_url: str = "http://auth:8000"
 
     postgres_host: str
     postgres_port: int
@@ -59,6 +63,7 @@ class Settings(BaseSettings):
     lnd_grpc_port: int
     lnd_macaroon_path: str
     lnd_tls_cert_path: str
+    lnd_tls_server_name: str | None = None
     lnd_grpc_required: bool | None = None
 
     nostr_relays: str
@@ -85,31 +90,54 @@ class Settings(BaseSettings):
     alert_webhook_url_file: str | None = None
 
     log_level: str
+    # CORS: comma-separated list of allowed browser Origin values.
+    # When unset/empty, the in-process CORSMiddleware is not installed; this is the
+    # expected configuration when the service is only reachable via the gateway
+    # (which owns CORS centrally).
+    cors_allowed_origins: str | None = None
     rate_limit_window_seconds: int = 60
     rate_limit_write_requests: int = 60
     rate_limit_sensitive_requests: int = 10
+    api_key_bcrypt_rounds: int = 12
+    api_key_cache_ttl_seconds: int = 60
+    api_key_prefix_length: int = 8
+    api_key_suffix_bytes: int = 32
 
     # KYC: trade value threshold (sats) above which KYC verification is required.
     # Set to 0 to disable enforcement.  Default 10 000 000 sats (~0.1 BTC).
     kyc_trade_threshold_sat: int = 10_000_000
+    ory_kratos_admin_url: str | None = None
+    ory_kratos_admin_token: str | None = None
+    ory_kratos_admin_token_file: str | None = None
+    ory_kratos_identity_schema_id: str | None = None
+    ory_kratos_timeout_seconds: int = 10
     marketplace_escrow_watch_interval_seconds: int = 30
     marketplace_escrow_fee_reserve_sat: int = 5_000
+    tokenization_documents_dir: str = "data/tokenization-documents"
+    tokenization_max_document_size_bytes: int = 10 * 1024 * 1024
 
     @property
     def nostr_relay_list(self) -> list[str]:
         return [relay.strip() for relay in self.nostr_relays.split(",") if relay.strip()]
 
     @property
+    def cors_allowed_origin_list(self) -> list[str]:
+        """Parsed, trimmed list of allowed CORS origins (empty when disabled)."""
+        if not self.cors_allowed_origins:
+            return []
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
+    @property
     def resolved_elements_rpc_required(self) -> bool:
         if self.elements_rpc_required is not None:
             return self.elements_rpc_required
-        return self.env_profile != "local"
+        return self.env_profile not in {"local", "regtest"}
 
     @property
     def resolved_lnd_grpc_required(self) -> bool:
         if self.lnd_grpc_required is not None:
             return self.lnd_grpc_required
-        return self.env_profile != "local"
+        return self.env_profile not in {"local", "regtest"}
 
     @staticmethod
     def _resolve_secret(secret_value: str | None, file_path: str | None) -> str | None:
@@ -137,6 +165,7 @@ class Settings(BaseSettings):
         self.bitcoin_rpc_password = self._resolve_secret(self.bitcoin_rpc_password, self.bitcoin_rpc_password_file)
         self.elements_rpc_password = self._resolve_secret(self.elements_rpc_password, self.elements_rpc_password_file)
         self.jwt_secret = self._resolve_secret(self.jwt_secret, self.jwt_secret_file)
+        self.ory_kratos_admin_token = self._resolve_secret(self.ory_kratos_admin_token, self.ory_kratos_admin_token_file)
         self.openai_api_key = self._resolve_secret(self.openai_api_key, self.openai_api_key_file)
         self.wallet_encryption_key = self._resolve_secret(self.wallet_encryption_key, self.wallet_encryption_key_file)
         self.custody_hsm_wrapping_key = self._resolve_secret(
@@ -166,10 +195,10 @@ class Settings(BaseSettings):
             if "user:pass@localhost" in self.database_url:
                 raise ValueError("database_url must be overridden for staging/beta/production")
 
-        if self.bitcoin_network.lower() not in {"mainnet", "testnet", "signet", "regtest"}:
-            raise ValueError("bitcoin_network must be one of: mainnet, testnet, signet, regtest")
+        if self.bitcoin_network.lower() not in SUPPORTED_BITCOIN_NETWORKS:
+            raise ValueError("bitcoin_network must be one of: mainnet, testnet, testnet4, signet, regtest")
 
-        if self.elements_network.lower() not in {"liquidv1", "liquidtestnet", "elementsregtest"}:
+        if self.elements_network.lower() not in SUPPORTED_ELEMENTS_NETWORKS:
             raise ValueError("elements_network must be one of: liquidv1, liquidtestnet, elementsregtest")
 
         return self
@@ -181,7 +210,7 @@ def _repo_root() -> Path:
 
 def _infer_env_profile() -> str:
     profile = os.getenv("ENV_PROFILE", "local").strip().lower()
-    return profile if profile in {"local", "staging", "beta", "production"} else "local"
+    return profile if profile in {"local", "regtest", "staging", "beta", "production"} else "local"
 
 
 def _env_files_for_profile(profile: str) -> list[Path]:

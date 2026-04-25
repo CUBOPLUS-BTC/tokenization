@@ -3,10 +3,11 @@ name: tokenization-local
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: tokenization-postgres
+    container_name: tokenization-local-postgres
     restart: unless-stopped
     env_file:
-      - ./.env.local
+      - path: ./infra/.env.local
+        required: false
     ports:
       - "5432:5432"
     volumes:
@@ -21,7 +22,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: tokenization-redis
+    container_name: tokenization-local-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
@@ -36,221 +37,76 @@ services:
     networks:
       - platform
 
-  wallet:
-    image: python:3.11-slim
-    container_name: tokenization-wallet
-    restart: unless-stopped
-    working_dir: /app
-    command: >
-      sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
-      uvicorn services.wallet.main:app --host 0.0.0.0 --port 8001"
-    env_file:
-      - ./.env.local
-    volumes:
-      - ../:/app
-      - lnd_data:/run/secrets/lnd:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      bitcoind:
-        condition: service_healthy
-      lnd:
-        condition: service_healthy
-      elementsd:
-        condition: service_healthy
-    ports:
-      - "8001:8001"
-    networks:
-      - platform
-
-  auth:
-    image: python:3.11-slim
-    container_name: tokenization-auth
-    restart: unless-stopped
-    working_dir: /app/services/auth
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8000"
-    env_file:
-      - ./.env.local
-    volumes:
-      - ../:/app
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    ports:
-      - "8007:8000"
-    networks:
-      - platform
-
-  tokenization:
-    image: python:3.11-slim
-    container_name: tokenization-tokenization
-    restart: unless-stopped
-    working_dir: /app/services/tokenization
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8002"
-    env_file:
-      - ./.env.local
-    volumes:
-      - ../:/app
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      elementsd:
-        condition: service_healthy
-    ports:
-      - "8002:8002"
-    networks:
-      - platform
-
-  marketplace:
-    image: python:3.11-slim
-    container_name: tokenization-marketplace
-    restart: unless-stopped
-    working_dir: /app/services/marketplace
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8003"
-    env_file:
-      - ./.env.local
-    volumes:
-      - ../:/app
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    ports:
-      - "8003:8003"
-    networks:
-      - platform
-
-  education:
-    image: python:3.11-slim
-    container_name: tokenization-education
-    restart: unless-stopped
-    working_dir: /app/services/education
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8004"
-    env_file:
-      - ./.env.local
-    volumes:
-      - ../:/app
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    ports:
-      - "8004:8004"
-    networks:
-      - platform
-
-  nostr:
-    image: python:3.11-slim
-    container_name: tokenization-nostr
-    restart: unless-stopped
-    working_dir: /app/services/nostr
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8005"
-    env_file:
-      - ./.env.local
-    volumes:
-      - ../:/app
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    ports:
-      - "8005:8005"
-    networks:
-      - platform
-
-  admin:
-    image: python:3.11-slim
-    container_name: tokenization-admin
-    restart: unless-stopped
-    working_dir: /app/services/admin
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8006"
-    env_file:
-      - ./.env.local
-    volumes:
-      - ../:/app
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    ports:
-      - "8006:8006"
-    networks:
-      - platform
-
   bitcoind:
     image: lncm/bitcoind:v28.0
-    container_name: tokenization-bitcoind
+    container_name: tokenization-local-bitcoind
     user: "0:0"
     command:
+      - -regtest
       - -datadir=/data/.bitcoin
+      - -conf=/data/.bitcoin/bitcoin.conf
       - -printtoconsole
     restart: unless-stopped
     volumes:
-      - ./bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
+      - ./infra/bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
       - bitcoin_data:/data/.bitcoin
     ports:
-      - "18443:18443"
+      - "18444:18443"
     healthcheck:
-      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=local_rpc", "-rpcpassword=local_rpc_password", "getblockchaininfo"]
+      test:
+        [
+          "CMD-SHELL",
+          "bitcoin-cli -regtest -datadir=/data/.bitcoin getblockchaininfo >/dev/null 2>&1 || exit 1"
+        ]
       interval: 15s
       timeout: 10s
-      retries: 5
-      start_period: 10s
+      retries: 10
+      start_period: 45s
     networks:
       - platform
 
   lnd:
     image: lightninglabs/lnd:v0.20.0-beta
-    container_name: tokenization-lnd
+    container_name: tokenization-local-lnd
     restart: unless-stopped
     command:
       - --lnddir=/data/lnd
       - --configfile=/etc/lnd/lnd.conf
+      - --bitcoin.active
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=bitcoind:18443
+      - --bitcoind.rpcuser=local_rpc
+      - --bitcoind.rpcpass=local_rpc_password
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
     depends_on:
       bitcoind:
         condition: service_healthy
     volumes:
-      - ./lnd/lnd.conf:/etc/lnd/lnd.conf:ro
+      - ./infra/lnd/lnd.conf:/etc/lnd/lnd.conf:ro
       - lnd_data:/data/lnd
     ports:
       - "10009:10009"
       - "9735:9735"
     healthcheck:
-      test: ["CMD", "lncli", "--network=regtest", "--rpcserver=localhost:10009", "--tlscertpath=/data/lnd/tls.cert", "--macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon", "getinfo"]
+      test:
+        [
+          "CMD-SHELL",
+          "lncli --network=regtest --rpcserver=localhost:10009 --tlscertpath=/data/lnd/tls.cert --macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon getinfo >/dev/null 2>&1 || exit 1"
+        ]
       interval: 15s
       timeout: 10s
-      retries: 10
-      start_period: 20s
+      retries: 30
+      start_period: 120s
     networks:
       - platform
 
   elementsd:
     build:
-      context: ./elements
+      context: ./infra/elements
       dockerfile: Dockerfile
-    container_name: tokenization-elementsd
+    container_name: tokenization-local-elementsd
     restart: unless-stopped
     depends_on:
       bitcoind:
@@ -264,31 +120,219 @@ services:
       ELEMENTS_RPC_PORT: "7041"
       ELEMENTS_WALLET_NAME: platform
     volumes:
-      - ./elements/elements.conf:/etc/elements/elements.conf:ro
+      - ./infra/elements/elements.conf:/etc/elements/elements.conf:ro
       - elements_data:/data/elements
     ports:
       - "7041:7041"
     healthcheck:
-      test: ["CMD", "elements-cli", "-chain=elementsregtest", "-rpcuser=user", "-rpcpassword=pass", "-rpcport=7041", "-rpcwallet=platform", "getwalletinfo"]
+      test:
+        [
+          "CMD-SHELL",
+          "elements-cli -chain=elementsregtest -rpcuser=user -rpcpassword=pass -rpcport=7041 getblockchaininfo >/dev/null 2>&1 || exit 1"
+        ]
       interval: 15s
       timeout: 10s
       retries: 10
-      start_period: 25s
+      start_period: 45s
+    networks:
+      - platform
+
+  migrate:
+    build:
+      context: .
+      dockerfile: ./services/migrate/Dockerfile
+    pull_policy: build
+    container_name: tokenization-local-migrate
+    restart: "no"
+    labels:
+      - "com.tokenization.migrate.role=one-shot"
+    env_file:
+      - path: ./infra/.env.local
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - platform
+
+  wallet:
+    build:
+      context: .
+      dockerfile: ./services/wallet/Dockerfile
+    container_name: tokenization-local-wallet
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.local
+        required: false
+    volumes:
+      - ./services/wallet:/app/services/wallet
+      - ./services/common:/app/services/common
+      - lnd_data:/run/secrets/lnd:ro
+    command: ["uvicorn", "services.wallet.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      bitcoind:
+        condition: service_healthy
+      lnd:
+        condition: service_healthy
+      elementsd:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    networks:
+      - platform
+
+  auth:
+    build:
+      context: .
+      dockerfile: ./services/auth/Dockerfile
+    container_name: tokenization-local-auth
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.local
+        required: false
+    volumes:
+      - ./services/auth:/app/services/auth
+      - ./services/common:/app/services/common
+    command: ["uvicorn", "services.auth.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - platform
+
+  tokenization:
+    build:
+      context: .
+      dockerfile: ./services/tokenization/Dockerfile
+    container_name: tokenization-local-tokenization
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.local
+        required: false
+    volumes:
+      - ./services/tokenization:/app/services/tokenization
+      - ./services/common:/app/services/common
+    command: ["uvicorn", "services.tokenization.main:app", "--host", "0.0.0.0", "--port", "8002", "--reload"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      elementsd:
+        condition: service_healthy
+    ports:
+      - "8002:8002"
+    networks:
+      - platform
+
+  marketplace:
+    build:
+      context: .
+      dockerfile: ./services/marketplace/Dockerfile
+    container_name: tokenization-local-marketplace
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.local
+        required: false
+    volumes:
+      - ./services/marketplace:/app/services/marketplace
+      - ./services/common:/app/services/common
+    command: ["uvicorn", "services.marketplace.main:app", "--host", "0.0.0.0", "--port", "8003", "--reload"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8003:8003"
+    networks:
+      - platform
+
+  nostr:
+    build:
+      context: .
+      dockerfile: ./services/nostr/Dockerfile
+    container_name: tokenization-local-nostr
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.local
+        required: false
+    volumes:
+      - ./services/nostr:/app/services/nostr
+      - ./services/common:/app/services/common
+    command: ["uvicorn", "services.nostr.main:app", "--host", "0.0.0.0", "--port", "8005", "--reload"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8005:8005"
+    networks:
+      - platform
+
+  admin:
+    build:
+      context: .
+      dockerfile: ./services/admin/Dockerfile
+    container_name: tokenization-local-admin
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.local
+        required: false
+    volumes:
+      - ./services/admin:/app/services/admin
+      - ./services/common:/app/services/common
+    command: ["uvicorn", "services.admin.main:app", "--host", "0.0.0.0", "--port", "8006", "--reload"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8006:8006"
     networks:
       - platform
 
   gateway:
     build:
-      context: ../services/gateway
+      context: ./services/gateway
       dockerfile: Dockerfile
-    container_name: tokenization-gateway
+    container_name: tokenization-local-gateway
     restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.local
+        required: false
+    environment:
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      CORS_ALLOWED_METHODS: ${CORS_ALLOWED_METHODS:-GET, POST, PUT, PATCH, DELETE, OPTIONS}
+      CORS_ALLOWED_HEADERS: ${CORS_ALLOWED_HEADERS:-Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Request-ID, X-Correlation-ID, X-API-Key, X-2FA-Code, X-Idempotency-Key}
+      CORS_EXPOSE_HEADERS: ${CORS_EXPOSE_HEADERS:-X-Request-ID}
+      CORS_MAX_AGE: ${CORS_MAX_AGE:-86400}
+      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-true}
     depends_on:
       - auth
       - wallet
       - tokenization
       - marketplace
-      - education
       - nostr
       - admin
     ports:

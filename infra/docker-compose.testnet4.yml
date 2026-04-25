@@ -1,0 +1,261 @@
+name: tokenization-testnet4
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: tokenization-testnet4-postgres
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.testnet4.example
+        required: false
+    volumes:
+      - testnet4_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: tokenization-testnet4-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - testnet4_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bitcoind:
+    image: lncm/bitcoind:v28.0
+    container_name: tokenization-testnet4-bitcoind
+    user: "0:0"
+    command:
+      - -datadir=/data/.bitcoin
+      - -conf=/data/.bitcoin/bitcoin.conf
+      - -printtoconsole
+    restart: unless-stopped
+    volumes:
+      - ./infra/bitcoin/bitcoin.testnet4.conf:/data/.bitcoin/bitcoin.conf:ro
+      - testnet4_bitcoin_data:/data/.bitcoin
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-testnet4", "-rpcuser=testnet4_rpc", "-rpcpassword=testnet4_rpc_password", "getblockchaininfo"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+  lnd:
+    image: lightninglabs/lnd:v0.20.0-beta
+    container_name: tokenization-testnet4-lnd
+    restart: unless-stopped
+    command:
+      - --lnddir=/data/lnd
+      - --configfile=/etc/lnd/lnd.conf
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    volumes:
+      - ./infra/lnd/lnd.testnet4.conf:/etc/lnd/lnd.conf:ro
+      - testnet4_lnd_data:/data/lnd
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "lncli --network=testnet --rpcserver=localhost:10009 --tlscertpath=/data/lnd/tls.cert --macaroonpath=/data/lnd/data/chain/bitcoin/testnet/admin.macaroon getinfo >/dev/null 2>&1 || exit 1"
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
+
+  elementsd:
+    build:
+      context: ./infra/elements
+      dockerfile: Dockerfile
+    container_name: tokenization-testnet4-elementsd
+    restart: unless-stopped
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    environment:
+      ELEMENTS_CONF_FILE: /etc/elements/elements.conf
+      ELEMENTS_DATA_DIR: /data/elements
+      ELEMENTS_NETWORK: liquidtestnet
+      ELEMENTS_RPC_USER: user
+      ELEMENTS_RPC_PASSWORD: pass
+      ELEMENTS_RPC_PORT: "7041"
+      ELEMENTS_WALLET_NAME: platform
+    volumes:
+      - ./infra/elements/elements.testnet4.conf:/etc/elements/elements.conf:ro
+      - testnet4_elements_data:/data/elements
+    healthcheck:
+      test: ["CMD", "elements-cli", "-chain=liquidtestnet", "-rpcuser=user", "-rpcpassword=pass", "-rpcport=7041", "-rpcwallet=platform", "getwalletinfo"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 25s
+
+  migrate:
+    build:
+      context: .
+      dockerfile: ./services/migrate/Dockerfile
+    pull_policy: build
+    container_name: tokenization-testnet4-migrate
+    restart: "no"
+    labels:
+      - "com.tokenization.migrate.role=one-shot"
+    env_file:
+      - path: ./infra/.env.testnet4.example
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  wallet:
+    build:
+      context: .
+      dockerfile: ./services/wallet/Dockerfile
+    container_name: tokenization-testnet4-wallet
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.testnet4.example
+        required: false
+    volumes:
+      - testnet4_lnd_data:/run/secrets/lnd:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      bitcoind:
+        condition: service_healthy
+      lnd:
+        condition: service_healthy
+      elementsd:
+        condition: service_healthy
+
+  auth:
+    build:
+      context: .
+      dockerfile: ./services/auth/Dockerfile
+    container_name: tokenization-testnet4-auth
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.testnet4.example
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  tokenization:
+    build:
+      context: .
+      dockerfile: ./services/tokenization/Dockerfile
+    container_name: tokenization-testnet4-tokenization
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.testnet4.example
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      elementsd:
+        condition: service_healthy
+
+  marketplace:
+    build:
+      context: .
+      dockerfile: ./services/marketplace/Dockerfile
+    container_name: tokenization-testnet4-marketplace
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.testnet4.example
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  nostr:
+    build:
+      context: .
+      dockerfile: ./services/nostr/Dockerfile
+    container_name: tokenization-testnet4-nostr
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.testnet4.example
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  admin:
+    build:
+      context: .
+      dockerfile: ./services/admin/Dockerfile
+    container_name: tokenization-testnet4-admin
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.testnet4.example
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    container_name: tokenization-testnet4-gateway
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.testnet4.example
+        required: false
+    environment:
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      CORS_ALLOWED_METHODS: ${CORS_ALLOWED_METHODS:-GET, POST, PUT, PATCH, DELETE, OPTIONS}
+      CORS_ALLOWED_HEADERS: ${CORS_ALLOWED_HEADERS:-Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Request-ID, X-Correlation-ID, X-API-Key, X-2FA-Code, X-Idempotency-Key}
+      CORS_EXPOSE_HEADERS: ${CORS_EXPOSE_HEADERS:-X-Request-ID}
+      CORS_MAX_AGE: ${CORS_MAX_AGE:-86400}
+      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-true}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - auth
+      - wallet
+      - tokenization
+      - marketplace
+      - nostr
+      - admin
+
+volumes:
+  testnet4_postgres_data:
+  testnet4_redis_data:
+  testnet4_bitcoin_data:
+  testnet4_lnd_data:
+  testnet4_elements_data:

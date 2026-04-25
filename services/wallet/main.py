@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -35,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[0]))
 from common import get_readiness_payload, get_settings, install_http_security, record_audit_event
 from common import (
     OnRampError,
+    verify_api_key_via_auth_service,
     accrue_pending_yield_for_user,
     create_onramp_session,
     default_onramp_notices,
@@ -47,12 +49,16 @@ from common import (
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
-from auth.kyc_db import get_kyc_status, is_kyc_verified
+from common.db.schema_check import ensure_schema_ready
+from services.auth.kyc_db import get_kyc_status, is_kyc_verified
 
-from wallet_auth import get_current_user_id, require_2fa
-from db import (
+from .db import (
+    confirm_external_campaign_funding,
+    create_external_campaign_funding,
     create_onchain_withdrawal,
     create_transaction,
+    get_campaign_by_id,
+    get_campaign_funding_by_payment_hash,
     get_db_conn,
     get_engine,
     get_or_create_wallet,
@@ -64,8 +70,11 @@ from db import (
     get_next_derivation_index,
     recompute_lightning_balance,
     release_onchain_balance,
+    reserve_campaign_balance_from_wallet,
     reserve_onchain_balance,
     save_wallet_address,
+    spend_campaign_balance,
+    lock_wallet,
 )
 import asyncio
 from .reconciliation import reconciliation_loop, lightning_sync_loop, sync_wallet_lightning_state
@@ -73,6 +82,12 @@ from .key_manager import KeyManager
 from .liquid_rpc import ElementsRPCError, get_liquid_rpc
 from .lnd_client import LNDClient
 from .schemas import (
+    CampaignFundingInvoiceRequest,
+    CampaignFundingResponse,
+    CampaignFundingSyncRequest,
+    CampaignFundsPayRequest,
+    CampaignFundsReserveRequest,
+    CampaignPaymentResponse,
     CustodyStatusResponse,
     FiatOnRampProviderStatus,
     FiatOnRampProvidersResponse,
@@ -92,7 +107,7 @@ from .schemas import (
     TransactionHistoryResponse,
     TransactionType,
 )
-from schemas_lnd import (
+from .schemas_lnd import (
     Invoice,
     InvoiceCreate,
     InvoiceStatus,
@@ -104,7 +119,7 @@ from schemas_lnd import (
     RouteHintHop,
     RouteHintOut,
 )
-from schemas_wallet import (
+from .schemas_wallet import (
     TokenBalance,
     WalletResponse,
     WalletSummary,
@@ -113,6 +128,7 @@ from schemas_wallet import (
     YieldSummaryResponse,
     YieldTokenSummary,
 )
+from services.wallet import auth as wallet_auth
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +157,10 @@ _withdrawal_idempotency_inflight: set[tuple[str, str]] = set()
 @dataclass(frozen=True)
 class AuthenticatedPrincipal:
     id: str
+    role: str
+    auth_method: str = "jwt"
+    scopes: tuple[str, ...] = ()
+    api_key_id: str | None = None
 
 
 class ContractError(Exception):
@@ -156,6 +176,21 @@ def _error(code: str, message: str, status_code: int) -> JSONResponse:
         status_code=status_code,
         content={"error": {"code": code, "message": message}},
     )
+
+
+def _internal_service_token() -> str:
+    return (settings.jwt_secret or "dev-secret-change-me").strip()
+
+
+async def _require_internal_caller(
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+) -> None:
+    if not x_internal_token or not secrets.compare_digest(x_internal_token.strip(), _internal_service_token()):
+        raise ContractError(
+            code="forbidden",
+            message="Internal service authentication is required.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
 
 
 def _runtime_engine() -> AsyncEngine | Any:
@@ -191,6 +226,17 @@ async def _lifespan(app: FastAPI):
     if _engine is None:
         _engine = engine
 
+    await ensure_schema_ready(
+        engine,
+        (
+            "users",
+            "wallets",
+            "transactions",
+            "token_balances",
+            "nostr_campaigns",
+        ),
+    )
+
     # Start background tasks
     recon_task = asyncio.create_task(reconciliation_loop(engine, settings))
     ln_task = asyncio.create_task(lightning_sync_loop(engine, lnd_client))
@@ -214,15 +260,6 @@ async def _noop_lifespan(app: FastAPI):
 
 app = FastAPI(title="Wallet Service", lifespan=_lifespan)
 
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 install_http_security(
     app,
     settings,
@@ -271,6 +308,22 @@ def _invalid_access_token_error() -> ContractError:
     )
 
 
+def _invalid_api_key_error() -> ContractError:
+    return ContractError(
+        code="invalid_api_key",
+        message="API key is invalid, expired, or revoked.",
+        status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+def _auth_service_unavailable_error() -> ContractError:
+    return ContractError(
+        code="auth_service_unavailable",
+        message="API key verification is currently unavailable.",
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
 def _withdrawal_cache_key(wallet_id: str, idempotency_key: str) -> tuple[str, str]:
     return wallet_id, idempotency_key.strip()[:128]
 
@@ -310,7 +363,11 @@ def _infer_bolt11_network(payment_request: str) -> str:
     if lowered.startswith("lnbcrt"):
         return "regtest"
     if lowered.startswith("lntb"):
-        return "signet" if settings.bitcoin_network == "signet" else "testnet"
+        if settings.bitcoin_network == "signet":
+            return "signet"
+        if settings.bitcoin_network == "testnet4":
+            return "testnet4"
+        return "testnet"
     if lowered.startswith("lnbc"):
         return "mainnet"
     return settings.bitcoin_network
@@ -364,33 +421,118 @@ def _render_qr_png(value: str, *, box_size: int = 8, border: int = 4) -> bytes:
 
 async def _get_current_principal(
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer_scheme),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> AuthenticatedPrincipal:
-    if credentials is None:
+    if credentials is None and not x_api_key:
         raise ContractError(
             code="authentication_required",
             message="Authentication is required.",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
+    if credentials is not None:
+        override = app.dependency_overrides.get(wallet_auth.get_current_user_id)
+        if override is not None:
+            overridden_user_id = override()
+            if inspect.isawaitable(overridden_user_id):
+                overridden_user_id = await overridden_user_id
+            return AuthenticatedPrincipal(
+                id=str(overridden_user_id),
+                role="user",
+                auth_method="jwt",
+            )
+
+        try:
+            claims = jwt.decode(credentials.credentials, _jwt_secret(), algorithms=[_ALGORITHM])
+        except JWTError as exc:
+            raise _invalid_access_token_error() from exc
+
+        if claims.get("type") != "access":
+            raise _invalid_access_token_error()
+
+        user_id = _normalize_uuid_claim(claims.get("sub"))
+        if user_id is None:
+            raise _invalid_access_token_error()
+
+        async with _runtime_engine().connect() as conn:
+            row = await get_user_by_id(conn, user_id)
+
+        if row is None or _row_value(row, "deleted_at") is not None:
+            raise _invalid_access_token_error()
+
+        return AuthenticatedPrincipal(
+            id=user_id,
+            role=str(_row_value(row, "role") or "user"),
+            auth_method="jwt",
+        )
+
     try:
-        claims = jwt.decode(credentials.credentials, _jwt_secret(), algorithms=[_ALGORITHM])
-    except JWTError as exc:
-        raise _invalid_access_token_error() from exc
+        verification = await verify_api_key_via_auth_service(x_api_key or "", settings=settings)
+    except RuntimeError as exc:
+        raise _auth_service_unavailable_error() from exc
 
-    if claims.get("type") != "access":
-        raise _invalid_access_token_error()
-
-    user_id = _normalize_uuid_claim(claims.get("sub"))
-    if user_id is None:
-        raise _invalid_access_token_error()
+    if not verification.valid or verification.user_id is None:
+        raise _invalid_api_key_error()
 
     async with _runtime_engine().connect() as conn:
-        row = await get_user_by_id(conn, user_id)
+        row = await get_user_by_id(conn, verification.user_id)
 
     if row is None or _row_value(row, "deleted_at") is not None:
-        raise _invalid_access_token_error()
+        raise _invalid_api_key_error()
 
-    return AuthenticatedPrincipal(id=user_id)
+    return AuthenticatedPrincipal(
+        id=verification.user_id,
+        role=str(_row_value(row, "role") or "user"),
+        auth_method="api_key",
+        scopes=tuple(verification.scopes),
+        api_key_id=verification.key_id,
+    )
+
+
+def _require_api_key_scopes(*required_scopes: str):
+    async def dependency(
+        principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    ) -> AuthenticatedPrincipal:
+        if principal.auth_method != "api_key":
+            return principal
+        if not all(scope in principal.scopes for scope in required_scopes):
+            raise ContractError(
+                code="forbidden",
+                message="API key does not grant access to this resource.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        return principal
+
+    return dependency
+
+
+def _require_api_key_any_scope(*required_scopes: str):
+    async def dependency(
+        principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    ) -> AuthenticatedPrincipal:
+        if principal.auth_method != "api_key":
+            return principal
+        if not any(scope in principal.scopes for scope in required_scopes):
+            raise ContractError(
+                code="forbidden",
+                message="API key does not grant access to this resource.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        return principal
+
+    return dependency
+
+
+async def _reject_api_key_auth(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+) -> AuthenticatedPrincipal:
+    if principal.auth_method == "api_key":
+        raise ContractError(
+            code="api_key_forbidden",
+            message="API key authentication is not allowed for this operation because two-factor authentication is required.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    return principal
 
 
 def _estimate_onchain_fee(fee_rate_sat_vb: int) -> int:
@@ -413,6 +555,7 @@ async def _create_real_onchain_address(conn: AsyncConnection, wallet: sa.engine.
             status_code=500,
         ) from exc
 
+    await lock_wallet(conn, str(_row_value(wallet, "id")))
     idx = await get_next_derivation_index(conn, str(_row_value(wallet, "id")))
     derived_address = key_mgr.derive_liquid_address(seed, idx)
 
@@ -573,7 +716,10 @@ async def ready():
 
 
 @app.get("/wallet", response_model=WalletResponse, tags=["Wallet"])
-async def get_wallet_summary(user_id: str = Depends(get_current_user_id)):
+async def get_wallet_summary(
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
+):
+    user_id = principal.id
     async with _runtime_engine().connect() as conn:
         wallet_row = await get_wallet_by_user_id(conn, user_id)
         if not wallet_row:
@@ -600,13 +746,16 @@ async def get_wallet_summary(user_id: str = Depends(get_current_user_id)):
 
     token_balances = [
         TokenBalance(
-            token_id=row["token_id"],
-            liquid_asset_id=row["liquid_asset_id"],
-            asset_name=row["asset_name"],
+            token_id=_row_value(row, "token_id"),
+            liquid_asset_id=(
+                _row_value(row, "liquid_asset_id")
+                or str(_row_value(row, "token_id"))
+            ),
+            asset_name=_row_value(row, "asset_name"),
             symbol=None,
-            balance=row["balance"],
-            unit_price_sat=row["unit_price_sat"],
-            accrued_yield_sat=yield_by_token.get(str(row["token_id"]), 0),
+            balance=_row_value(row, "balance", 0),
+            unit_price_sat=_row_value(row, "unit_price_sat", 0),
+            accrued_yield_sat=yield_by_token.get(str(_row_value(row, "token_id")), 0),
         )
         for row in token_rows
     ]
@@ -632,7 +781,10 @@ async def get_wallet_summary(user_id: str = Depends(get_current_user_id)):
     response_model=YieldSummaryResponse,
     tags=["Wallet"],
 )
-async def get_wallet_yield_summary(user_id: str = Depends(get_current_user_id)):
+async def get_wallet_yield_summary(
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_any_scope("wallet:read", "yield:read")),
+):
+    user_id = principal.id
     async with _runtime_engine().connect() as conn:
         wallet_row = await get_wallet_by_user_id(conn, user_id)
         if not wallet_row:
@@ -683,10 +835,14 @@ async def get_wallet_yield_summary(user_id: str = Depends(get_current_user_id)):
     summary="Return custody posture for the authenticated wallet",
 )
 async def get_wallet_custody_status(
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
     async with _runtime_engine().connect() as conn:
         wallet = await get_or_create_wallet(conn, principal.id)
+        # Check if the user has 2FA enabled AND verified in the shared users table
+        from .db import get_user_by_id
+        user = await get_user_by_id(conn, principal.id)
+        is_2fa_verified = user is not None and getattr(user, "is_verified", False) and getattr(user, "totp_secret", None) is not None
 
     encrypted_seed = bytes(_row_value(wallet, "encrypted_seed", b""))
     descriptor = describe_custody_record(encrypted_seed)
@@ -701,7 +857,7 @@ async def get_wallet_custody_status(
         signer_key_reference=custody.signer_key_reference,
         derivation_path=str(_row_value(wallet, "derivation_path", "")),
         seed_exportable=descriptor.exportable_seed,
-        withdraw_requires_2fa=True,
+        withdraw_requires_2fa=is_2fa_verified,
         server_compromise_impact=custody.server_compromise_impact,
         disclaimers=list(custody.disclaimers),
     ).model_dump(mode="json")
@@ -714,7 +870,7 @@ async def get_wallet_custody_status(
     summary="List supported fiat-to-BTC on-ramp providers",
 )
 async def list_fiat_onramp_providers(
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
     async with _runtime_engine().connect() as conn:
         kyc_row = await get_kyc_status(conn, principal.id)
@@ -751,7 +907,7 @@ async def list_fiat_onramp_providers(
 async def create_fiat_onramp_session(
     request: Request,
     body: FiatOnRampSessionRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
 ):
     async with _runtime_engine().connect() as conn:
         user = await get_user_by_id(conn, principal.id)
@@ -815,12 +971,300 @@ async def create_fiat_onramp_session(
     ).model_dump(mode="json")
 
 
+@app.post(
+    "/internal/campaign-funds/reserve",
+    status_code=status.HTTP_200_OK,
+    response_model=CampaignFundingResponse,
+    include_in_schema=False,
+)
+async def reserve_campaign_funds(
+    request: Request,
+    body: CampaignFundsReserveRequest,
+    _internal: None = Depends(_require_internal_caller),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    campaign = await get_campaign_by_id(conn, body.campaign_id)
+    if campaign is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    wallet = await get_wallet_by_user_id(conn, body.user_id)
+    if wallet is None:
+        raise ContractError(
+            code="wallet_not_found",
+            message="Wallet does not exist for the requested user.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    funding = await reserve_campaign_balance_from_wallet(
+        conn,
+        campaign_id=body.campaign_id,
+        wallet_id=str(_row_value(wallet, "id")),
+        amount_sat=body.amount_sat,
+    )
+    if funding is None:
+        raise ContractError(
+            code="insufficient_funds",
+            message="Wallet Lightning balance is insufficient for this campaign reservation.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+
+    await record_audit_event(
+        conn,
+        settings=settings,
+        request=request,
+        action="wallet.campaign_funds.reserve",
+        target_type="campaign",
+        target_id=body.campaign_id,
+        metadata={"user_id": body.user_id, "amount_sat": body.amount_sat},
+    )
+    record_business_event("wallet_campaign_funds_reserve")
+    return CampaignFundingResponse(
+        campaign_id=body.campaign_id,
+        funding_id=str(_row_value(funding, "id")),
+        status=str(_row_value(funding, "status")),
+        amount_sat=int(_row_value(funding, "amount_sat")),
+        confirmed_at=_row_value(funding, "confirmed_at"),
+    ).model_dump(mode="json")
+
+
+@app.post(
+    "/internal/campaign-funds/invoice",
+    status_code=status.HTTP_200_OK,
+    response_model=CampaignFundingResponse,
+    include_in_schema=False,
+)
+async def create_campaign_funding_invoice(
+    request: Request,
+    body: CampaignFundingInvoiceRequest,
+    _internal: None = Depends(_require_internal_caller),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    campaign = await get_campaign_by_id(conn, body.campaign_id)
+    if campaign is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    memo = body.memo or f"Campaign funding {body.campaign_id}"
+    try:
+        invoice = lnd_client.create_invoice(memo=memo, amount_sats=body.amount_sat)
+    except grpc.RpcError as exc:
+        raise ContractError(
+            code="lightning_unavailable",
+            message="Lightning service is unavailable.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        ) from exc
+
+    funding = await create_external_campaign_funding(
+        conn,
+        campaign_id=body.campaign_id,
+        amount_sat=body.amount_sat,
+        payment_hash=invoice.r_hash.hex(),
+        transaction_id=None,
+    )
+
+    await record_audit_event(
+        conn,
+        settings=settings,
+        request=request,
+        action="wallet.campaign_funds.invoice",
+        target_type="campaign",
+        target_id=body.campaign_id,
+        metadata={"amount_sat": body.amount_sat, "payment_hash": invoice.r_hash.hex()},
+    )
+    record_business_event("wallet_campaign_funds_invoice")
+    return CampaignFundingResponse(
+        campaign_id=body.campaign_id,
+        funding_id=str(_row_value(funding, "id")),
+        status=str(_row_value(funding, "status")),
+        amount_sat=body.amount_sat,
+        payment_request=invoice.payment_request,
+        payment_hash=invoice.r_hash.hex(),
+    ).model_dump(mode="json")
+
+
+@app.post(
+    "/internal/campaign-funds/sync",
+    status_code=status.HTTP_200_OK,
+    response_model=CampaignFundingResponse,
+    include_in_schema=False,
+)
+async def sync_campaign_funding_invoice(
+    request: Request,
+    body: CampaignFundingSyncRequest,
+    _internal: None = Depends(_require_internal_caller),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    funding = await get_campaign_funding_by_payment_hash(
+        conn,
+        campaign_id=body.campaign_id,
+        payment_hash=body.payment_hash,
+    )
+    if funding is None:
+        raise ContractError(
+            code="funding_not_found",
+            message="Campaign funding record does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    if str(_row_value(funding, "status")) == "confirmed":
+        return CampaignFundingResponse(
+            campaign_id=body.campaign_id,
+            funding_id=str(_row_value(funding, "id")),
+            status="confirmed",
+            amount_sat=int(_row_value(funding, "amount_sat")),
+            payment_hash=body.payment_hash,
+            confirmed_at=_row_value(funding, "confirmed_at"),
+        ).model_dump(mode="json")
+
+    try:
+        invoice = lnd_client.lookup_invoice(r_hash_str=body.payment_hash)
+    except grpc.RpcError as exc:
+        raise ContractError(
+            code="lightning_unavailable",
+            message="Lightning service is unavailable.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        ) from exc
+
+    is_settled = getattr(invoice, "state", None) == 1 or bool(getattr(invoice, "settle_date", 0))
+    if not is_settled:
+        return CampaignFundingResponse(
+            campaign_id=body.campaign_id,
+            funding_id=str(_row_value(funding, "id")),
+            status="pending",
+            amount_sat=int(_row_value(funding, "amount_sat")),
+            payment_hash=body.payment_hash,
+        ).model_dump(mode="json")
+
+    confirmed = await confirm_external_campaign_funding(
+        conn,
+        campaign_id=body.campaign_id,
+        funding_id=str(_row_value(funding, "id")),
+        amount_sat=int(_row_value(funding, "amount_sat")),
+    )
+    if confirmed is None:
+        refreshed = await get_campaign_funding_by_payment_hash(
+            conn,
+            campaign_id=body.campaign_id,
+            payment_hash=body.payment_hash,
+        )
+        confirmed = refreshed or funding
+
+    await record_audit_event(
+        conn,
+        settings=settings,
+        request=request,
+        action="wallet.campaign_funds.sync",
+        target_type="campaign",
+        target_id=body.campaign_id,
+        metadata={"payment_hash": body.payment_hash, "status": "confirmed"},
+    )
+    record_business_event("wallet_campaign_funds_sync")
+    return CampaignFundingResponse(
+        campaign_id=body.campaign_id,
+        funding_id=str(_row_value(confirmed, "id")),
+        status=str(_row_value(confirmed, "status")),
+        amount_sat=int(_row_value(confirmed, "amount_sat")),
+        payment_hash=body.payment_hash,
+        confirmed_at=_row_value(confirmed, "confirmed_at"),
+    ).model_dump(mode="json")
+
+
+@app.post(
+    "/internal/campaign-funds/pay",
+    status_code=status.HTTP_200_OK,
+    response_model=CampaignPaymentResponse,
+    include_in_schema=False,
+)
+async def pay_campaign_invoice(
+    request: Request,
+    body: CampaignFundsPayRequest,
+    _internal: None = Depends(_require_internal_caller),
+    conn: AsyncConnection = Depends(get_db_conn),
+):
+    campaign = await get_campaign_by_id(conn, body.campaign_id)
+    if campaign is None:
+        raise ContractError(
+            code="campaign_not_found",
+            message="Campaign does not exist.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    try:
+        decoded = lnd_client.decode_pay_req(payment_request=body.payment_request)
+        expected_amount_sat = int(getattr(decoded, "num_satoshis", 0))
+        resp = lnd_client.pay_invoice(payment_request=body.payment_request)
+    except grpc.RpcError as exc:
+        raise ContractError(
+            code="lightning_unavailable",
+            message="Lightning service is unavailable.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        ) from exc
+
+    payment_status = "SUCCEEDED"
+    failure_reason = None
+    fee_sat = int(resp.payment_route.total_fees if resp.payment_route else 0)
+    amount_sat = int(resp.payment_route.total_amt if resp.payment_route else expected_amount_sat)
+    if body.max_fee_sat is not None and fee_sat > body.max_fee_sat:
+        raise ContractError(
+            code="fee_limit_exceeded",
+            message="Lightning fee exceeds the configured maximum.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    if resp.payment_error:
+        payment_status = "FAILED"
+        failure_reason = resp.payment_error
+    elif not await spend_campaign_balance(
+        conn,
+        campaign_id=body.campaign_id,
+        amount_sat=expected_amount_sat,
+        fee_sat=fee_sat,
+    ):
+        raise ContractError(
+            code="insufficient_campaign_funds",
+            message="Campaign balance is insufficient for this payout.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+
+    await record_audit_event(
+        conn,
+        settings=settings,
+        request=request,
+        action="wallet.campaign_funds.pay",
+        target_type="campaign",
+        target_id=body.campaign_id,
+        metadata={
+            "payout_id": body.payout_id,
+            "amount_sat": expected_amount_sat,
+            "fee_sat": fee_sat,
+            "payment_hash": resp.payment_hash.hex(),
+            "status": payment_status,
+        },
+    )
+    record_business_event("wallet_campaign_funds_pay", outcome="failure" if resp.payment_error else "success")
+    return CampaignPaymentResponse(
+        campaign_id=body.campaign_id,
+        payment_hash=resp.payment_hash.hex(),
+        amount_sat=expected_amount_sat,
+        fee_sat=fee_sat,
+        status=payment_status,
+        failure_reason=failure_reason,
+    ).model_dump(mode="json")
+
+
 @app.post("/lightning/invoices", response_model=Invoice, tags=["Lightning"])
 async def create_invoice(
     req: InvoiceCreate,
-    user_id: str = Depends(get_current_user_id),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
     conn: AsyncConnection = Depends(get_db_conn),
 ):
+    user_id = principal.id
     try:
         resp = lnd_client.create_invoice(memo=req.memo or "", amount_sats=req.amount_sats)
 
@@ -863,11 +1307,28 @@ async def create_invoice(
 async def pay_invoice(
     request: Request,
     req: PaymentCreate,
-    user_id: str = Depends(get_current_user_id),
-    _: None = Depends(require_2fa),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
+    _: AuthenticatedPrincipal = Depends(_reject_api_key_auth),
     conn: AsyncConnection = Depends(get_db_conn),
+    x_2fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
 ):
+    user_id = principal.id
     try:
+        two_factor_secret = await wallet_auth.get_user_2fa_secret(conn, user_id)
+        if two_factor_secret:
+            if not x_2fa_code:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Two-factor authentication code is required for this operation.",
+                )
+
+            totp = wallet_auth.pyotp.TOTP(two_factor_secret)
+            if not totp.verify(x_2fa_code, valid_window=1):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="The provided two-factor authentication code is invalid or expired.",
+                )
+
         wallet = await get_wallet_by_user_id(conn, user_id)
         if not wallet:
             raise HTTPException(status_code=404, detail="Wallet not found")
@@ -890,7 +1351,22 @@ async def pay_invoice(
                 tags={"user_id": user_id},
             )
 
-        amount_sat = resp.payment_route.total_amt if resp.payment_route else 0
+        amount_sat = int(resp.payment_route.total_amt if resp.payment_route else 0)
+        if amount_sat < 1:
+            if resp.payment_error:
+                # Cannot persist: transactions.amount_sat CHECK requires amount_sat > 0
+                return Payment(
+                    payment_hash=resp.payment_hash.hex(),
+                    payment_preimage=None,
+                    status=payment_status,
+                    fee_sats=int(resp.payment_route.total_fees if resp.payment_route else 0),
+                    failure_reason=failure_reason,
+                    created_at=datetime.now(timezone.utc),
+                )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Lightning payment requires a positive amount (missing payment route).",
+            )
 
         await create_transaction(
             conn,
@@ -901,7 +1377,7 @@ async def pay_invoice(
             status=db_status,
             ln_payment_hash=resp.payment_hash.hex(),
             description=f"Payment to {req.payment_request[:20]}...",
-            fee_sat=resp.payment_route.total_fees if resp.payment_route else 0,
+            fee_sat=int(resp.payment_route.total_fees if resp.payment_route else 0),
         )
         await sync_wallet_lightning_state(conn, str(_row_value(wallet, "id")), lnd_client)
         await record_audit_event(
@@ -925,7 +1401,7 @@ async def pay_invoice(
             payment_hash=resp.payment_hash.hex(),
             payment_preimage=resp.payment_preimage.hex() if not resp.payment_error else None,
             status=payment_status,
-            fee_sats=resp.payment_route.total_fees if resp.payment_route else 0,
+            fee_sats=int(resp.payment_route.total_fees if resp.payment_route else 0),
             failure_reason=failure_reason,
             created_at=datetime.now(timezone.utc),
         )
@@ -944,8 +1420,9 @@ async def pay_invoice(
 @app.get("/lightning/invoices/{r_hash}", response_model=Invoice, tags=["Lightning"])
 async def get_invoice(
     r_hash: str,
-    user_id: str = Depends(get_current_user_id),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
+    user_id = principal.id
     try:
         async with _runtime_engine().connect() as conn:
             wallet = await get_wallet_by_user_id(conn, user_id)
@@ -999,7 +1476,7 @@ async def get_invoice(
 @app.post("/lightning/decode", response_model=Bolt11DecodeResponse, tags=["Lightning"])
 async def decode_bolt11(
     body: Bolt11DecodeRequest,
-    user_id: str = Depends(get_current_user_id),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
     try:
         req = lnd_client.decode_pay_req(payment_request=body.payment_request)
@@ -1050,7 +1527,7 @@ async def decode_bolt11(
     include_in_schema=False,
 )
 async def get_onchain_fees(
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
     liquid_rpc = get_liquid_rpc(settings)
 
@@ -1107,7 +1584,7 @@ async def render_qr_code(
     value: str = Query(min_length=1, max_length=4096),
     box_size: int = Query(default=8, ge=1, le=20),
     border: int = Query(default=4, ge=0, le=20),
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
     payload = _render_qr_png(value, box_size=box_size, border=border)
     record_business_event("wallet_qr_render")
@@ -1126,9 +1603,9 @@ async def render_qr_code(
     include_in_schema=False,
 )
 async def create_onchain_address(
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
 ):
-    async with _runtime_engine().connect() as conn:
+    async with _runtime_engine().begin() as conn:
         wallet = await get_or_create_wallet(conn, principal.id)
         address_bundle = await _create_real_onchain_address(conn, wallet)
 
@@ -1147,7 +1624,7 @@ async def create_onchain_address(
     summary="Create a mainchain peg-in deposit address",
 )
 async def get_pegin_address(
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
 ):
     liquid_rpc = get_liquid_rpc(settings)
     try:
@@ -1175,7 +1652,7 @@ async def get_pegin_address(
 async def claim_pegin(
     request: Request,
     body: PegInClaimRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
 ):
     liquid_rpc = get_liquid_rpc(settings)
     try:
@@ -1223,7 +1700,8 @@ async def claim_pegin(
 async def withdraw_onchain(
     request: Request,
     body: OnchainWithdrawalRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
+    _: AuthenticatedPrincipal = Depends(_reject_api_key_auth),
     two_fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
 ):
     if not two_fa_code:
@@ -1233,7 +1711,7 @@ async def withdraw_onchain(
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    async with _runtime_engine().connect() as conn:
+    async with _runtime_engine().begin() as conn:
         user = await get_user_by_id(conn, principal.id)
         if user is None or _row_value(user, "deleted_at") is not None:
             raise _invalid_access_token_error()
@@ -1417,7 +1895,8 @@ async def withdraw_onchain(
 async def pegout_to_mainchain(
     request: Request,
     body: PegOutRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:write")),
+    _: AuthenticatedPrincipal = Depends(_reject_api_key_auth),
     two_fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
 ):
     if not two_fa_code:
@@ -1512,7 +1991,7 @@ async def get_transaction_history(
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     transaction_type: TransactionType | None = Query(default=None, alias="type"),
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("wallet:read")),
 ):
     async with _runtime_engine().connect() as conn:
         wallet = await get_or_create_wallet(conn, principal.id)

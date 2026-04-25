@@ -34,31 +34,34 @@ The complete design is documented in [specs/](specs), including architecture, AP
 
 ## Local Infrastructure Startup
 
-The local profile now boots the full platform stack, including Bitcoin Core on `regtest`, LND wired to `bitcoind` over RPC + ZMQ, and an `elementsregtest` node wired back to the same Bitcoin node for Liquid-style RPC flows:
+The local profile boots the backend platform stack, including Bitcoin Core on `regtest`, LND wired to `bitcoind` over RPC + ZMQ, and an `elementsregtest` node wired back to the same Bitcoin node for Liquid-style RPC flows. It exposes APIs through the gateway, but it does not boot a frontend service from this repository:
 
 ```bash
-docker compose -f infra/docker-compose.local.yml up -d
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d postgres redis bitcoind lnd elementsd
+python scripts/run_db_bootstrap.py --profile local
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d
 ```
 
 Quick checks:
 
 - Gateway health: `http://localhost:8000/health`
 - Wallet health via gateway: `http://localhost:8000/v1/wallet/health`
+- Bitcoin Core RPC: `localhost:18444`
 - LND gRPC: `localhost:10009`
 - Elements RPC: `localhost:7041`
 
 Shutdown:
 
 ```bash
-docker compose -f infra/docker-compose.local.yml down
+docker compose --project-directory . -f infra/docker-compose.local.yml down
 ```
 
 ## Environment Profiles and Secrets
 
 Python services share a centralized settings module at `services/common/config.py`.
 
-- Supported profiles: `local`, `staging`, `beta`, `production` (`ENV_PROFILE`)
-- Profile templates: `infra/.env.local.example`, `infra/.env.staging.example`, `infra/.env.beta.example`, `infra/.env.production.example`
+- Supported profiles: `local`, `regtest`, `staging`, `beta`, `production` (`ENV_PROFILE`)
+- Profile templates: `infra/.env.local.example`, `infra/.env.regtest.example`, `infra/.env.staging.example`, `infra/.env.beta.example`, `infra/.env.production.example`
 - Secret convention: use either `VAR` or `VAR_FILE` (file path), with `VAR_FILE` taking precedence
 
 Create a runtime local profile before running Docker Compose:
@@ -71,12 +74,14 @@ For local Docker Compose, defaults in `infra/.env.local` target internal service
 
 The local template now treats Lightning and Elements as required dependencies, matching the real stack that `infra/docker-compose.local.yml` launches by default.
 
+If you want an isolated regtest stack, copy `infra/.env.regtest.example` to `infra/.env.regtest` and use `infra/docker-compose.regtest.yml`. That profile no longer depends on `infra/.env.local`.
+
 Do not commit real `.env` files or plaintext secrets.
 
 ## Monitoring and Public Beta
 
-- Observability stack: `docker compose -f infra/docker-compose.observability.yml up -d`
-- Public beta stack: `docker compose -f infra/docker-compose.public-beta.yml up -d`
+- Observability stack: `docker compose --project-directory . -f infra/docker-compose.observability.yml up -d`
+- Public beta stack: `docker compose --project-directory . -f infra/docker-compose.public-beta.yml up -d`
 - Beta runbook: [deploy/public-beta/README.md](deploy/public-beta/README.md)
 - Monitoring assets: [infra/observability/README.md](infra/observability/README.md)
 

@@ -14,6 +14,7 @@ import uuid
 from collections import namedtuple
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -44,6 +45,23 @@ FakeUser = namedtuple(
     ],
 )
 
+FakeApiKey = namedtuple(
+    "FakeApiKey",
+    [
+        "id",
+        "user_id",
+        "name",
+        "key_prefix",
+        "key_hash",
+        "scopes",
+        "last_used_at",
+        "expires_at",
+        "revoked",
+        "created_at",
+        "created_by",
+    ],
+)
+
 
 def _make_fake_user(email: str, password: str, *, role: str = "user") -> FakeUser:
     return FakeUser(
@@ -55,6 +73,30 @@ def _make_fake_user(email: str, password: str, *, role: str = "user") -> FakeUse
         referral_code="REF1234567",
         created_at=datetime.now(tz=timezone.utc),
         deleted_at=None,
+    )
+
+
+def _make_fake_api_key(
+    *,
+    user_id: uuid.UUID,
+    name: str = "Integration",
+    raw_key: str = "abc123xy_test-secret-value",
+    scopes: list[str] | None = None,
+    revoked: bool = False,
+    expires_at: datetime | None = None,
+) -> FakeApiKey:
+    return FakeApiKey(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        name=name,
+        key_prefix=raw_key.split("_", 1)[0],
+        key_hash=bcrypt.hashpw(raw_key.encode("utf-8"), bcrypt.gensalt()).decode("utf-8"),
+        scopes=scopes or ["wallet:read"],
+        last_used_at=None,
+        expires_at=expires_at,
+        revoked=revoked,
+        created_at=datetime.now(tz=timezone.utc),
+        created_by=user_id,
     )
 
 
@@ -70,7 +112,6 @@ def fake_settings():
         "WALLET_SERVICE_URL": "http://wallet:8001",
         "TOKENIZATION_SERVICE_URL": "http://tokenization:8002",
         "MARKETPLACE_SERVICE_URL": "http://marketplace:8003",
-        "EDUCATION_SERVICE_URL": "http://education:8004",
         "NOSTR_SERVICE_URL": "http://nostr:8005",
         "POSTGRES_HOST": "localhost",
         "POSTGRES_PORT": "5432",
@@ -128,6 +169,7 @@ def client(fake_settings):
             patch.object(auth_main, "generate_referral_code", AsyncMock(return_value="REFCODE1234")),
             patch.object(auth_main, "rotate_refresh_session", AsyncMock(return_value=True)),
             patch.object(auth_main, "revoke_refresh_session", AsyncMock(return_value=True)),
+            patch.object(auth_main, "get_nostr_identity_by_user_id", AsyncMock(return_value=None)),
         ):
             app = auth_main.app
 
@@ -168,6 +210,33 @@ def _issue_access_token(fake_user: FakeUser, secret: str) -> str:
         wallet_id=None,
         secret=secret,
     ).access_token
+
+
+def _make_fake_kyc_row(
+    *,
+    user_id: uuid.UUID,
+    status: str = "pending",
+    metadata: dict | None = None,
+    reviewed_by: uuid.UUID | None = None,
+    reviewed_at: datetime | None = None,
+    document_url: str | None = None,
+    notes: str | None = None,
+    rejection_reason: str | None = None,
+):
+    now = datetime.now(tz=timezone.utc)
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        status=status,
+        reviewed_by=reviewed_by,
+        reviewed_at=reviewed_at,
+        rejection_reason=rejection_reason,
+        notes=notes,
+        document_url=document_url,
+        metadata=metadata,
+        created_at=now,
+        updated_at=now,
+    )
 
 
 class InMemoryRefreshSessions:
@@ -568,6 +637,24 @@ class TestLogin:
         )
         assert resp.status_code == 422
 
+    def test_login_accepts_local_test_seed_email(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("admin@local.test", "LocalAdmin123!", role="admin")
+
+        with patch(
+            "services.auth.main.get_user_by_email",
+            AsyncMock(return_value=fake_user),
+        ):
+            resp = app_client.post(
+                "/auth/login",
+                json={"email": "admin@local.test", "password": "LocalAdmin123!"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        _assert_user_structure(body["user"], "admin@local.test")
+        _assert_token_structure(body["tokens"])
+
 
 class TestRefreshTokens:
     def test_refresh_rotation_rejects_token_reuse(self, client):
@@ -713,15 +800,46 @@ class TestProtectedEndpoints:
         assert body["email"] == fake_user.email
         assert body["role"] == "seller"
 
+    def test_me_includes_nostr_pubkey_when_identity_exists(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123", role="seller")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        identity_row = MagicMock(pubkey="a" * 64)
+
+        with (
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.get_nostr_identity_by_user_id", AsyncMock(return_value=identity_row)),
+        ):
+            resp = app_client.get("/auth/me", headers=_auth_headers(access_token))
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["nostr_pubkey"] == "a" * 64
+
 
 # ---------------------------------------------------------------------------
 # POST /auth/nostr
 # ---------------------------------------------------------------------------
 
 class TestNostrAuth:
+    def test_nostr_challenge_returns_signable_payload(self, client):
+        app_client, *_ = client
+
+        response = app_client.post("/auth/nostr/challenge")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["kind"] == 22242
+        assert body["expires_in"] == 300
+        assert body["challenge"].startswith("Sign-in challenge: ")
+        assert body["nonce"]
+        assert body["challenge"].endswith(body["nonce"])
+
     def test_nostr_login_first_time_creates_user(self, client):
         app_client, fake_conn, settings = client
         fake_user = _make_fake_user(email=None, password="")
+        challenge_response = app_client.post("/auth/nostr/challenge")
+        challenge = challenge_response.json()["challenge"]
         
         with (
             patch("services.auth.main.validate_nostr_event", MagicMock(return_value=None)),
@@ -738,7 +856,7 @@ class TestNostrAuth:
                         "id": "b" * 64,
                         "kind": 22242,
                         "created_at": 1234567890,
-                        "content": "Sign-in challenge: 123",
+                        "content": challenge,
                         "sig": "c" * 128
                     }
                 }
@@ -755,6 +873,8 @@ class TestNostrAuth:
         app_client, fake_conn, settings = client
         fake_user = _make_fake_user(email="test@nostr.com", password="")
         fake_identity = MagicMock(user_id=fake_user.id)
+        challenge_response = app_client.post("/auth/nostr/challenge")
+        challenge = challenge_response.json()["challenge"]
         
         with (
             patch("services.auth.main.validate_nostr_event", MagicMock(return_value=None)),
@@ -770,7 +890,7 @@ class TestNostrAuth:
                         "id": "b" * 64,
                         "kind": 22242,
                         "created_at": 1234567890,
-                        "content": "Sign-in challenge: 123",
+                        "content": challenge,
                         "sig": "c" * 128
                     }
                 }
@@ -783,6 +903,8 @@ class TestNostrAuth:
     def test_nostr_login_invalid_signature_returns_401(self, client):
         app_client, fake_conn, settings = client
         from services.auth.nostr_utils import NostrValidationError
+        challenge_response = app_client.post("/auth/nostr/challenge")
+        challenge = challenge_response.json()["challenge"]
         
         with (
             patch("services.auth.main.validate_nostr_event", MagicMock(side_effect=NostrValidationError("Bad sig"))),
@@ -795,7 +917,7 @@ class TestNostrAuth:
                         "id": "b" * 64,
                         "kind": 22242,
                         "created_at": 1234567890,
-                        "content": "Sign-in challenge: 123",
+                        "content": challenge,
                         "sig": "c" * 128
                     }
                 }
@@ -804,6 +926,127 @@ class TestNostrAuth:
         assert resp.status_code == 401
         assert resp.json()["error"]["code"] == "invalid_credentials"
         assert "Bad sig" in resp.json()["error"]["message"]
+
+    def test_nostr_login_rejects_missing_or_reused_challenge(self, client):
+        app_client, *_ = client
+
+        missing_response = app_client.post(
+            "/auth/nostr",
+            json={
+                "pubkey": "a" * 64,
+                "signed_event": {
+                    "id": "b" * 64,
+                    "kind": 22242,
+                    "created_at": 1234567890,
+                    "content": "Sign-in challenge: missing-token",
+                    "sig": "c" * 128,
+                },
+            },
+        )
+
+        assert missing_response.status_code == 401
+        assert missing_response.json()["error"]["message"] == "Challenge is missing, expired, or already used."
+
+        challenge_response = app_client.post("/auth/nostr/challenge")
+        challenge = challenge_response.json()["challenge"]
+        fake_user = _make_fake_user(email=None, password="")
+
+        with (
+            patch("services.auth.main.validate_nostr_event", MagicMock(return_value=None)),
+            patch("services.auth.main.get_nostr_identity_by_pubkey", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_nostr_user", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.create_nostr_identity", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_refresh_session", AsyncMock(return_value=None)),
+        ):
+            first_response = app_client.post(
+                "/auth/nostr",
+                json={
+                    "pubkey": "a" * 64,
+                    "signed_event": {
+                        "id": "b" * 64,
+                        "kind": 22242,
+                        "created_at": 1234567890,
+                        "content": challenge,
+                        "sig": "c" * 128,
+                    },
+                },
+            )
+            second_response = app_client.post(
+                "/auth/nostr",
+                json={
+                    "pubkey": "a" * 64,
+                    "signed_event": {
+                        "id": "b" * 64,
+                        "kind": 22242,
+                        "created_at": 1234567890,
+                        "content": challenge,
+                        "sig": "c" * 128,
+                    },
+                },
+            )
+
+        assert first_response.status_code == 200
+        assert second_response.status_code == 401
+        assert second_response.json()["error"]["message"] == "Challenge is missing, expired, or already used."
+
+    def test_nostr_login_accepts_challenge_in_tag(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user(email=None, password="")
+        challenge_response = app_client.post("/auth/nostr/challenge")
+        nonce = challenge_response.json()["nonce"]
+
+        with (
+            patch("services.auth.main.validate_nostr_event", MagicMock(return_value=None)),
+            patch("services.auth.main.get_nostr_identity_by_pubkey", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_nostr_user", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.create_nostr_identity", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_refresh_session", AsyncMock(return_value=None)),
+        ):
+            resp = app_client.post(
+                "/auth/nostr",
+                json={
+                    "pubkey": "a" * 64,
+                    "signed_event": {
+                        "id": "b" * 64,
+                        "kind": 22242,
+                        "created_at": 1234567890,
+                        "content": "Login to CUBO Platform",
+                        "tags": [
+                            ["relay", "wss://relay.example.com"],
+                            ["challenge", nonce],
+                        ],
+                        "sig": "c" * 128,
+                    },
+                },
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "user" in body
+        _assert_token_structure(body["tokens"])
+
+    def test_nostr_login_rejects_missing_challenge_both(self, client):
+        app_client, *_ = client
+
+        resp = app_client.post(
+            "/auth/nostr",
+            json={
+                "pubkey": "a" * 64,
+                "signed_event": {
+                    "id": "b" * 64,
+                    "kind": 22242,
+                    "created_at": 1234567890,
+                    "content": "Login to CUBO Platform",
+                    "tags": [["relay", "wss://relay.example.com"]],
+                    "sig": "c" * 128,
+                },
+            },
+        )
+
+        assert resp.status_code == 401
+        error = resp.json()["error"]
+        assert error["code"] == "invalid_credentials"
+        assert "Missing challenge" in error["message"]
 
 
 class TestTwoFactor:
@@ -914,6 +1157,131 @@ class TestTwoFactor:
         assert resp.json()["error"]["code"] == "2fa_not_enabled"
 
 
+class TestKycOryKratosSync:
+    def test_submit_kyc_syncs_state_to_ory_kratos_when_enabled(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        pending_row = _make_fake_kyc_row(
+            user_id=fake_user.id,
+            status="pending",
+            document_url="https://docs.example.com/kyc/alice.pdf",
+            notes="passport uploaded",
+        )
+        synced_row = _make_fake_kyc_row(
+            user_id=fake_user.id,
+            status="pending",
+            document_url=pending_row.document_url,
+            notes=pending_row.notes,
+            metadata={
+                "ory_kratos": {
+                    "identity_id": "ory-identity-1",
+                    "external_id": str(fake_user.id),
+                    "last_sync_status": "ok",
+                }
+            },
+        )
+
+        mock_ory_client = MagicMock()
+        mock_ory_client.ensure_identity_for_user = AsyncMock(
+            return_value={"id": "ory-identity-1", "external_id": str(fake_user.id)}
+        )
+        mock_ory_client.sync_kyc_state = AsyncMock(
+            return_value={"id": "ory-identity-1", "external_id": str(fake_user.id)}
+        )
+        mock_ory_client.aclose = AsyncMock()
+
+        with (
+            patch.object(settings, "ory_kratos_admin_url", "http://ory.test"),
+            patch.object(settings, "ory_kratos_admin_token", "secret-token"),
+            patch("services.auth.main.get_user_by_id", AsyncMock(side_effect=[fake_user, fake_user])),
+            patch("services.auth.main.get_kyc_status", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_kyc_record", AsyncMock(return_value=pending_row)),
+            patch("services.auth.main.update_kyc_metadata", AsyncMock(return_value=synced_row)) as update_metadata_mock,
+            patch("services.auth.main.OryKratosAdminClient", return_value=mock_ory_client),
+        ):
+            response = app_client.post(
+                "/auth/kyc/submit",
+                headers=_auth_headers(access_token),
+                json={
+                    "document_url": pending_row.document_url,
+                    "notes": pending_row.notes,
+                },
+            )
+
+        assert response.status_code == 201
+        assert response.json()["kyc"]["status"] == "pending"
+        update_metadata_mock.assert_awaited_once()
+        metadata = update_metadata_mock.await_args.kwargs["metadata"]["ory_kratos"]
+        assert metadata["identity_id"] == "ory-identity-1"
+        assert metadata["external_id"] == str(fake_user.id)
+        assert metadata["last_sync_status"] == "ok"
+        mock_ory_client.ensure_identity_for_user.assert_awaited_once_with(fake_user)
+        mock_ory_client.sync_kyc_state.assert_awaited_once()
+        mock_ory_client.aclose.assert_awaited_once()
+
+    def test_admin_kyc_update_syncs_verified_state_to_ory_kratos(self, client):
+        app_client, _, settings = client
+        admin_user = _make_fake_user("admin@example.com", "SecureP@ss123", role="admin")
+        target_user = _make_fake_user("target@example.com", "SecureP@ss123")
+        access_token = _issue_access_token(admin_user, settings.jwt_secret)
+        existing_row = _make_fake_kyc_row(user_id=target_user.id, status="pending")
+        verified_row = _make_fake_kyc_row(
+            user_id=target_user.id,
+            status="verified",
+            reviewed_by=admin_user.id,
+            reviewed_at=datetime.now(tz=timezone.utc),
+        )
+        synced_row = _make_fake_kyc_row(
+            user_id=target_user.id,
+            status="verified",
+            reviewed_by=admin_user.id,
+            reviewed_at=verified_row.reviewed_at,
+            metadata={
+                "ory_kratos": {
+                    "identity_id": "ory-identity-2",
+                    "external_id": str(target_user.id),
+                    "last_sync_status": "ok",
+                }
+            },
+        )
+
+        mock_ory_client = MagicMock()
+        mock_ory_client.ensure_identity_for_user = AsyncMock(
+            return_value={"id": "ory-identity-2", "external_id": str(target_user.id)}
+        )
+        mock_ory_client.sync_kyc_state = AsyncMock(
+            return_value={"id": "ory-identity-2", "external_id": str(target_user.id)}
+        )
+        mock_ory_client.aclose = AsyncMock()
+
+        with (
+            patch.object(settings, "ory_kratos_admin_url", "http://ory.test"),
+            patch.object(settings, "ory_kratos_admin_token", "secret-token"),
+            patch("services.auth.main.get_user_by_id", AsyncMock(side_effect=[admin_user, target_user])),
+            patch("services.auth.main.get_kyc_status", AsyncMock(return_value=existing_row)),
+            patch("services.auth.main.update_kyc_status", AsyncMock(return_value=verified_row)),
+            patch("services.auth.main.create_referral_signup_reward", AsyncMock()),
+            patch("services.auth.main.update_kyc_metadata", AsyncMock(return_value=synced_row)) as update_metadata_mock,
+            patch("services.auth.main.OryKratosAdminClient", return_value=mock_ory_client),
+        ):
+            response = app_client.put(
+                f"/auth/kyc/admin/{target_user.id}",
+                headers=_auth_headers(access_token),
+                json={"status": "verified"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["kyc"]["status"] == "verified"
+        metadata = update_metadata_mock.await_args.kwargs["metadata"]["ory_kratos"]
+        assert metadata["identity_id"] == "ory-identity-2"
+        assert metadata["external_id"] == str(target_user.id)
+        assert metadata["last_sync_status"] == "ok"
+        mock_ory_client.ensure_identity_for_user.assert_awaited_once_with(target_user)
+        mock_ory_client.sync_kyc_state.assert_awaited_once()
+        mock_ory_client.aclose.assert_awaited_once()
+
+
 class TestOnboardingSummary:
     def test_onboarding_summary_surfaces_custody_and_fiat_readiness(self, client):
         app_client, fake_conn, settings = client
@@ -942,3 +1310,143 @@ class TestOnboardingSummary:
         assert len(body["fiat_onramp_providers"]) == 2
         assert any(provider["provider_id"] == "bank-bridge" for provider in body["fiat_onramp_providers"])
         assert any("provider-hosted checkout" in notice.lower() for notice in body["compliance_notices"])
+
+    def test_onboarding_summary_includes_nostr_pubkey_when_identity_exists(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user("alice@example.com", "password")
+        kyc_row = MagicMock()
+        kyc_row._mapping = {"status": "verified"}
+        identity_row = MagicMock(pubkey="b" * 64)
+
+        with (
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.get_kyc_status", AsyncMock(return_value=kyc_row)),
+            patch("services.auth.main.get_nostr_identity_by_user_id", AsyncMock(return_value=identity_row)),
+        ):
+            token_pair = issue_token_pair(
+                user_id=str(fake_user.id),
+                role=fake_user.role,
+                wallet_id=None,
+                secret=settings.jwt_secret,
+            )
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
+            resp = app_client.get("/auth/onboarding/summary", headers=headers)
+
+        assert resp.status_code == 200
+        assert resp.json()["user"]["nostr_pubkey"] == "b" * 64
+
+    def test_onboarding_summary_handles_custody_errors_as_contract_error(self, client):
+        app_client, _, settings = client
+        fake_user = _make_fake_user("alice@example.com", "password")
+        kyc_row = MagicMock()
+        kyc_row._mapping = {"status": "verified"}
+        from services.auth.main import CustodyError
+
+        with (
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.get_kyc_status", AsyncMock(return_value=kyc_row)),
+            patch(
+                "services.auth.main.describe_custody_settings",
+                MagicMock(
+                    side_effect=CustodyError(
+                        code="platform_signer_unavailable",
+                        message="embit is required for secp256k1 platform signing.",
+                        backend="software",
+                    )
+                ),
+            ),
+        ):
+            token_pair = issue_token_pair(
+                user_id=str(fake_user.id),
+                role=fake_user.role,
+                wallet_id=None,
+                secret=settings.jwt_secret,
+            )
+            headers = {"Authorization": f"Bearer {token_pair.access_token}"}
+            resp = app_client.get("/auth/onboarding/summary", headers=headers)
+
+        assert resp.status_code == 503
+        body = resp.json()
+        assert body["error"]["code"] == "platform_signer_unavailable"
+
+
+class TestApiKeys:
+    def test_create_api_key_returns_secret_once(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123")
+        stored_row = _make_fake_api_key(
+            user_id=fake_user.id,
+            name="My Integration Key",
+            scopes=["wallet:read", "yield:read"],
+        )
+
+        with (
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.get_api_key_by_name", AsyncMock(return_value=None)),
+            patch("services.auth.main.get_api_key_by_prefix", AsyncMock(return_value=None)),
+            patch("services.auth.main.create_api_key", AsyncMock(return_value=stored_row)),
+            patch("services.auth.main.record_audit_event", AsyncMock()),
+        ):
+            token = _issue_access_token(fake_user, settings.jwt_secret)
+            resp = app_client.post(
+                "/auth/api-keys",
+                headers=_auth_headers(token),
+                json={
+                    "name": "My Integration Key",
+                    "scopes": ["wallet:read", "yield:read"],
+                },
+            )
+
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["name"] == "My Integration Key"
+        assert body["key_prefix"]
+        assert "_" in body["key"]
+        assert body["scopes"] == ["wallet:read", "yield:read"]
+
+    def test_list_api_keys_returns_metadata_without_secret(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123")
+        stored_row = _make_fake_api_key(user_id=fake_user.id)
+
+        with (
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.list_api_keys_for_user", AsyncMock(return_value=[stored_row])),
+        ):
+            token = _issue_access_token(fake_user, settings.jwt_secret)
+            resp = app_client.get("/auth/api-keys", headers=_auth_headers(token))
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["keys"]) == 1
+        assert body["keys"][0]["key_prefix"] == stored_row.key_prefix
+        assert "key" not in body["keys"][0]
+
+    def test_verify_api_key_returns_principal_payload(self, client):
+        app_client, fake_conn, settings = client
+        fake_user = _make_fake_user("alice@example.com", "SecureP@ss123")
+        raw_key = "abc123xy_programmatic-secret"
+        stored_row = _make_fake_api_key(
+            user_id=fake_user.id,
+            raw_key=raw_key,
+            scopes=["wallet:read"],
+        )
+
+        with (
+            patch("services.auth.main.get_api_key_by_prefix", AsyncMock(return_value=stored_row)),
+            patch("services.auth.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.auth.main.touch_api_key_last_used", AsyncMock()),
+            patch("services.auth.main.record_audit_event", AsyncMock()),
+        ):
+            resp = app_client.post(
+                "/internal/api-keys/verify",
+                json={"api_key": raw_key},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["valid"] is True
+        assert body["user_id"] == str(fake_user.id)
+        assert body["scopes"] == ["wallet:read"]
+        assert body["key_id"] == str(stored_row.id)
+

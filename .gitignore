@@ -14,6 +14,9 @@ Thumbs.db
 !.env.example
 !.env.*.example
 !*.env.example
+# Non-production profiles: contain only dummy credentials, safe to commit
+!infra/.env.regtest
+!infra/.env.local
 *.pem
 *.key
 *.p12
@@ -92,3 +95,11 @@ tapd-data/
 # Test artifacts
 playwright-report/
 test-results/
+
+# Agent Skills and Workflows
+.agents/
+skills-lock.json
+*.js
+!generate_deck.js
+!generate_demo_deck.js
+

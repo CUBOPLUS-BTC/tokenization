@@ -1,0 +1,1127 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Admin Service",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/metrics": {
+      "get": {
+        "tags": [
+          "Observability"
+        ],
+        "summary": "Get Metrics",
+        "operationId": "get_metrics_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "summary": "Ready",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users": {
+      "get": {
+        "summary": "List users (admin only)",
+        "operationId": "list_users_endpoint_users_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Role"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{user_id}": {
+      "patch": {
+        "summary": "Update a user's role (admin only)",
+        "operationId": "update_user_role_endpoint_users__user_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUserRoleRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/treasury/disburse": {
+      "post": {
+        "summary": "Disburse treasury funds (admin only, requires 2FA)",
+        "operationId": "disburse_treasury_endpoint_treasury_disburse_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-2FA-Code",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-2Fa-Code"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TreasuryDisburseRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TreasuryDisburseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/escrows/{trade_id}/resolve": {
+      "post": {
+        "summary": "Resolve an escrow dispute (admin only, requires 2FA)",
+        "operationId": "resolve_escrow_dispute_endpoint_escrows__trade_id__resolve_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "trade_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Trade Id"
+            }
+          },
+          {
+            "name": "X-2FA-Code",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-2Fa-Code"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminDisputeResolveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisputeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/referrals/summary": {
+      "get": {
+        "summary": "Return platform-level referral reward totals",
+        "operationId": "get_referral_platform_summary_referrals_summary_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferralPlatformSummaryResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/referrals/{user_id}": {
+      "get": {
+        "summary": "Return referral relationships and rewards for a specific user",
+        "operationId": "get_referral_user_summary_referrals__user_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferralUserSummaryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yield/summary": {
+      "get": {
+        "summary": "Return platform-level yield totals",
+        "operationId": "get_yield_platform_summary_yield_summary_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YieldPlatformSummaryResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/yield/{user_id}": {
+      "get": {
+        "summary": "Return yield accruals for a specific user",
+        "operationId": "get_yield_user_summary_yield__user_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YieldUserSummaryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AdminDisputeResolveRequest": {
+        "properties": {
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "refund_buyer",
+              "release_to_seller"
+            ],
+            "title": "Resolution"
+          },
+          "notes": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Notes"
+          },
+          "resolution_txid": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Resolution Txid"
+          },
+          "collected_signatures": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Collected Signatures"
+          },
+          "settlement_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settlement Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "resolution",
+          "notes",
+          "resolution_txid"
+        ],
+        "title": "AdminDisputeResolveRequest"
+      },
+      "DisputeOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "trade_id": {
+            "type": "string",
+            "title": "Trade Id"
+          },
+          "opened_by": {
+            "type": "string",
+            "title": "Opened By"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution"
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved By"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "trade_id",
+          "opened_by",
+          "reason",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "DisputeOut"
+      },
+      "DisputeResponse": {
+        "properties": {
+          "dispute": {
+            "$ref": "#/components/schemas/DisputeOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dispute"
+        ],
+        "title": "DisputeResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ReferralPlatformSummaryResponse": {
+        "properties": {
+          "referred_users": {
+            "type": "integer",
+            "title": "Referred Users"
+          },
+          "active_referrers": {
+            "type": "integer",
+            "title": "Active Referrers"
+          },
+          "total_reward_sat": {
+            "type": "integer",
+            "title": "Total Reward Sat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "referred_users",
+          "active_referrers",
+          "total_reward_sat"
+        ],
+        "title": "ReferralPlatformSummaryResponse"
+      },
+      "ReferralRewardOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "referred_user_id": {
+            "type": "string",
+            "title": "Referred User Id"
+          },
+          "referred_display_name": {
+            "type": "string",
+            "title": "Referred Display Name"
+          },
+          "referred_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Referred Email"
+          },
+          "reward_type": {
+            "type": "string",
+            "title": "Reward Type"
+          },
+          "amount_sat": {
+            "type": "integer",
+            "title": "Amount Sat"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "eligibility_event": {
+            "type": "string",
+            "title": "Eligibility Event"
+          },
+          "credited_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Credited At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "referred_user_id",
+          "referred_display_name",
+          "reward_type",
+          "amount_sat",
+          "status",
+          "eligibility_event",
+          "credited_at",
+          "created_at"
+        ],
+        "title": "ReferralRewardOut"
+      },
+      "ReferralUserSummaryResponse": {
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "title": "User Id"
+          },
+          "referral_code": {
+            "type": "string",
+            "title": "Referral Code"
+          },
+          "referrals_count": {
+            "type": "integer",
+            "title": "Referrals Count"
+          },
+          "total_reward_sat": {
+            "type": "integer",
+            "title": "Total Reward Sat"
+          },
+          "rewards": {
+            "items": {
+              "$ref": "#/components/schemas/ReferralRewardOut"
+            },
+            "type": "array",
+            "title": "Rewards"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "referral_code",
+          "referrals_count",
+          "total_reward_sat",
+          "rewards"
+        ],
+        "title": "ReferralUserSummaryResponse"
+      },
+      "TreasuryDisburseRequest": {
+        "properties": {
+          "amount_sat": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Amount Sat"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "amount_sat",
+          "description"
+        ],
+        "title": "TreasuryDisburseRequest"
+      },
+      "TreasuryDisburseResponse": {
+        "properties": {
+          "entry": {
+            "$ref": "#/components/schemas/TreasuryEntryOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entry"
+        ],
+        "title": "TreasuryDisburseResponse"
+      },
+      "TreasuryEntryOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "amount_sat": {
+            "type": "integer",
+            "title": "Amount Sat"
+          },
+          "balance_after_sat": {
+            "type": "integer",
+            "title": "Balance After Sat"
+          },
+          "reference_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Id"
+          },
+          "source_referral_reward_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Referral Reward Id"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "amount_sat",
+          "balance_after_sat",
+          "created_at"
+        ],
+        "title": "TreasuryEntryOut"
+      },
+      "UpdateUserRoleRequest": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "seller",
+              "admin",
+              "auditor"
+            ],
+            "title": "Role"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "title": "UpdateUserRoleRequest"
+      },
+      "UserListResponse": {
+        "properties": {
+          "users": {
+            "items": {
+              "$ref": "#/components/schemas/UserOut"
+            },
+            "type": "array",
+            "title": "Users"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "users",
+          "next_cursor"
+        ],
+        "title": "UserListResponse"
+      },
+      "UserOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "display_name",
+          "role",
+          "created_at"
+        ],
+        "title": "UserOut"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "YieldAccrualOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "token_id": {
+            "type": "string",
+            "title": "Token Id"
+          },
+          "asset_name": {
+            "type": "string",
+            "title": "Asset Name"
+          },
+          "amount_sat": {
+            "type": "integer",
+            "title": "Amount Sat"
+          },
+          "quantity_held": {
+            "type": "integer",
+            "title": "Quantity Held"
+          },
+          "reference_price_sat": {
+            "type": "integer",
+            "title": "Reference Price Sat"
+          },
+          "annual_rate_pct": {
+            "type": "number",
+            "title": "Annual Rate Pct"
+          },
+          "accrued_from": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Accrued From"
+          },
+          "accrued_to": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Accrued To"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "token_id",
+          "asset_name",
+          "amount_sat",
+          "quantity_held",
+          "reference_price_sat",
+          "annual_rate_pct",
+          "accrued_from",
+          "accrued_to",
+          "created_at"
+        ],
+        "title": "YieldAccrualOut"
+      },
+      "YieldPlatformSummaryResponse": {
+        "properties": {
+          "users_with_yield": {
+            "type": "integer",
+            "title": "Users With Yield"
+          },
+          "yield_tokens": {
+            "type": "integer",
+            "title": "Yield Tokens"
+          },
+          "total_yield_sat": {
+            "type": "integer",
+            "title": "Total Yield Sat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "users_with_yield",
+          "yield_tokens",
+          "total_yield_sat"
+        ],
+        "title": "YieldPlatformSummaryResponse"
+      },
+      "YieldTokenSummaryOut": {
+        "properties": {
+          "token_id": {
+            "type": "string",
+            "title": "Token Id"
+          },
+          "asset_name": {
+            "type": "string",
+            "title": "Asset Name"
+          },
+          "total_yield_sat": {
+            "type": "integer",
+            "title": "Total Yield Sat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token_id",
+          "asset_name",
+          "total_yield_sat"
+        ],
+        "title": "YieldTokenSummaryOut"
+      },
+      "YieldUserSummaryResponse": {
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "title": "User Id"
+          },
+          "total_yield_sat": {
+            "type": "integer",
+            "title": "Total Yield Sat"
+          },
+          "by_token": {
+            "items": {
+              "$ref": "#/components/schemas/YieldTokenSummaryOut"
+            },
+            "type": "array",
+            "title": "By Token"
+          },
+          "accruals": {
+            "items": {
+              "$ref": "#/components/schemas/YieldAccrualOut"
+            },
+            "type": "array",
+            "title": "Accruals"
+          }
+        },
+        "type": "object",
+        "required": [
+          "user_id",
+          "total_yield_sat",
+          "by_token",
+          "accruals"
+        ],
+        "title": "YieldUserSummaryResponse"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

@@ -10,6 +10,7 @@ import time
 import uuid
 
 from fastapi import FastAPI, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -35,6 +36,16 @@ def _is_sensitive_key(key: str) -> bool:
             "credential",
         )
     )
+
+
+def _api_key_rate_limit_identifier(request: Request) -> str | None:
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        return None
+    prefix = api_key.split("_", 1)[0].strip()
+    if not prefix or len(prefix) > 32 or not prefix.isalnum():
+        return None
+    return f"api_key:{prefix}"
 
 
 class SensitiveDataFilter(logging.Filter):
@@ -138,7 +149,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         request_id = getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        client_identifier = _client_ip(request)
+        client_identifier = _api_key_rate_limit_identifier(request) or _client_ip(request)
         scope_identifier = request.url.path if rule.scope == "client_path" else "all"
         bucket = f"{rule.name}:{client_identifier}:{scope_identifier}"
         now = time.monotonic()
@@ -215,12 +226,34 @@ def build_write_rate_limit_rules(
     return tuple(rules)
 
 
+def install_cors_middleware(app: FastAPI, settings: Settings) -> None:
+    """Install FastAPI CORSMiddleware based on Settings.cors_allowed_origins.
+
+    The middleware is only installed when ``CORS_ALLOWED_ORIGINS`` is non-empty.
+    When the service is deployed behind the gateway, the gateway is the single
+    source of truth for CORS headers (and it strips any upstream ``Access-Control-*``
+    headers), so it is safe (and recommended) to leave this empty in that scenario.
+    """
+    origins = settings.cors_allowed_origin_list
+    if not origins:
+        return
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["X-Request-ID"],
+    )
+
+
 def install_http_security(
     app: FastAPI,
     settings: Settings,
     *,
     sensitive_paths: Iterable[str],
 ) -> None:
+    install_cors_middleware(app, settings)
     app.add_middleware(RateLimitMiddleware, rules=build_write_rate_limit_rules(settings, sensitive_paths=sensitive_paths))
     app.add_middleware(RequestContextMiddleware)
 
@@ -240,5 +273,6 @@ __all__ = [
     "configure_logging",
     "RateLimitRule",
     "build_write_rate_limit_rules",
+    "install_cors_middleware",
     "install_http_security",
 ]

@@ -13,7 +13,6 @@ for key, value in {
     "WALLET_SERVICE_URL": "http://wallet:8001",
     "TOKENIZATION_SERVICE_URL": "http://tokenization:8002",
     "MARKETPLACE_SERVICE_URL": "http://marketplace:8003",
-    "EDUCATION_SERVICE_URL": "http://education:8004",
     "NOSTR_SERVICE_URL": "http://nostr:8005",
     "POSTGRES_HOST": "localhost",
     "POSTGRES_PORT": "5432",
@@ -111,6 +110,7 @@ def test_reconcile_deposits_credits_confirmed_utxo_once():
         return_value=[
             {
                 "address": "bcrt1ptestdeposit",
+                "scriptPubKey": "0014abcdef",
                 "txid": "a" * 64,
                 "vout": 0,
                 "amount": 0.001,
@@ -124,7 +124,7 @@ def test_reconcile_deposits_credits_confirmed_utxo_once():
         patch.object(
             wallet_reconciliation,
             "list_imported_wallet_addresses",
-            AsyncMock(return_value=[_RowStub(id=wallet_address_id, address="bcrt1ptestdeposit", wallet_id=wallet_id)]),
+            AsyncMock(return_value=[_RowStub(id=wallet_address_id, address="bcrt1ptestdeposit", wallet_id=wallet_id, script_pubkey="0014abcdef")]),
         ),
         patch.object(wallet_reconciliation, "record_business_event") as record_event,
     ):
@@ -162,6 +162,7 @@ def test_reconcile_deposits_does_not_double_credit_existing_utxo():
         return_value=[
             {
                 "address": "bcrt1ptestdeposit",
+                "scriptPubKey": "0014abcdef",
                 "txid": "a" * 64,
                 "vout": 0,
                 "amount": 0.001,
@@ -175,7 +176,7 @@ def test_reconcile_deposits_does_not_double_credit_existing_utxo():
         patch.object(
             wallet_reconciliation,
             "list_imported_wallet_addresses",
-            AsyncMock(return_value=[_RowStub(id=wallet_address_id, address="bcrt1ptestdeposit", wallet_id=wallet_id)]),
+            AsyncMock(return_value=[_RowStub(id=wallet_address_id, address="bcrt1ptestdeposit", wallet_id=wallet_id, script_pubkey="0014abcdef")]),
         ),
         patch.object(wallet_reconciliation, "record_business_event") as record_event,
     ):
@@ -221,3 +222,9 @@ def test_sync_lightning_balance_refreshes_each_wallet_individually():
     assert sync_wallet_state.await_count == 2
     record_event.assert_called_once()
     assert record_event.call_args.args[0] == "wallet_lightning_balance_sync"
+
+
+def test_confirmation_threshold_treats_testnet4_like_testnet():
+    settings = SimpleNamespace(bitcoin_network="testnet4")
+
+    assert wallet_reconciliation._confirmation_threshold(settings) == 3

@@ -5,11 +5,15 @@ services:
     image: postgres:15-alpine
     restart: unless-stopped
     env_file:
-      - ./.env.beta
+      - path: ./infra/.env.beta
+        required: false
     volumes:
       - beta_postgres_data:/var/lib/postgresql/data
-    networks:
-      - beta
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
@@ -17,188 +21,149 @@ services:
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - beta_redis_data:/data
-    networks:
-      - beta
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    build:
+      context: .
+      dockerfile: ./services/migrate/Dockerfile
+    pull_policy: build
+    restart: "no"
+    labels:
+      - "com.tokenization.migrate.role=one-shot"
+    env_file:
+      - path: ./infra/.env.beta
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   auth:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/auth/Dockerfile
     restart: unless-stopped
-    working_dir: /app/services/auth
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8000"
     env_file:
-      - ./.env.beta
-    volumes:
-      - ../:/app
+      - path: ./infra/.env.beta
+        required: false
     depends_on:
-      - postgres
-      - redis
-    networks:
-      - beta
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   wallet:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/wallet/Dockerfile
     restart: unless-stopped
-    working_dir: /app
-    command: >
-      sh -c "pip install --no-cache-dir -r services/wallet/requirements.txt &&
-      uvicorn services.wallet.main:app --host 0.0.0.0 --port 8001"
     env_file:
-      - ./.env.beta
-    volumes:
-      - ../:/app
+      - path: ./infra/.env.beta
+        required: false
     depends_on:
-      - postgres
-      - redis
-    networks:
-      - beta
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   tokenization:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/tokenization/Dockerfile
     restart: unless-stopped
-    working_dir: /app/services/tokenization
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8002"
     env_file:
-      - ./.env.beta
-    volumes:
-      - ../:/app
+      - path: ./infra/.env.beta
+        required: false
     depends_on:
-      - postgres
-      - redis
-    networks:
-      - beta
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   marketplace:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/marketplace/Dockerfile
     restart: unless-stopped
-    working_dir: /app/services/marketplace
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8003"
     env_file:
-      - ./.env.beta
-    volumes:
-      - ../:/app
+      - path: ./infra/.env.beta
+        required: false
     depends_on:
-      - postgres
-      - redis
-    networks:
-      - beta
-
-  education:
-    image: python:3.11-slim
-    restart: unless-stopped
-    working_dir: /app/services/education
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8004"
-    env_file:
-      - ./.env.beta
-    volumes:
-      - ../:/app
-    depends_on:
-      - postgres
-      - redis
-    networks:
-      - beta
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   nostr:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/nostr/Dockerfile
     restart: unless-stopped
-    working_dir: /app/services/nostr
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8005"
     env_file:
-      - ./.env.beta
-    volumes:
-      - ../:/app
+      - path: ./infra/.env.beta
+        required: false
     depends_on:
-      - postgres
-      - redis
-    networks:
-      - beta
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   admin:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./services/admin/Dockerfile
     restart: unless-stopped
-    working_dir: /app/services/admin
-    command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      uvicorn main:app --host 0.0.0.0 --port 8006"
     env_file:
-      - ./.env.beta
-    volumes:
-      - ../:/app
+      - path: ./infra/.env.beta
+        required: false
     depends_on:
-      - postgres
-      - redis
-    networks:
-      - beta
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   gateway:
     build:
-      context: ../services/gateway
+      context: ./services/gateway
       dockerfile: Dockerfile
     restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.beta
+        required: false
+    environment:
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      CORS_ALLOWED_METHODS: ${CORS_ALLOWED_METHODS:-GET, POST, PUT, PATCH, DELETE, OPTIONS}
+      CORS_ALLOWED_HEADERS: ${CORS_ALLOWED_HEADERS:-Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Request-ID, X-Correlation-ID, X-API-Key, X-2FA-Code, X-Idempotency-Key}
+      CORS_EXPOSE_HEADERS: ${CORS_EXPOSE_HEADERS:-X-Request-ID}
+      CORS_MAX_AGE: ${CORS_MAX_AGE:-86400}
+      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-true}
+    ports:
+      - "8000:8000"
     depends_on:
       - auth
       - wallet
       - tokenization
       - marketplace
-      - education
       - nostr
       - admin
-    ports:
-      - "8000:8000"
-    networks:
-      - beta
-
-  prometheus:
-    extends:
-      file: ./docker-compose.observability.yml
-      service: prometheus
-    networks:
-      - beta
-
-  alertmanager:
-    extends:
-      file: ./docker-compose.observability.yml
-      service: alertmanager
-    networks:
-      - beta
-
-  grafana:
-    extends:
-      file: ./docker-compose.observability.yml
-      service: grafana
-    networks:
-      - beta
-
-  blackbox:
-    extends:
-      file: ./docker-compose.observability.yml
-      service: blackbox
-    networks:
-      - beta
-
-  cadvisor:
-    extends:
-      file: ./docker-compose.observability.yml
-      service: cadvisor
-    networks:
-      - beta
 
 volumes:
   beta_postgres_data:
   beta_redis_data:
-  prometheus_data:
-  alertmanager_data:
-  grafana_data:
 
-networks:
-  beta:
-    driver: bridge

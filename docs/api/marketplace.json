@@ -1,0 +1,1584 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Marketplace Service",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/metrics": {
+      "get": {
+        "tags": [
+          "Observability"
+        ],
+        "summary": "Get Metrics",
+        "operationId": "get_metrics_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "summary": "Ready",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders": {
+      "post": {
+        "summary": "Place Order",
+        "operationId": "place_order_orders_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Get Orders",
+        "operationId": "get_orders_orders_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "token_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Token Id"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(buy|sell)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Side"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(open|partially_filled|filled|cancelled)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orderbook/{token_id}": {
+      "get": {
+        "summary": "Get Order Book",
+        "operationId": "get_order_book_orderbook__token_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "token_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Token Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderBookResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/{order_id}": {
+      "delete": {
+        "summary": "Delete Order",
+        "operationId": "delete_order_orders__order_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "order_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Order Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelOrderResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/escrows/{trade_id}": {
+      "get": {
+        "summary": "Get Escrow Details",
+        "operationId": "get_escrow_details_escrows__trade_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "trade_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Trade Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscrowResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/escrows/{trade_id}/sign": {
+      "post": {
+        "summary": "Sign Escrow Release",
+        "operationId": "sign_escrow_release_escrows__trade_id__sign_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "trade_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Trade Id"
+            }
+          },
+          {
+            "name": "X-2FA-Code",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-2Fa-Code"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscrowSignRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscrowResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/escrows/{trade_id}/external-sign": {
+      "post": {
+        "summary": "External Sign Escrow Release",
+        "operationId": "external_sign_escrow_release_escrows__trade_id__external_sign_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "trade_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Trade Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExternalEscrowSignRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EscrowResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trades": {
+      "get": {
+        "summary": "Get Trade History",
+        "operationId": "get_trade_history_trades_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "token_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Token Id"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradeListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trades/{trade_id}/dispute": {
+      "post": {
+        "summary": "Create Dispute",
+        "operationId": "create_dispute_trades__trade_id__dispute_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "trade_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Trade Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisputeOpenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisputeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/trades/{trade_id}/dispute/resolve": {
+      "post": {
+        "summary": "Resolve Trade Dispute",
+        "operationId": "resolve_trade_dispute_trades__trade_id__dispute_resolve_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "trade_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Trade Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisputeResolveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DisputeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CancelOrderResponse": {
+        "properties": {
+          "order": {
+            "$ref": "#/components/schemas/CancelledOrderOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "order"
+        ],
+        "title": "CancelOrderResponse"
+      },
+      "CancelledOrderOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "const": "cancelled",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "CancelledOrderOut"
+      },
+      "DisputeOpenRequest": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "DisputeOpenRequest"
+      },
+      "DisputeOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "trade_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Trade Id"
+          },
+          "opened_by": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Opened By"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "resolved"
+            ],
+            "title": "Status"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "refund",
+                  "release"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution"
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved By"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "trade_id",
+          "opened_by",
+          "reason",
+          "status",
+          "created_at"
+        ],
+        "title": "DisputeOut"
+      },
+      "DisputeResolveRequest": {
+        "properties": {
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "refund",
+              "release"
+            ],
+            "title": "Resolution"
+          },
+          "pset": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "resolution"
+        ],
+        "title": "DisputeResolveRequest"
+      },
+      "DisputeResponse": {
+        "properties": {
+          "dispute": {
+            "$ref": "#/components/schemas/DisputeOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dispute"
+        ],
+        "title": "DisputeResponse"
+      },
+      "EscrowOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "trade_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Trade Id"
+          },
+          "multisig_address": {
+            "type": "string",
+            "title": "Multisig Address"
+          },
+          "locked_amount_sat": {
+            "type": "integer",
+            "title": "Locked Amount Sat"
+          },
+          "funding_txid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funding Txid"
+          },
+          "release_txid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Txid"
+          },
+          "refund_txid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refund Txid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "created",
+              "funded",
+              "inspection_pending",
+              "released",
+              "refunded",
+              "disputed",
+              "expired"
+            ],
+            "title": "Status"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "multisig_mode": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "external_api"
+            ],
+            "title": "Multisig Mode",
+            "default": "standard"
+          },
+          "settlement_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settlement Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "trade_id",
+          "multisig_address",
+          "locked_amount_sat",
+          "status",
+          "expires_at"
+        ],
+        "title": "EscrowOut"
+      },
+      "EscrowResponse": {
+        "properties": {
+          "escrow": {
+            "$ref": "#/components/schemas/EscrowOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "escrow"
+        ],
+        "title": "EscrowResponse"
+      },
+      "EscrowSignRequest": {
+        "properties": {
+          "pset": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pset"
+          }
+        },
+        "type": "object",
+        "title": "EscrowSignRequest"
+      },
+      "ExternalEscrowSignRequest": {
+        "properties": {
+          "pset": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pset"
+          },
+          "signer_role": {
+            "type": "string",
+            "enum": [
+              "buyer",
+              "seller",
+              "platform"
+            ],
+            "title": "Signer Role"
+          }
+        },
+        "type": "object",
+        "required": [
+          "signer_role"
+        ],
+        "title": "ExternalEscrowSignRequest"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "OrderBookLevel": {
+        "properties": {
+          "price_sat": {
+            "type": "integer",
+            "title": "Price Sat"
+          },
+          "total_quantity": {
+            "type": "integer",
+            "title": "Total Quantity"
+          }
+        },
+        "type": "object",
+        "required": [
+          "price_sat",
+          "total_quantity"
+        ],
+        "title": "OrderBookLevel"
+      },
+      "OrderBookResponse": {
+        "properties": {
+          "token_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Token Id"
+          },
+          "bids": {
+            "items": {
+              "$ref": "#/components/schemas/OrderBookLevel"
+            },
+            "type": "array",
+            "title": "Bids"
+          },
+          "asks": {
+            "items": {
+              "$ref": "#/components/schemas/OrderBookLevel"
+            },
+            "type": "array",
+            "title": "Asks"
+          },
+          "last_trade_price_sat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Trade Price Sat"
+          },
+          "volume_24h": {
+            "type": "integer",
+            "title": "Volume 24H"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token_id",
+          "bids",
+          "asks",
+          "volume_24h"
+        ],
+        "title": "OrderBookResponse"
+      },
+      "OrderCreateRequest": {
+        "properties": {
+          "token_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Token Id"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "buy",
+              "sell"
+            ],
+            "title": "Side"
+          },
+          "order_type": {
+            "type": "string",
+            "enum": [
+              "limit",
+              "stop_limit"
+            ],
+            "title": "Order Type",
+            "default": "limit"
+          },
+          "quantity": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Quantity"
+          },
+          "price_sat": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Price Sat"
+          },
+          "trigger_price_sat": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Price Sat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token_id",
+          "side",
+          "quantity",
+          "price_sat"
+        ],
+        "title": "OrderCreateRequest"
+      },
+      "OrderListResponse": {
+        "properties": {
+          "orders": {
+            "items": {
+              "$ref": "#/components/schemas/OrderOut"
+            },
+            "type": "array",
+            "title": "Orders"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "orders"
+        ],
+        "title": "OrderListResponse"
+      },
+      "OrderOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "token_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Token Id"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "buy",
+              "sell"
+            ],
+            "title": "Side"
+          },
+          "order_type": {
+            "type": "string",
+            "enum": [
+              "limit",
+              "stop_limit"
+            ],
+            "title": "Order Type"
+          },
+          "quantity": {
+            "type": "integer",
+            "title": "Quantity"
+          },
+          "price_sat": {
+            "type": "integer",
+            "title": "Price Sat"
+          },
+          "trigger_price_sat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Price Sat"
+          },
+          "triggered_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Triggered At"
+          },
+          "is_triggered": {
+            "type": "boolean",
+            "title": "Is Triggered",
+            "default": true
+          },
+          "filled_quantity": {
+            "type": "integer",
+            "title": "Filled Quantity"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "partially_filled",
+              "filled",
+              "cancelled"
+            ],
+            "title": "Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "token_id",
+          "side",
+          "order_type",
+          "quantity",
+          "price_sat",
+          "filled_quantity",
+          "status",
+          "created_at"
+        ],
+        "title": "OrderOut"
+      },
+      "OrderResponse": {
+        "properties": {
+          "order": {
+            "$ref": "#/components/schemas/OrderOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "order"
+        ],
+        "title": "OrderResponse"
+      },
+      "TradeListResponse": {
+        "properties": {
+          "trades": {
+            "items": {
+              "$ref": "#/components/schemas/TradeOut"
+            },
+            "type": "array",
+            "title": "Trades"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "trades"
+        ],
+        "title": "TradeListResponse"
+      },
+      "TradeOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "token_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Token Id"
+          },
+          "quantity": {
+            "type": "integer",
+            "title": "Quantity"
+          },
+          "price_sat": {
+            "type": "integer",
+            "title": "Price Sat"
+          },
+          "total_sat": {
+            "type": "integer",
+            "title": "Total Sat"
+          },
+          "fee_sat": {
+            "type": "integer",
+            "title": "Fee Sat"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "escrowed",
+              "settled",
+              "disputed",
+              "cancelled"
+            ],
+            "title": "Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "settled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "token_id",
+          "quantity",
+          "price_sat",
+          "total_sat",
+          "fee_sat",
+          "status",
+          "created_at"
+        ],
+        "title": "TradeOut"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

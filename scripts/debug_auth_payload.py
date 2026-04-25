@@ -1,11 +1,13 @@
-import requests
 import json
+import os
+
+import requests
 
 base_url = "http://localhost:8000/v1"
 
 def test_login():
     email = "debug_user@example.com"
-    password = "Password123!"
+    password = os.getenv("DEBUG_AUTH_PASSWORD", "debug-password-placeholder")
     
     # Register
     print(f"Registering {email}...")

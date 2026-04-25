@@ -43,11 +43,13 @@ from common import (
     get_settings,
     install_http_security,
     record_audit_event,
+    verify_api_key_via_auth_service,
 )
 from common.db.metadata import wallet_addresses as wallet_addresses_table
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
+from common.db.schema_check import ensure_schema_ready
 from marketplace.escrow import derive_private_key
 from marketplace.db import (
     activate_triggered_orders,
@@ -78,6 +80,7 @@ from marketplace.db import (
     record_escrow_signature,
     resolve_escrow_signing_material,
     resolve_dispute,
+    settle_trade,
     update_escrow_settlement_metadata,
 )
 from marketplace.liquid_rpc import ElementsRPCError, FundingObservation, get_liquid_rpc
@@ -91,6 +94,7 @@ from marketplace.schemas import (
     DisputeResponse,
     EscrowOut,
     EscrowResponse,
+    ExternalEscrowSignRequest,
     EscrowSignRequest,
     OrderBookLevel,
     OrderBookResponse,
@@ -135,6 +139,9 @@ class ContractError(Exception):
 class AuthenticatedPrincipal:
     id: str
     role: str
+    auth_method: str = "jwt"
+    scopes: tuple[str, ...] = ()
+    api_key_id: str | None = None
 
 
 def _make_async_url(sync_url: str) -> str:
@@ -160,6 +167,18 @@ def _runtime_engine() -> AsyncEngine | object:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     engine = _runtime_engine()
+    await ensure_schema_ready(
+        engine,
+        (
+            "users",
+            "orders",
+            "trades",
+            "escrows",
+            "tokens",
+            "disputes",
+            "wallet_addresses",
+        ),
+    )
     stop_event = asyncio.Event()
     watcher_task: asyncio.Task[None] | None = None
     if _liquid_rpc_client is not None:
@@ -258,6 +277,7 @@ def _escrow_out(row: object) -> EscrowOut:
         refund_txid=_row_value(row, "refund_txid"),
         status=_row_value(row, "status"),
         expires_at=_row_value(row, "expires_at"),
+        multisig_mode=_row_value(row, "multisig_mode", "standard"),
         settlement_metadata=settlement_metadata or None,
     )
 
@@ -369,10 +389,37 @@ def _build_page(rows: list[object], *, cursor: str | None, limit: int, label: st
     return page, next_cursor
 
 
+async def _filter_rows_by_token_access(
+    conn: object,
+    *,
+    rows: list[object],
+    principal: AuthenticatedPrincipal,
+    action: str,
+) -> list[object]:
+    accessible_rows: list[object] = []
+    token_cache: dict[str, object | None] = {}
+
+    for row in rows:
+        token_id = str(_row_value(row, "token_id"))
+        token_row = token_cache.get(token_id)
+        if token_id not in token_cache:
+            token_row = await get_token_by_id(conn, token_id)
+            token_cache[token_id] = token_row
+        if token_row is None:
+            continue
+        try:
+            _assert_marketplace_token_access(token_row=token_row, principal=principal, action=action)
+        except ContractError:
+            continue
+        accessible_rows.append(row)
+
+    return accessible_rows
+
+
 async def _publish_trade_matched(
     trade_row: object,
     *,
-    escrow_row: object,
+    escrow_row: object | None,
     buy_order: object,
     sell_order: object,
 ) -> None:
@@ -390,7 +437,7 @@ async def _publish_trade_matched(
         "fee_sat": int(_row_value(trade_row, "fee_sat", 0)),
         "status": _row_value(trade_row, "status"),
         "settled_at": _isoformat(_row_value(trade_row, "settled_at")),
-        "escrow_id": str(_row_value(escrow_row, "id")),
+        "escrow_id": None if escrow_row is None else str(_row_value(escrow_row, "id")),
         "multisig_address": _row_value(escrow_row, "multisig_address"),
         "escrow_status": _row_value(escrow_row, "status"),
         "escrow_expires_at": _isoformat(_row_value(escrow_row, "expires_at")),
@@ -473,11 +520,35 @@ def _insufficient_token_balance_error() -> ContractError:
     )
 
 
+def _insufficient_liquidity_error() -> ContractError:
+    return ContractError(
+        code="insufficient_liquidity",
+        message="No sell order can immediately fulfill this purchase.",
+        status_code=status.HTTP_409_CONFLICT,
+    )
+
+
 def _invalid_access_token_error() -> ContractError:
     return ContractError(
         code="invalid_token",
         message="Access token is invalid or expired.",
         status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+def _invalid_api_key_error() -> ContractError:
+    return ContractError(
+        code="invalid_api_key",
+        message="API key is invalid, expired, or revoked.",
+        status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+def _auth_service_unavailable_error() -> ContractError:
+    return ContractError(
+        code="auth_service_unavailable",
+        message="API key verification is currently unavailable.",
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
     )
 
 
@@ -503,6 +574,51 @@ def _escrow_not_found_error() -> ContractError:
         message="Escrow not found for this trade.",
         status_code=status.HTTP_404_NOT_FOUND,
     )
+
+
+def _token_visibility(row: object) -> str:
+    return str(_row_value(row, "visibility", "public") or "public")
+
+
+def _private_token_api_key_error() -> ContractError:
+    return ContractError(
+        code="private_token_requires_api_key",
+        message="Private marketplace tokens are only available through owner-managed API key integrations.",
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def _private_token_scope_error(scope: str) -> ContractError:
+    return ContractError(
+        code="forbidden",
+        message=f"API key must include {scope} to access this private token.",
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def _private_token_owner_error() -> ContractError:
+    return ContractError(
+        code="forbidden",
+        message="This private token can only be accessed with API keys generated by the token owner.",
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def _assert_marketplace_token_access(
+    *,
+    token_row: object,
+    principal: AuthenticatedPrincipal,
+    action: str,
+) -> None:
+    if _token_visibility(token_row) != "private":
+        return
+    if principal.auth_method != "api_key":
+        raise _private_token_api_key_error()
+    required_scope = "marketplace:private:read" if action == "read" else "marketplace:private:trade"
+    if required_scope not in principal.scopes:
+        raise _private_token_scope_error(required_scope)
+    if str(_row_value(token_row, "asset_owner_id")) != principal.id:
+        raise _private_token_owner_error()
 
 
 async def _enforce_kyc_threshold(
@@ -1052,15 +1168,18 @@ async def contract_exception_handler(request: Request, exc: ContractError):
 
 async def _get_current_principal(
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer_scheme),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> AuthenticatedPrincipal:
-    if credentials is None:
+    if credentials is None and not x_api_key:
         raise ContractError(
             code="authentication_required",
             message="Authentication is required.",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    return await _principal_from_access_token(credentials.credentials)
+    if credentials is not None:
+        return await _principal_from_access_token(credentials.credentials)
+    return await _principal_from_api_key(x_api_key or "")
 
 
 async def _principal_from_access_token(access_token: str) -> AuthenticatedPrincipal:
@@ -1084,7 +1203,60 @@ async def _principal_from_access_token(access_token: str) -> AuthenticatedPrinci
     if row is None or _row_value(row, "deleted_at") is not None:
         raise _invalid_access_token_error()
 
-    return AuthenticatedPrincipal(id=user_id, role=role)
+    return AuthenticatedPrincipal(id=user_id, role=role, auth_method="jwt")
+
+
+async def _principal_from_api_key(api_key: str) -> AuthenticatedPrincipal:
+    try:
+        verification = await verify_api_key_via_auth_service(api_key, settings=settings)
+    except RuntimeError as exc:
+        raise _auth_service_unavailable_error() from exc
+
+    if not verification.valid or verification.user_id is None:
+        raise _invalid_api_key_error()
+
+    async with _runtime_engine().connect() as conn:
+        row = await get_user_by_id(conn, verification.user_id)
+
+    if row is None or _row_value(row, "deleted_at") is not None:
+        raise _invalid_api_key_error()
+
+    return AuthenticatedPrincipal(
+        id=verification.user_id,
+        role=str(_row_value(row, "role") or "user"),
+        auth_method="api_key",
+        scopes=tuple(verification.scopes),
+        api_key_id=verification.key_id,
+    )
+
+
+def _require_api_key_scopes(*required_scopes: str):
+    async def dependency(
+        principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    ) -> AuthenticatedPrincipal:
+        if principal.auth_method != "api_key":
+            return principal
+        if not all(scope in principal.scopes for scope in required_scopes):
+            raise ContractError(
+                code="forbidden",
+                message="API key does not grant access to this resource.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        return principal
+
+    return dependency
+
+
+async def _reject_api_key_auth(
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+) -> AuthenticatedPrincipal:
+    if principal.auth_method == "api_key":
+        raise ContractError(
+            code="api_key_forbidden",
+            message="API key authentication is not allowed for this operation.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    return principal
 
 
 def _utc_now_iso() -> str:
@@ -1119,6 +1291,8 @@ async def _price_snapshot(token_id: uuid.UUID) -> dict[str, Any] | None:
     async with _runtime_engine().connect() as conn:
         token_row = await get_token_by_id(conn, token_id)
         if token_row is None:
+            return None
+        if _token_visibility(token_row) == "private":
             return None
 
         rows = await list_orders(conn, token_id=token_id)
@@ -1296,12 +1470,13 @@ async def ready():
 async def place_order(
     request: Request,
     body: OrderCreateRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("marketplace:orders:create")),
 ):
     async with _runtime_engine().connect() as conn:
         token_row = await get_token_by_id(conn, body.token_id)
         if token_row is None:
             raise _token_not_found_error()
+        _assert_marketplace_token_access(token_row=token_row, principal=principal, action="trade")
 
         wallet_row = await get_wallet_by_user_id(conn, principal.id)
         if wallet_row is None:
@@ -1323,6 +1498,25 @@ async def place_order(
         # Enforce KYC for high-value trades
         trade_total_sat = body.quantity * body.price_sat
         await _enforce_kyc_threshold(conn, principal.id, trade_total_sat)
+
+        instant_match = None
+        primary_seller_id = None
+        if body.execution_mode == "instant":
+            instant_match = await find_best_match(
+                conn,
+                token_id=body.token_id,
+                incoming_side=body.side,
+                incoming_price=body.price_sat,
+                requester_id=principal.id,
+            )
+            if instant_match is None or _remaining_quantity(instant_match) < body.quantity:
+                owner_id = _row_value(token_row, "asset_owner_id")
+                owner_balance = await get_token_balance_for_user(conn, owner_id, body.token_id)
+                owner_available = int(_row_value(owner_balance, "balance", 0))
+                if str(owner_id) == principal.id or owner_available < body.quantity:
+                    raise _insufficient_liquidity_error()
+                primary_seller_id = owner_id
+                instant_match = None
 
         triggered_at = None
         if body.order_type == "stop_limit" and body.trigger_price_sat is not None:
@@ -1348,7 +1542,48 @@ async def place_order(
 
         published_trades: list[tuple[object, object, object, object]] = []
 
-        while triggered_at is not None or body.order_type == "limit":
+        if body.execution_mode == "instant":
+            sell_order = instant_match
+            if sell_order is None:
+                sell_order = await create_order(
+                    conn,
+                    user_id=primary_seller_id,
+                    token_id=body.token_id,
+                    side="sell",
+                    order_type="limit",
+                    quantity=body.quantity,
+                    price_sat=body.price_sat,
+                )
+
+            trade_price = int(_row_value(sell_order, "price_sat", 0))
+            try:
+                trade_row = await settle_trade(
+                    conn,
+                    buy_order=order_row,
+                    sell_order=sell_order,
+                    quantity=body.quantity,
+                    price_sat=trade_price,
+                )
+            except ValueError as exc:
+                await cancel_order(conn, order_id=_row_value(order_row, "id"), user_id=principal.id)
+                if primary_seller_id is not None:
+                    await cancel_order(conn, order_id=_row_value(sell_order, "id"), user_id=primary_seller_id)
+                if str(exc) == "insufficient_token_balance":
+                    raise _insufficient_liquidity_error() from exc
+                raise
+            except LookupError as exc:
+                await cancel_order(conn, order_id=_row_value(order_row, "id"), user_id=principal.id)
+                if primary_seller_id is not None:
+                    await cancel_order(conn, order_id=_row_value(sell_order, "id"), user_id=primary_seller_id)
+                if str(exc) == "wallet_not_found":
+                    raise _wallet_not_found_error() from exc
+                raise
+
+            order_row = await get_order_by_id(conn, _row_value(order_row, "id")) or order_row
+            sell_order = await get_order_by_id(conn, _row_value(sell_order, "id")) or sell_order
+            published_trades.append((trade_row, None, order_row, sell_order))
+
+        while body.execution_mode != "instant" and (triggered_at is not None or body.order_type == "limit"):
             current_order = await get_order_by_id(conn, _row_value(order_row, "id"))
             if current_order is None or _remaining_quantity(current_order) <= 0:
                 order_row = current_order or order_row
@@ -1389,6 +1624,7 @@ async def place_order(
                     sell_order=sell_order,
                     quantity=fill_quantity,
                     price_sat=trade_price,
+                    multisig_mode="external_api" if _token_visibility(token_row) == "private" else "standard",
                 )
             except ValueError as exc:
                 if str(exc) == "insufficient_token_balance":
@@ -1433,6 +1669,7 @@ async def place_order(
                 "token_id": str(body.token_id),
                 "side": body.side,
                 "order_type": body.order_type,
+                "execution_mode": body.execution_mode,
                 "quantity": body.quantity,
                 "price_sat": body.price_sat,
                 "trigger_price_sat": body.trigger_price_sat,
@@ -1466,15 +1703,21 @@ async def get_orders(
     status_filter: str | None = Query(default=None, alias="status", pattern="^(open|partially_filled|filled|cancelled)$"),
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("marketplace:orders:read")),
 ):
     async with _runtime_engine().connect() as conn:
+        if token_id is not None:
+            token_row = await get_token_by_id(conn, token_id)
+            if token_row is None:
+                raise _token_not_found_error()
+            _assert_marketplace_token_access(token_row=token_row, principal=principal, action="read")
         rows = await list_orders(
             conn,
             token_id=token_id,
             side=side,
             status=status_filter,
         )
+        rows = await _filter_rows_by_token_access(conn, rows=rows, principal=principal, action="read")
 
     page, next_cursor = _build_page(rows, cursor=cursor, limit=limit, label="order")
     return OrderListResponse(
@@ -1486,12 +1729,13 @@ async def get_orders(
 @app.get("/orderbook/{token_id}", response_model=OrderBookResponse)
 async def get_order_book(
     token_id: uuid.UUID,
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("marketplace:orders:read")),
 ):
     async with _runtime_engine().connect() as conn:
         token_row = await get_token_by_id(conn, token_id)
         if token_row is None:
             raise _token_not_found_error()
+        _assert_marketplace_token_access(token_row=token_row, principal=principal, action="read")
 
         rows = await list_orders(conn, token_id=token_id)
         last_trade_price = await get_last_trade_price_for_token(conn, token_id)
@@ -1530,7 +1774,7 @@ async def get_order_book(
 async def delete_order(
     request: Request,
     order_id: uuid.UUID,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("marketplace:orders:cancel")),
 ):
     async with _runtime_engine().connect() as conn:
         existing_order = await get_order_by_id(conn, order_id)
@@ -1547,6 +1791,10 @@ async def delete_order(
                 message="You do not have permission to access this resource.",
                 status_code=status.HTTP_403_FORBIDDEN,
             )
+        token_row = await get_token_by_id(conn, _row_value(existing_order, "token_id"))
+        if token_row is None:
+            raise _token_not_found_error()
+        _assert_marketplace_token_access(token_row=token_row, principal=principal, action="trade")
 
         if _row_value(existing_order, "status") not in {"open", "partially_filled"}:
             raise ContractError(
@@ -1577,7 +1825,7 @@ async def delete_order(
 @app.get("/escrows/{trade_id}", response_model=EscrowResponse)
 async def get_escrow_details(
     trade_id: uuid.UUID,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("marketplace:trades:read")),
 ):
     async with _runtime_engine().connect() as conn:
         trade_row = await get_trade_by_id(conn, trade_id)
@@ -1613,7 +1861,7 @@ async def sign_escrow_release(
     trade_id: uuid.UUID,
     body: EscrowSignRequest,
     x_2fa_code: str | None = Header(default=None, alias="X-2FA-Code"),
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_reject_api_key_auth),
 ):
     async with _runtime_engine().connect() as conn:
         trade_row = await get_trade_by_id(conn, trade_id)
@@ -1798,18 +2046,209 @@ async def sign_escrow_release(
     return EscrowResponse(escrow=_escrow_out(escrow_row)).model_dump(mode="json")
 
 
+@app.post("/escrows/{trade_id}/external-sign", response_model=EscrowResponse)
+async def external_sign_escrow_release(
+    request: Request,
+    trade_id: uuid.UUID,
+    body: ExternalEscrowSignRequest,
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("marketplace:escrows:sign")),
+):
+    if principal.auth_method != "api_key":
+        raise _private_token_api_key_error()
+
+    async with _runtime_engine().connect() as conn:
+        trade_row = await get_trade_by_id(conn, trade_id)
+        if trade_row is None:
+            raise _trade_not_found_error()
+
+        buy_order = await get_order_by_id(conn, _row_value(trade_row, "buy_order_id"))
+        sell_order = await get_order_by_id(conn, _row_value(trade_row, "sell_order_id"))
+        if buy_order is None or sell_order is None:
+            raise _trade_not_found_error()
+
+        buyer_id = str(_row_value(buy_order, "user_id"))
+        seller_id = str(_row_value(sell_order, "user_id"))
+        if body.signer_role == "buyer" and principal.id != buyer_id:
+            raise ContractError(
+                code="forbidden",
+                message="Only the buyer can sign with the buyer role.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        if body.signer_role == "seller" and principal.id != seller_id:
+            raise ContractError(
+                code="forbidden",
+                message="Only the seller can sign with the seller role.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        if body.signer_role == "platform" and principal.role != "admin":
+            raise ContractError(
+                code="forbidden",
+                message="Only admin API keys can sign with the platform role.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        escrow_row = await get_escrow_by_trade_id(conn, trade_id)
+        if escrow_row is None:
+            raise _escrow_not_found_error()
+        if _row_value(escrow_row, "status") not in {"funded", "inspection_pending"}:
+            raise ContractError(
+                code="escrow_state_conflict",
+                message="Escrow must be funded before external multisig signatures can be submitted.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        escrow_row = await _prepare_escrow_transaction_pset(
+            conn,
+            trade_row=trade_row,
+            escrow_row=escrow_row,
+            payout_mode="release",
+        )
+        settlement_metadata = dict(_row_value(escrow_row, "settlement_metadata") or {})
+        unsigned_pset = settlement_metadata.get("release_unsigned_pset")
+        if not unsigned_pset:
+            raise ContractError(
+                code="settlement_pset_missing",
+                message="Escrow settlement PSET is not available yet.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+        if _liquid_rpc_client is None:
+            raise ContractError(
+                code="elements_rpc_unavailable",
+                message="Elements RPC is unavailable for escrow settlement.",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        collected_signatures = dict(_row_value(escrow_row, "collected_signatures") or {})
+        release_signatures = _signature_bucket(collected_signatures, path="release")
+        if body.signer_role in release_signatures:
+            raise ContractError(
+                code="signature_already_recorded",
+                message="This participant has already signed the external release transaction.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        base_pset = settlement_metadata.get("release_signed_pset") or unsigned_pset
+        pset = PSET.from_string(str(base_pset))
+        if body.pset is not None:
+            pset = _merge_pset_inputs(pset, PSET.from_string(body.pset))
+
+        signature_source = "api_key_pset_upload" if body.pset is not None else "api_key_custodial"
+        if body.signer_role == "platform":
+            platform_signer = build_platform_signer(settings)
+            platform_private_key = platform_signer.private_key()
+            if not platform_private_key:
+                raise ContractError(
+                    code="platform_signer_unavailable",
+                    message="Platform signer private key is unavailable.",
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+            pset.sign_with(ec.PrivateKey(bytes.fromhex(platform_private_key)))
+        else:
+            signer_material = await resolve_escrow_signing_material(conn, principal.id)
+            if signer_material is None and body.pset is None:
+                raise ContractError(
+                    code="signed_pset_required",
+                    message="A signer-supplied PSET is required for this escrow participant.",
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                )
+            if signer_material is not None:
+                pset.sign_with(derive_private_key(signer_material))
+
+        signature_record = _signature_record(
+            signer_role=body.signer_role,
+            actor_id=principal.id,
+            signature_fingerprint=hashlib.sha256(pset.to_string().encode("utf-8")).hexdigest(),
+            source=signature_source,
+        )
+        release_signatures[body.signer_role] = signature_record
+        collected_signatures["release"] = release_signatures
+        settlement_metadata["release_signed_pset"] = pset.to_string()
+        settlement_metadata["release_last_signed_by"] = body.signer_role
+
+        if len(release_signatures) >= 2:
+            from embit.liquid.finalizer import finalize_psbt
+
+            processed = await _liquid_rpc_client.walletprocesspsbt(pset.to_string(), sign=False)
+            final_pset = PSET.from_string(str(processed.get("psbt") or pset.to_string()))
+            finalized_tx = finalize_psbt(final_pset)
+            if finalized_tx is None:
+                raise ContractError(
+                    code="settlement_pset_incomplete",
+                    message="Escrow settlement PSET is incomplete after the required external signatures were applied.",
+                    status_code=status.HTTP_409_CONFLICT,
+                )
+
+            txid = await _liquid_rpc_client.sendrawtransaction(finalized_tx.serialize().hex())
+            settlement_metadata.update(
+                {
+                    "release_signed_pset": final_pset.to_string(),
+                    "broadcast_at": _utc_now_iso(),
+                    "release_txid": txid,
+                    "multisig_mode": "external_api",
+                }
+            )
+            trade_row, escrow_row = await process_escrow_signature(
+                conn,
+                escrow_row=escrow_row,
+                trade_row=trade_row,
+                buy_order=buy_order,
+                sell_order=sell_order,
+                collected_signatures=collected_signatures,
+                release_txid=txid,
+                settlement_metadata=settlement_metadata,
+            )
+        else:
+            settlement_metadata["multisig_mode"] = "external_api"
+            escrow_row = await record_escrow_signature(
+                conn,
+                escrow_row=escrow_row,
+                signer_role=body.signer_role,
+                signature_path="release",
+                signature_record=signature_record,
+                settlement_metadata=settlement_metadata,
+            )
+
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="marketplace.escrow.external_sign_release",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="escrow",
+            target_id=_row_value(escrow_row, "id"),
+            metadata={"trade_id": str(trade_id), "signer_role": body.signer_role},
+        )
+
+    if _row_value(escrow_row, "status") == "released":
+        try:
+            await _publish_escrow_released(
+                trade_row,
+                escrow_row=escrow_row,
+                buy_order=buy_order,
+                sell_order=sell_order,
+            )
+        except Exception:
+            logger.exception("Escrow released event publish failed for external sign trade %s", trade_id)
+
+    return EscrowResponse(escrow=_escrow_out(escrow_row)).model_dump(mode="json")
+
+
 @app.get("/trades", response_model=TradeListResponse)
 async def get_trade_history(
     token_id: uuid.UUID | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("marketplace:trades:read")),
 ):
     async with _runtime_engine().connect() as conn:
-        if token_id is not None and await get_token_by_id(conn, token_id) is None:
-            raise _token_not_found_error()
-
+        if token_id is not None:
+            token_row = await get_token_by_id(conn, token_id)
+            if token_row is None:
+                raise _token_not_found_error()
+            _assert_marketplace_token_access(token_row=token_row, principal=principal, action="read")
         rows = await list_trades(conn, token_id=token_id)
+        rows = await _filter_rows_by_token_access(conn, rows=rows, principal=principal, action="read")
 
     page, next_cursor = _build_page(rows, cursor=cursor, limit=limit, label="trade")
     return TradeListResponse(
@@ -1913,7 +2352,7 @@ async def create_dispute(
     request: Request,
     trade_id: uuid.UUID,
     body: DisputeOpenRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_reject_api_key_auth),
 ):
     async with _runtime_engine().connect() as conn:
         trade_row = await get_trade_by_id(conn, trade_id)
@@ -1988,7 +2427,7 @@ async def resolve_trade_dispute(
     request: Request,
     trade_id: uuid.UUID,
     body: DisputeResolveRequest,
-    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    principal: AuthenticatedPrincipal = Depends(_reject_api_key_auth),
 ):
     if principal.role != "admin":
         raise ContractError(

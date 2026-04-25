@@ -14,12 +14,16 @@ TradeStatus = Literal["pending", "escrowed", "settled", "disputed", "cancelled"]
 EscrowStatus = Literal["created", "funded", "inspection_pending", "released", "refunded", "disputed", "expired"]
 DisputeStatus = Literal["open", "resolved"]
 DisputeResolution = Literal["refund", "release"]
+TokenVisibility = Literal["public", "private"]
+ExternalEscrowSignerRole = Literal["buyer", "seller", "platform"]
+OrderExecutionMode = Literal["order", "instant"]
 
 
 class OrderCreateRequest(BaseModel):
     token_id: UUID
     side: OrderSide
     order_type: OrderType = "limit"
+    execution_mode: OrderExecutionMode = "order"
     quantity: int = Field(gt=0)
     price_sat: int = Field(gt=0)
     trigger_price_sat: int | None = Field(default=None, gt=0)
@@ -30,6 +34,11 @@ class OrderCreateRequest(BaseModel):
             raise ValueError("trigger_price_sat is required for stop_limit orders")
         if self.order_type == "limit" and self.trigger_price_sat is not None:
             raise ValueError("trigger_price_sat is only allowed for stop_limit orders")
+        if self.execution_mode == "instant":
+            if self.side != "buy":
+                raise ValueError("execution_mode=instant is only supported for buy orders")
+            if self.order_type != "limit":
+                raise ValueError("execution_mode=instant only supports limit orders")
         return self
 
 
@@ -106,6 +115,7 @@ class EscrowOut(BaseModel):
     refund_txid: str | None = None
     status: EscrowStatus
     expires_at: datetime
+    multisig_mode: Literal["standard", "external_api"] = "standard"
     settlement_metadata: dict[str, Any] | None = None
 
 
@@ -115,6 +125,10 @@ class EscrowResponse(BaseModel):
 
 class EscrowSignRequest(BaseModel):
     pset: str | None = Field(default=None, min_length=1)
+
+
+class ExternalEscrowSignRequest(EscrowSignRequest):
+    signer_role: ExternalEscrowSignerRole
 
 
 class DisputeOpenRequest(BaseModel):

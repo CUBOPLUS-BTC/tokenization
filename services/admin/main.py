@@ -37,8 +37,8 @@ from common import (
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
+from common.db.schema_check import ensure_schema_ready
 from admin.db import (
-    create_course,
     disburse_treasury,
     get_dispute_by_trade_id,
     get_user_by_id,
@@ -48,9 +48,6 @@ from admin.db import (
 )
 from admin.schemas import (
     AdminDisputeResolveRequest,
-    CourseOut,
-    CourseResponse,
-    CreateCourseRequest,
     DisputeOut,
     DisputeResponse,
     ReferralPlatformSummaryResponse,
@@ -149,9 +146,19 @@ def _runtime_engine() -> AsyncEngine | object:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    _runtime_engine()
+    engine = _runtime_engine()
+    await ensure_schema_ready(
+        engine,
+        (
+            "users",
+            "treasury",
+            "disputes",
+            "referral_rewards",
+            "yield_accruals",
+        ),
+    )
     yield
-    await _runtime_engine().dispose()
+    await engine.dispose()
 
 
 def _error(code: str, message: str, status_code: int) -> JSONResponse:
@@ -285,17 +292,6 @@ def _user_out(row: object) -> UserOut:
     )
 
 
-def _course_out(row: object) -> CourseOut:
-    return CourseOut(
-        id=str(_row_value(row, "id")),
-        title=_row_value(row, "title"),
-        description=_row_value(row, "description"),
-        category=_row_value(row, "category"),
-        difficulty=_row_value(row, "difficulty"),
-        content_url=_row_value(row, "content_url"),
-    )
-
-
 def _treasury_entry_out(row: object) -> TreasuryEntryOut:
     return TreasuryEntryOut(
         id=str(_row_value(row, "id")),
@@ -305,6 +301,11 @@ def _treasury_entry_out(row: object) -> TreasuryEntryOut:
         reference_id=(
             str(_row_value(row, "source_trade_id"))
             if _row_value(row, "source_trade_id") is not None
+            else None
+        ),
+        source_referral_reward_id=(
+            str(_row_value(row, "source_referral_reward_id"))
+            if _row_value(row, "source_referral_reward_id") is not None
             else None
         ),
         description=_row_value(row, "description"),
@@ -325,7 +326,7 @@ def _dispute_out(row: object) -> DisputeOut:
             if _row_value(row, "resolved_by") is not None
             else None
         ),
-        notes=None,
+        notes=_row_value(row, "resolution_notes"),
         resolved_at=_aware_datetime(_row_value(row, "resolved_at")),
         created_at=_aware_datetime(_row_value(row, "created_at")),
         updated_at=_aware_datetime(_row_value(row, "updated_at")),
@@ -407,7 +408,6 @@ install_http_security(
     settings,
     sensitive_paths=(
         "/users/",
-        "/courses",
         "/treasury/disburse",
         "/escrows/",
     ),
@@ -508,46 +508,6 @@ async def update_user_role_endpoint(
     record_business_event("admin_user_role_update")
     return _user_out(row)
 
-
-# ---------------------------------------------------------------------------
-# 7.4  Create Course
-# ---------------------------------------------------------------------------
-
-
-@app.post(
-    "/courses",
-    status_code=status.HTTP_201_CREATED,
-    response_model=CourseResponse,
-    summary="Create a new course (admin only)",
-)
-async def create_course_endpoint(
-    request: Request,
-    body: CreateCourseRequest,
-    principal: AuthenticatedPrincipal = Depends(_require_admin),
-):
-    async with _runtime_engine().connect() as conn:
-        row = await create_course(
-            conn,
-            title=body.title,
-            description=body.description,
-            content_url=str(body.content_url),
-            category=body.category,
-            difficulty=body.difficulty,
-        )
-        await record_audit_event(
-            conn,
-            settings=settings,
-            request=request,
-            action="admin.course.create",
-            actor_id=principal.id,
-            actor_role=principal.role,
-            target_type="course",
-            target_id=_row_value(row, "id"),
-            metadata={"category": body.category, "difficulty": body.difficulty},
-        )
-
-    record_business_event("admin_course_create")
-    return CourseResponse(course=_course_out(row)).model_dump(mode="json")
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +611,10 @@ async def resolve_escrow_dispute_endpoint(
                 trade_id=trade_id,
                 resolved_by=principal.id,
                 resolution=db_resolution,
+                resolution_txid=body.resolution_txid,
+                collected_signatures=body.collected_signatures,
+                settlement_metadata=body.settlement_metadata,
+                resolution_notes=body.notes,
             )
         except LookupError as exc:
             return _error(
@@ -760,3 +724,4 @@ async def get_yield_user_summary(
 
 if __name__ == "__main__":
     uvicorn.run(app, host=settings.service_host, port=settings.service_port)
+

@@ -9,9 +9,9 @@ import grpc
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from common.config import Settings
-from common.metrics import record_business_event
-from common.db.metadata import (
+from services.common.config import Settings
+from services.common.metrics import record_business_event
+from services.common.db.metadata import (
     wallets as wallets_table,
     onchain_deposits as deposits_table,
     transactions as transactions_table,
@@ -26,9 +26,13 @@ from .db import (
     update_transaction_status,
     update_transaction_status_by_txid,
 )
-from lnd_client import LNDClient
+from .lnd_client import LNDClient
 
 logger = logging.getLogger(__name__)
+
+
+def get_bitcoin_rpc(settings: Settings):
+    return get_liquid_rpc(settings)
 
 
 def _utc_now() -> datetime:
@@ -38,7 +42,7 @@ def _utc_now() -> datetime:
 def _confirmation_threshold(settings: Settings) -> int:
     if settings.bitcoin_network == "mainnet":
         return 6
-    if settings.bitcoin_network in {"testnet", "signet"}:
+    if settings.bitcoin_network in {"testnet", "testnet4", "signet"}:
         return 3
     return 1
 
@@ -103,7 +107,7 @@ async def _credit_confirmed_deposit(
 
 
 async def reconcile_deposits(engine: AsyncEngine, settings: Settings) -> None:
-    liquid_rpc = get_liquid_rpc(settings)
+    liquid_rpc = get_bitcoin_rpc(settings)
     confirmation_threshold = _confirmation_threshold(settings)
 
     async with engine.connect() as conn:
@@ -112,29 +116,45 @@ async def reconcile_deposits(engine: AsyncEngine, settings: Settings) -> None:
     if not address_rows:
         return
 
+    # Primary lookup by script_pubkey: it is encoding-independent and survives the
+    # confidential ("el1q…") → unconfidential ("ert1q…") address translation that
+    # Elements applies to the `address` field in listunspent results.
+    script_pubkey_map = {
+        row.script_pubkey: {"wallet_address_id": row.id, "wallet_id": row.wallet_id}
+        for row in address_rows
+        if getattr(row, "script_pubkey", None)
+    }
+    # Fallback lookup by stored address string (handles rows without script_pubkey and
+    # the case where Elements returns the same address format we stored).
     address_map = {
         row.address: {"wallet_address_id": row.id, "wallet_id": row.wallet_id}
         for row in address_rows
     }
+    address_list = [row.address for row in address_rows]
 
     try:
-        unspents = await liquid_rpc.listunspent(0, 9_999_999, list(address_map.keys()))
+        unspents = await liquid_rpc.listunspent(0, 9_999_999, address_list)
     except ElementsRPCError as exc:
         logger.warning("Deposit reconciliation skipped because Elements RPC is unavailable: %s", exc)
         return
 
     async with engine.connect() as conn:
         for utxo in unspents:
-            address = utxo.get("address")
             txid = utxo.get("txid")
             vout = utxo.get("vout")
             confirmations = int(utxo.get("confirmations", 0) or 0)
             amount_sat = _to_sats(utxo.get("amount", 0))
 
-            if not address or txid is None or vout is None or amount_sat <= 0:
+            if txid is None or vout is None or amount_sat <= 0:
                 continue
 
-            address_info = address_map.get(address)
+            # scriptPubKey is canonical: it matches regardless of whether Elements
+            # returns the confidential or unconfidential form of the address.
+            utxo_script = utxo.get("scriptPubKey", "")
+            address_info = script_pubkey_map.get(utxo_script)
+            if address_info is None:
+                # Fallback: match by the address string returned in the UTXO.
+                address_info = address_map.get(utxo.get("address", ""))
             if address_info is None:
                 continue
 

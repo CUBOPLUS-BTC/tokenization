@@ -31,6 +31,7 @@ This specification defines the implementation plan for a **Real World Asset (RWA
 | [Database Schema](./database-schema.md)   | Entity definitions, relations, and migrations |
 | [API Contracts](./api-contracts.md)       | RESTful endpoint definitions and payloads     |
 | [Frontend Spec](./frontend-spec.md)       | UI/UX structure, pages, and component tree    |
+| [Nostr Zap Campaigns](./nostr-zap-campaigns.md) | Campaign automation for Nostr-triggered Lightning zaps |
 
 ### Design Principles
 

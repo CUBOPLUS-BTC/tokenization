@@ -13,25 +13,45 @@ def test_beta_environment_template_targets_signet():
 
 
 def test_public_beta_compose_includes_observability_stack():
-    content = (REPO_ROOT / "infra" / "docker-compose.public-beta.yml").read_text(encoding="utf-8")
+    beta_content = (REPO_ROOT / "infra" / "docker-compose.public-beta.yml").read_text(encoding="utf-8")
+    observability_content = (REPO_ROOT / "infra" / "docker-compose.observability.yml").read_text(encoding="utf-8")
 
-    assert "docker-compose.observability.yml" in content
-    assert "./.env.beta" in content
-    assert "prometheus:" in content
-    assert "grafana:" in content
-    assert "alertmanager:" in content
+    assert "./infra/.env.beta" in beta_content
+    assert "gateway:" in beta_content
+    assert "prometheus:" in observability_content
+    assert "grafana:" in observability_content
+    assert "alertmanager:" in observability_content
 
 
 def test_gateway_exposes_metrics_for_all_services():
-    content = (REPO_ROOT / "services" / "gateway" / "default.conf").read_text(encoding="utf-8")
+    content = (REPO_ROOT / "services" / "gateway" / "gateway.conf").read_text(encoding="utf-8")
 
     assert "/metrics/auth" in content
     assert "/metrics/wallet" in content
     assert "/metrics/tokenization" in content
     assert "/metrics/marketplace" in content
-    assert "/metrics/education" in content
     assert "/metrics/nostr" in content
     assert "/metrics/admin" in content
+
+
+def test_gateway_handles_base_service_paths_without_redirects():
+    content = (REPO_ROOT / "services" / "gateway" / "gateway.conf").read_text(encoding="utf-8")
+
+    assert "location = /v1/auth {" in content
+    assert "location = /v1/wallet {" in content
+    assert "location = /v1/tokenization {" in content
+    assert "location = /v1/marketplace {" in content
+    assert "location = /v1/nostr {" in content
+    assert "location = /v1/admin {" in content
+
+
+def test_gateway_docs_describe_api_only_local_stack_and_api_key_browser_headers():
+    content = (REPO_ROOT / "services" / "gateway" / "README.md").read_text(encoding="utf-8")
+
+    assert "does not boot a bundled frontend service" in content
+    assert "X-API-Key" in content
+    assert "X-2FA-Code" in content
+    assert "X-Idempotency-Key" in content
 
 
 def test_public_beta_runbook_documents_release_gate():
@@ -53,3 +73,5 @@ def test_prometheus_and_alertmanager_cover_production_and_beta():
     assert "SettlementFailureDetected" in alerts
     assert "production-settlement" in alertmanager
     assert "beta-settlement" in alertmanager
+
+

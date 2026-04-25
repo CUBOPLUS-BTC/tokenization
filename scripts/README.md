@@ -69,10 +69,84 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
+### Docker Compose: `migrate` sidecar
+
+Stack compose files run a one-shot **`migrate`** container (`services/migrate/Dockerfile`) that executes `scripts/db_bootstrap.py --migrate-only`. If you wipe the Postgres volume but an old **`migrate`** container is still in “exited successfully” state, Compose may not re-run migrations; app services can then start against an empty database.
+
+**Recommended:** rebuild and re-run migrations before the rest of the stack:
+
+```powershell
+# Windows (default: infra/docker-compose.local.yml)
+.\scripts\compose-up.ps1
+# Optional: other compose file
+.\scripts\compose-up.ps1 -ComposeFile infra/docker-compose.regtest.yml
+```
+
+```bash
+# Unix (default: infra/docker-compose.local.yml)
+chmod +x scripts/compose-up.sh
+./scripts/compose-up.sh
+# Optional: other compose file
+./scripts/compose-up.sh infra/docker-compose.regtest.yml
+```
+
+Equivalent manual steps:
+
+```bash
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d --force-recreate --build migrate
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d
+```
+
+**Manual validation:** after `up`, confirm tables exist, e.g. `docker exec <postgres-container> psql -U <user> -d <db> -c "\dt"`.
+
+### Schema smoke test (PostgreSQL required)
+
+`tests/test_migrations_schema.py` resets the `public` schema and runs `alembic upgrade head`. Set `DATABASE_URL` (e.g. `postgresql+pg8000://user:pass@localhost:5432/dbname`):
+
+```powershell
+# Example: ephemeral Postgres
+docker run -d --rm --name tok_pg_test -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:16
+$env:DATABASE_URL = "postgresql+pg8000://postgres:test@127.0.0.1:55432/postgres"
+python -m pytest tests/test_migrations_schema.py -v
+```
+
+After a **squashed** migration or any change that rewrites history, existing databases must be reset (drop/recreate schema or volume) before `alembic upgrade head`.
+
+### Bootstrap migrations + seeders manually
+
+The repository now includes `scripts/db_bootstrap.py`, which runs:
+
+1. `alembic upgrade head`
+2. Idempotent initial seeders
+
+Current seeded data:
+
+- Initial admin user from `INITIAL_ADMIN_*` environment variables
+
+Recommended runner:
+
+```bash
+python scripts/run_db_bootstrap.py --profile local
+python scripts/run_db_bootstrap.py --profile regtest
+python scripts/run_db_bootstrap.py --profile public-beta
+python scripts/run_db_bootstrap.py --profile testnet4
+```
+
+For `--profile regtest`, the runner reads `infra/.env.regtest`.
+
+Optional modes:
+
+```bash
+python scripts/run_db_bootstrap.py --profile local --migrate-only
+python scripts/run_db_bootstrap.py --profile local --seed-only
+```
+
+The runner starts a standalone `python:3.11-slim` container on the same Docker network as the selected profile, loads the matching env file, installs migration dependencies, and executes `scripts/db_bootstrap.py`. This keeps bootstrap out of `docker compose up` while preserving service-name DNS such as `postgres`.
+
 ### Validate on a clean local database (zero -> head)
 
 ```bash
-docker compose -f infra/docker-compose.local.yml up -d postgres
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d postgres
 alembic downgrade base
 alembic upgrade head
 alembic current

@@ -1,0 +1,2512 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Wallet Service",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/metrics": {
+      "get": {
+        "tags": [
+          "Observability"
+        ],
+        "summary": "Get Metrics",
+        "operationId": "get_metrics_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "summary": "Ready",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet": {
+      "get": {
+        "tags": [
+          "Wallet"
+        ],
+        "summary": "Get Wallet Summary",
+        "operationId": "get_wallet_summary_wallet_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/yield/summary": {
+      "get": {
+        "tags": [
+          "Wallet"
+        ],
+        "summary": "Get Wallet Yield Summary",
+        "operationId": "get_wallet_yield_summary_wallet_yield_summary_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YieldSummaryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/custody": {
+      "get": {
+        "summary": "Return custody posture for the authenticated wallet",
+        "operationId": "get_wallet_custody_status_wallet_custody_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustodyStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/fiat/onramp/providers": {
+      "get": {
+        "summary": "List supported fiat-to-BTC on-ramp providers",
+        "operationId": "list_fiat_onramp_providers_wallet_fiat_onramp_providers_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FiatOnRampProvidersResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/fiat/onramp/session": {
+      "post": {
+        "summary": "Initiate an external fiat-to-BTC on-ramp handoff",
+        "operationId": "create_fiat_onramp_session_wallet_fiat_onramp_session_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FiatOnRampSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FiatOnRampSessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/lightning/invoices": {
+      "post": {
+        "tags": [
+          "Lightning"
+        ],
+        "summary": "Create Invoice",
+        "operationId": "create_invoice_lightning_invoices_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvoiceCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invoice"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/lightning/payments": {
+      "post": {
+        "tags": [
+          "Lightning"
+        ],
+        "summary": "Pay Invoice",
+        "operationId": "pay_invoice_lightning_payments_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-2FA-Code",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-2Fa-Code"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Payment"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/lightning/invoices/{r_hash}": {
+      "get": {
+        "tags": [
+          "Lightning"
+        ],
+        "summary": "Get Invoice",
+        "operationId": "get_invoice_lightning_invoices__r_hash__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "r_hash",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "R Hash"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Invoice"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/lightning/decode": {
+      "post": {
+        "tags": [
+          "Lightning"
+        ],
+        "summary": "Decode Bolt11",
+        "operationId": "decode_bolt11_lightning_decode_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Bolt11DecodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Bolt11DecodeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/onchain/fees": {
+      "get": {
+        "summary": "Get current on-chain fee estimates",
+        "operationId": "get_onchain_fees_wallet_onchain_fees_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeeEstimateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/qr": {
+      "get": {
+        "summary": "Render a PNG QR code for a wallet string payload",
+        "operationId": "render_qr_code_wallet_qr_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "value",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "title": "Value"
+            }
+          },
+          {
+            "name": "box_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 20,
+              "minimum": 1,
+              "default": 8,
+              "title": "Box Size"
+            }
+          },
+          {
+            "name": "border",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 20,
+              "minimum": 0,
+              "default": 4,
+              "title": "Border"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/onchain/address": {
+      "post": {
+        "summary": "Create a new on-chain deposit address",
+        "operationId": "create_onchain_address_wallet_onchain_address_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OnchainAddressResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/pegin/address": {
+      "get": {
+        "summary": "Create a mainchain peg-in deposit address",
+        "operationId": "get_pegin_address_wallet_pegin_address_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PegInAddressResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/pegin/claim": {
+      "post": {
+        "summary": "Claim a confirmed mainchain peg-in on Liquid",
+        "operationId": "claim_pegin_wallet_pegin_claim_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PegInClaimRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PegInClaimResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/onchain/withdraw": {
+      "post": {
+        "summary": "Submit an on-chain withdrawal",
+        "operationId": "withdraw_onchain_wallet_onchain_withdraw_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-2FA-Code",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-2Fa-Code"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnchainWithdrawalRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OnchainWithdrawalResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/pegout": {
+      "post": {
+        "summary": "Submit a Liquid peg-out to a mainchain Bitcoin address",
+        "operationId": "pegout_to_mainchain_wallet_pegout_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-2FA-Code",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-2Fa-Code"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PegOutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PegOutResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/transactions": {
+      "get": {
+        "summary": "Return paginated wallet transaction history",
+        "operationId": "get_transaction_history_wallet_transactions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "deposit",
+                    "withdrawal",
+                    "ln_send",
+                    "ln_receive",
+                    "escrow_lock",
+                    "escrow_release",
+                    "fee"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionHistoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Bolt11DecodeRequest": {
+        "properties": {
+          "payment_request": {
+            "type": "string",
+            "title": "Payment Request"
+          }
+        },
+        "type": "object",
+        "required": [
+          "payment_request"
+        ],
+        "title": "Bolt11DecodeRequest"
+      },
+      "Bolt11DecodeResponse": {
+        "properties": {
+          "payment_hash": {
+            "type": "string",
+            "title": "Payment Hash"
+          },
+          "amount_sat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Sat"
+          },
+          "amount_msat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amount Msat"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "description_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description Hash"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "expiry": {
+            "type": "integer",
+            "title": "Expiry"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination"
+          },
+          "fallback_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Address"
+          },
+          "network": {
+            "type": "string",
+            "title": "Network"
+          },
+          "route_hints": {
+            "items": {
+              "$ref": "#/components/schemas/RouteHintOut"
+            },
+            "type": "array",
+            "title": "Route Hints"
+          },
+          "is_expired": {
+            "type": "boolean",
+            "title": "Is Expired"
+          }
+        },
+        "type": "object",
+        "required": [
+          "payment_hash",
+          "timestamp",
+          "created_at",
+          "expiry",
+          "expires_at",
+          "network",
+          "is_expired"
+        ],
+        "title": "Bolt11DecodeResponse"
+      },
+      "CustodyStatusResponse": {
+        "properties": {
+          "configured_backend": {
+            "type": "string",
+            "enum": [
+              "software",
+              "hsm"
+            ],
+            "title": "Configured Backend"
+          },
+          "wallet_backend": {
+            "type": "string",
+            "enum": [
+              "software",
+              "hsm"
+            ],
+            "title": "Wallet Backend"
+          },
+          "signer_backend": {
+            "type": "string",
+            "enum": [
+              "software",
+              "hsm"
+            ],
+            "title": "Signer Backend"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "degraded"
+            ],
+            "title": "State"
+          },
+          "key_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Reference"
+          },
+          "signer_key_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signer Key Reference"
+          },
+          "derivation_path": {
+            "type": "string",
+            "title": "Derivation Path"
+          },
+          "seed_exportable": {
+            "type": "boolean",
+            "title": "Seed Exportable"
+          },
+          "withdraw_requires_2fa": {
+            "type": "boolean",
+            "title": "Withdraw Requires 2Fa"
+          },
+          "server_compromise_impact": {
+            "type": "string",
+            "title": "Server Compromise Impact"
+          },
+          "disclaimers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Disclaimers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "configured_backend",
+          "wallet_backend",
+          "signer_backend",
+          "state",
+          "derivation_path",
+          "seed_exportable",
+          "withdraw_requires_2fa",
+          "server_compromise_impact",
+          "disclaimers"
+        ],
+        "title": "CustodyStatusResponse"
+      },
+      "FeeEstimateLevel": {
+        "properties": {
+          "sat_per_vb": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Sat Per Vb"
+          },
+          "target_blocks": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Target Blocks"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "bitcoin_rpc",
+              "elements_rpc",
+              "fallback"
+            ],
+            "title": "Source",
+            "default": "elements_rpc"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sat_per_vb",
+          "target_blocks"
+        ],
+        "title": "FeeEstimateLevel"
+      },
+      "FeeEstimateResponse": {
+        "properties": {
+          "low": {
+            "$ref": "#/components/schemas/FeeEstimateLevel"
+          },
+          "medium": {
+            "$ref": "#/components/schemas/FeeEstimateLevel"
+          },
+          "high": {
+            "$ref": "#/components/schemas/FeeEstimateLevel"
+          }
+        },
+        "type": "object",
+        "required": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "title": "FeeEstimateResponse"
+      },
+      "FiatOnRampProviderStatus": {
+        "properties": {
+          "provider_id": {
+            "type": "string",
+            "title": "Provider Id"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "pending_redirect",
+              "kyc_required",
+              "limited",
+              "unavailable"
+            ],
+            "title": "State"
+          },
+          "supported_fiat_currencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Supported Fiat Currencies"
+          },
+          "supported_countries": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Supported Countries"
+          },
+          "payment_methods": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Payment Methods"
+          },
+          "min_fiat_amount": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Min Fiat Amount"
+          },
+          "max_fiat_amount": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Max Fiat Amount"
+          },
+          "requires_kyc": {
+            "type": "boolean",
+            "title": "Requires Kyc"
+          },
+          "disclaimer": {
+            "type": "string",
+            "title": "Disclaimer"
+          },
+          "external_handoff_url": {
+            "type": "string",
+            "title": "External Handoff Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider_id",
+          "display_name",
+          "state",
+          "supported_fiat_currencies",
+          "supported_countries",
+          "payment_methods",
+          "min_fiat_amount",
+          "max_fiat_amount",
+          "requires_kyc",
+          "disclaimer",
+          "external_handoff_url"
+        ],
+        "title": "FiatOnRampProviderStatus"
+      },
+      "FiatOnRampProvidersResponse": {
+        "properties": {
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/FiatOnRampProviderStatus"
+            },
+            "type": "array",
+            "title": "Providers"
+          },
+          "compliance_notices": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Compliance Notices"
+          }
+        },
+        "type": "object",
+        "required": [
+          "providers",
+          "compliance_notices"
+        ],
+        "title": "FiatOnRampProvidersResponse"
+      },
+      "FiatOnRampSessionRequest": {
+        "properties": {
+          "provider_id": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 2,
+            "title": "Provider Id"
+          },
+          "fiat_currency": {
+            "type": "string",
+            "maxLength": 3,
+            "minLength": 3,
+            "title": "Fiat Currency"
+          },
+          "fiat_amount": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,13}0*$)\\d{0,10}\\.\\d{0,2}0*$)"
+              }
+            ],
+            "title": "Fiat Amount"
+          },
+          "country_code": {
+            "type": "string",
+            "maxLength": 2,
+            "minLength": 2,
+            "title": "Country Code"
+          },
+          "return_url": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Return Url"
+          },
+          "cancel_url": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Cancel Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider_id",
+          "fiat_currency",
+          "fiat_amount",
+          "country_code",
+          "return_url",
+          "cancel_url"
+        ],
+        "title": "FiatOnRampSessionRequest"
+      },
+      "FiatOnRampSessionResponse": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "provider_id": {
+            "type": "string",
+            "title": "Provider Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "pending_redirect",
+              "kyc_required",
+              "limited",
+              "unavailable"
+            ],
+            "title": "State"
+          },
+          "handoff_url": {
+            "type": "string",
+            "title": "Handoff Url"
+          },
+          "deposit_address": {
+            "type": "string",
+            "title": "Deposit Address"
+          },
+          "destination_wallet_id": {
+            "type": "string",
+            "title": "Destination Wallet Id"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "disclaimer": {
+            "type": "string",
+            "title": "Disclaimer"
+          },
+          "compliance_action": {
+            "type": "string",
+            "enum": [
+              "review_terms",
+              "complete_kyc"
+            ],
+            "title": "Compliance Action"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "provider_id",
+          "state",
+          "handoff_url",
+          "deposit_address",
+          "destination_wallet_id",
+          "expires_at",
+          "disclaimer",
+          "compliance_action"
+        ],
+        "title": "FiatOnRampSessionResponse"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Invoice": {
+        "properties": {
+          "payment_request": {
+            "type": "string",
+            "title": "Payment Request",
+            "description": "The bech32 encoded lightning invoice"
+          },
+          "payment_hash": {
+            "type": "string",
+            "title": "Payment Hash",
+            "description": "The hex encoded payment hash"
+          },
+          "r_hash": {
+            "type": "string",
+            "title": "R Hash",
+            "description": "Redundant hex encoded payment hash for LND compatibility"
+          },
+          "amount_sats": {
+            "type": "integer",
+            "title": "Amount Sats",
+            "description": "Amount in satoshis"
+          },
+          "memo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memo"
+          },
+          "status": {
+            "$ref": "#/components/schemas/InvoiceStatus"
+          },
+          "settled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "payment_request",
+          "payment_hash",
+          "r_hash",
+          "amount_sats",
+          "status"
+        ],
+        "title": "Invoice"
+      },
+      "InvoiceCreate": {
+        "properties": {
+          "amount_sats": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Amount Sats",
+            "description": "Amount in satoshis"
+          },
+          "memo": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1024
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memo",
+            "description": "Optional description for the invoice"
+          }
+        },
+        "type": "object",
+        "required": [
+          "amount_sats"
+        ],
+        "title": "InvoiceCreate"
+      },
+      "InvoiceStatus": {
+        "type": "string",
+        "enum": [
+          "SETTLED",
+          "OPEN",
+          "CANCELED",
+          "ACCEPTED"
+        ],
+        "title": "InvoiceStatus"
+      },
+      "OnchainAddressResponse": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "title": "Address"
+          },
+          "unconfidential_address": {
+            "type": "string",
+            "title": "Unconfidential Address"
+          },
+          "type": {
+            "type": "string",
+            "const": "liquid_confidential",
+            "title": "Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "unconfidential_address",
+          "type"
+        ],
+        "title": "OnchainAddressResponse"
+      },
+      "OnchainWithdrawalRequest": {
+        "properties": {
+          "address": {
+            "type": "string",
+            "maxLength": 90,
+            "minLength": 14,
+            "title": "Address"
+          },
+          "amount_sat": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Amount Sat"
+          },
+          "fee_rate_sat_vb": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Fee Rate Sat Vb"
+          }
+        },
+        "type": "object",
+        "required": [
+          "address",
+          "amount_sat",
+          "fee_rate_sat_vb"
+        ],
+        "title": "OnchainWithdrawalRequest"
+      },
+      "OnchainWithdrawalResponse": {
+        "properties": {
+          "txid": {
+            "type": "string",
+            "title": "Txid"
+          },
+          "amount_sat": {
+            "type": "integer",
+            "title": "Amount Sat"
+          },
+          "fee_sat": {
+            "type": "integer",
+            "title": "Fee Sat"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "failed"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "txid",
+          "amount_sat",
+          "fee_sat",
+          "status"
+        ],
+        "title": "OnchainWithdrawalResponse"
+      },
+      "Payment": {
+        "properties": {
+          "payment_hash": {
+            "type": "string",
+            "title": "Payment Hash"
+          },
+          "payment_preimage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payment Preimage"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PaymentStatus"
+          },
+          "fee_sats": {
+            "type": "integer",
+            "title": "Fee Sats",
+            "default": 0
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "payment_hash",
+          "status"
+        ],
+        "title": "Payment"
+      },
+      "PaymentCreate": {
+        "properties": {
+          "payment_request": {
+            "type": "string",
+            "title": "Payment Request",
+            "description": "The bech32 encoded lightning invoice to pay"
+          }
+        },
+        "type": "object",
+        "required": [
+          "payment_request"
+        ],
+        "title": "PaymentCreate"
+      },
+      "PaymentStatus": {
+        "type": "string",
+        "enum": [
+          "SUCCEEDED",
+          "FAILED",
+          "IN_FLIGHT"
+        ],
+        "title": "PaymentStatus"
+      },
+      "PegInAddressResponse": {
+        "properties": {
+          "mainchain_address": {
+            "type": "string",
+            "title": "Mainchain Address"
+          },
+          "claim_script": {
+            "type": "string",
+            "title": "Claim Script"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mainchain_address",
+          "claim_script"
+        ],
+        "title": "PegInAddressResponse"
+      },
+      "PegInClaimRequest": {
+        "properties": {
+          "raw_transaction": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Raw Transaction"
+          },
+          "txout_proof": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Txout Proof"
+          },
+          "claim_script": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Claim Script"
+          }
+        },
+        "type": "object",
+        "required": [
+          "raw_transaction",
+          "txout_proof",
+          "claim_script"
+        ],
+        "title": "PegInClaimRequest"
+      },
+      "PegInClaimResponse": {
+        "properties": {
+          "txid": {
+            "type": "string",
+            "title": "Txid"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "failed"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "txid",
+          "status"
+        ],
+        "title": "PegInClaimResponse"
+      },
+      "PegOutRequest": {
+        "properties": {
+          "mainchain_address": {
+            "type": "string",
+            "maxLength": 90,
+            "minLength": 14,
+            "title": "Mainchain Address"
+          },
+          "amount_sat": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Amount Sat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mainchain_address",
+          "amount_sat"
+        ],
+        "title": "PegOutRequest"
+      },
+      "PegOutResponse": {
+        "properties": {
+          "txid": {
+            "type": "string",
+            "title": "Txid"
+          },
+          "amount_sat": {
+            "type": "integer",
+            "title": "Amount Sat"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "failed"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "txid",
+          "amount_sat",
+          "status"
+        ],
+        "title": "PegOutResponse"
+      },
+      "RouteHintHop": {
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "title": "Node Id"
+          },
+          "chan_id": {
+            "type": "string",
+            "title": "Chan Id"
+          },
+          "fee_base_msat": {
+            "type": "integer",
+            "title": "Fee Base Msat"
+          },
+          "fee_proportional_millionths": {
+            "type": "integer",
+            "title": "Fee Proportional Millionths"
+          },
+          "cltv_expiry_delta": {
+            "type": "integer",
+            "title": "Cltv Expiry Delta"
+          }
+        },
+        "type": "object",
+        "required": [
+          "node_id",
+          "chan_id",
+          "fee_base_msat",
+          "fee_proportional_millionths",
+          "cltv_expiry_delta"
+        ],
+        "title": "RouteHintHop"
+      },
+      "RouteHintOut": {
+        "properties": {
+          "hops": {
+            "items": {
+              "$ref": "#/components/schemas/RouteHintHop"
+            },
+            "type": "array",
+            "title": "Hops"
+          }
+        },
+        "type": "object",
+        "required": [
+          "hops"
+        ],
+        "title": "RouteHintOut"
+      },
+      "TokenBalance": {
+        "properties": {
+          "token_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Token Id"
+          },
+          "liquid_asset_id": {
+            "type": "string",
+            "title": "Liquid Asset Id"
+          },
+          "asset_name": {
+            "type": "string",
+            "title": "Asset Name"
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Symbol"
+          },
+          "balance": {
+            "type": "integer",
+            "title": "Balance"
+          },
+          "unit_price_sat": {
+            "type": "integer",
+            "title": "Unit Price Sat"
+          },
+          "accrued_yield_sat": {
+            "type": "integer",
+            "title": "Accrued Yield Sat",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "token_id",
+          "liquid_asset_id",
+          "asset_name",
+          "balance",
+          "unit_price_sat"
+        ],
+        "title": "TokenBalance"
+      },
+      "TransactionHistoryItem": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdrawal",
+              "ln_send",
+              "ln_receive",
+              "escrow_lock",
+              "escrow_release",
+              "fee"
+            ],
+            "title": "Type"
+          },
+          "amount_sat": {
+            "type": "integer",
+            "title": "Amount Sat"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "in",
+              "out"
+            ],
+            "title": "Direction"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "txHash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Txhash",
+            "description": "Bitcoin transaction ID (txid) for on-chain transactions"
+          },
+          "paymentHash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paymenthash",
+            "description": "Lightning payment hash for LN transactions"
+          },
+          "fee_sat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fee Sat",
+            "description": "Fee paid in satoshis"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "amount_sat",
+          "direction",
+          "status",
+          "created_at"
+        ],
+        "title": "TransactionHistoryItem"
+      },
+      "TransactionHistoryResponse": {
+        "properties": {
+          "transactions": {
+            "items": {
+              "$ref": "#/components/schemas/TransactionHistoryItem"
+            },
+            "type": "array",
+            "title": "Transactions"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "transactions",
+          "next_cursor"
+        ],
+        "title": "TransactionHistoryResponse"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WalletResponse": {
+        "properties": {
+          "wallet": {
+            "$ref": "#/components/schemas/WalletSummary"
+          }
+        },
+        "type": "object",
+        "required": [
+          "wallet"
+        ],
+        "title": "WalletResponse"
+      },
+      "WalletSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "onchain_balance_sat": {
+            "type": "integer",
+            "title": "Onchain Balance Sat"
+          },
+          "lightning_balance_sat": {
+            "type": "integer",
+            "title": "Lightning Balance Sat"
+          },
+          "token_balances": {
+            "items": {
+              "$ref": "#/components/schemas/TokenBalance"
+            },
+            "type": "array",
+            "title": "Token Balances"
+          },
+          "total_yield_earned_sat": {
+            "type": "integer",
+            "title": "Total Yield Earned Sat"
+          },
+          "total_value_sat": {
+            "type": "integer",
+            "title": "Total Value Sat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "onchain_balance_sat",
+          "lightning_balance_sat",
+          "token_balances",
+          "total_yield_earned_sat",
+          "total_value_sat"
+        ],
+        "title": "WalletSummary"
+      },
+      "YieldAccrualOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "token_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Token Id"
+          },
+          "asset_name": {
+            "type": "string",
+            "title": "Asset Name"
+          },
+          "amount_sat": {
+            "type": "integer",
+            "title": "Amount Sat"
+          },
+          "quantity_held": {
+            "type": "integer",
+            "title": "Quantity Held"
+          },
+          "reference_price_sat": {
+            "type": "integer",
+            "title": "Reference Price Sat"
+          },
+          "annual_rate_pct": {
+            "type": "number",
+            "title": "Annual Rate Pct"
+          },
+          "accrued_from": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Accrued From"
+          },
+          "accrued_to": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Accrued To"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "token_id",
+          "asset_name",
+          "amount_sat",
+          "quantity_held",
+          "reference_price_sat",
+          "annual_rate_pct",
+          "accrued_from",
+          "accrued_to",
+          "created_at"
+        ],
+        "title": "YieldAccrualOut"
+      },
+      "YieldSummary": {
+        "properties": {
+          "total_yield_earned_sat": {
+            "type": "integer",
+            "title": "Total Yield Earned Sat"
+          },
+          "by_token": {
+            "items": {
+              "$ref": "#/components/schemas/YieldTokenSummary"
+            },
+            "type": "array",
+            "title": "By Token"
+          },
+          "accruals": {
+            "items": {
+              "$ref": "#/components/schemas/YieldAccrualOut"
+            },
+            "type": "array",
+            "title": "Accruals"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_yield_earned_sat",
+          "by_token",
+          "accruals"
+        ],
+        "title": "YieldSummary"
+      },
+      "YieldSummaryResponse": {
+        "properties": {
+          "yield_summary": {
+            "$ref": "#/components/schemas/YieldSummary"
+          }
+        },
+        "type": "object",
+        "required": [
+          "yield_summary"
+        ],
+        "title": "YieldSummaryResponse"
+      },
+      "YieldTokenSummary": {
+        "properties": {
+          "token_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Token Id"
+          },
+          "asset_name": {
+            "type": "string",
+            "title": "Asset Name"
+          },
+          "total_yield_sat": {
+            "type": "integer",
+            "title": "Total Yield Sat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token_id",
+          "asset_name",
+          "total_yield_sat"
+        ],
+        "title": "YieldTokenSummary"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

@@ -1,0 +1,1344 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Nostr Service",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/metrics": {
+      "get": {
+        "tags": [
+          "Observability"
+        ],
+        "summary": "Get Metrics",
+        "operationId": "get_metrics_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "summary": "Ready",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns": {
+      "get": {
+        "summary": "List the authenticated user's Nostr zap campaigns",
+        "operationId": "list_nostr_campaigns_campaigns_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CampaignOut"
+                  },
+                  "type": "array",
+                  "title": "Response List Nostr Campaigns Campaigns Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Create a Nostr zap campaign",
+        "operationId": "create_nostr_campaign_campaigns_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}": {
+      "get": {
+        "summary": "Get one Nostr zap campaign",
+        "operationId": "get_nostr_campaign_campaigns__campaign_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns/{campaign_id}/fund/intraledger": {
+      "post": {
+        "summary": "Reserve internal Lightning balance for a campaign",
+        "operationId": "fund_campaign_intraledger_campaigns__campaign_id__fund_intraledger_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignFundingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns/{campaign_id}/fund/external": {
+      "post": {
+        "summary": "Create an external Lightning funding invoice for a campaign",
+        "operationId": "fund_campaign_external_campaigns__campaign_id__fund_external_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignFundingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignFundingOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns/{campaign_id}/activate": {
+      "post": {
+        "summary": "Activate a campaign after it has been funded",
+        "operationId": "activate_campaign_campaigns__campaign_id__activate_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns/{campaign_id}/pause": {
+      "post": {
+        "summary": "Pause a campaign",
+        "operationId": "pause_campaign_campaigns__campaign_id__pause_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns/{campaign_id}/cancel": {
+      "post": {
+        "summary": "Cancel a campaign",
+        "operationId": "cancel_campaign_campaigns__campaign_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns/{campaign_id}/matches": {
+      "get": {
+        "summary": "List detected campaign matches",
+        "operationId": "get_campaign_matches_campaigns__campaign_id__matches_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CampaignMatchOut"
+                  },
+                  "title": "Response Get Campaign Matches Campaigns  Campaign Id  Matches Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns/{campaign_id}/payouts": {
+      "get": {
+        "summary": "List campaign payout attempts",
+        "operationId": "get_campaign_payouts_campaigns__campaign_id__payouts_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CampaignPayoutOut"
+                  },
+                  "title": "Response Get Campaign Payouts Campaigns  Campaign Id  Payouts Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/announcements": {
+      "post": {
+        "summary": "Publish a classified announcement to Nostr relays",
+        "operationId": "publish_announcement_announcements_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnnouncementPublishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnnouncementPublishResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AnnouncementPublishRequest": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 140,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Content"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 280
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "identifier": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identifier"
+          },
+          "hashtags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 12,
+            "title": "Hashtags"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "price_amount": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,10}|(?=[\\d.]{1,19}0*$)\\d{0,10}\\.\\d{0,8}0*$)"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Amount"
+          },
+          "price_currency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 8,
+                "minLength": 3
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Currency"
+          },
+          "price_frequency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Frequency"
+          },
+          "reference_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "format": "uri"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Url"
+          },
+          "image_urls": {
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "format": "uri"
+            },
+            "type": "array",
+            "maxItems": 6,
+            "title": "Image Urls"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "sold"
+            ],
+            "title": "Status",
+            "default": "active"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "content"
+        ],
+        "title": "AnnouncementPublishRequest"
+      },
+      "AnnouncementPublishResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "integer",
+            "const": 30402,
+            "title": "Kind"
+          },
+          "pubkey": {
+            "type": "string",
+            "title": "Pubkey"
+          },
+          "identifier": {
+            "type": "string",
+            "title": "Identifier"
+          },
+          "accepted_relays": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Accepted Relays"
+          },
+          "failed_relays": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failed Relays"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "pubkey",
+          "identifier",
+          "accepted_relays",
+          "failed_relays"
+        ],
+        "title": "AnnouncementPublishResponse"
+      },
+      "CampaignCreateRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 140,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "funding_mode": {
+            "type": "string",
+            "enum": [
+              "intraledger",
+              "external"
+            ],
+            "title": "Funding Mode"
+          },
+          "reward_amount_sat": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Reward Amount Sat"
+          },
+          "budget_total_sat": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Budget Total Sat"
+          },
+          "max_rewards_per_user": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Max Rewards Per User",
+            "default": 1
+          },
+          "start_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start At"
+          },
+          "end_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End At"
+          },
+          "triggers": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignTriggerIn"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Triggers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "funding_mode",
+          "reward_amount_sat",
+          "budget_total_sat",
+          "triggers"
+        ],
+        "title": "CampaignCreateRequest"
+      },
+      "CampaignFundingOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "funding_mode": {
+            "type": "string",
+            "enum": [
+              "intraledger",
+              "external"
+            ],
+            "title": "Funding Mode"
+          },
+          "amount_sat": {
+            "type": "integer",
+            "title": "Amount Sat"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "cancelled",
+              "refunded"
+            ],
+            "title": "Status"
+          },
+          "payment_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payment Hash"
+          },
+          "payment_request": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payment Request"
+          },
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed At"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "funding_mode",
+          "amount_sat",
+          "status"
+        ],
+        "title": "CampaignFundingOut"
+      },
+      "CampaignFundingRequest": {
+        "properties": {
+          "amount_sat": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Amount Sat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "amount_sat"
+        ],
+        "title": "CampaignFundingRequest"
+      },
+      "CampaignMatchOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "relay_url": {
+            "type": "string",
+            "title": "Relay Url"
+          },
+          "event_id": {
+            "type": "string",
+            "title": "Event Id"
+          },
+          "event_pubkey": {
+            "type": "string",
+            "title": "Event Pubkey"
+          },
+          "event_kind": {
+            "type": "integer",
+            "title": "Event Kind"
+          },
+          "match_fingerprint": {
+            "type": "string",
+            "title": "Match Fingerprint"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "matched",
+              "ignored",
+              "reserved",
+              "paid",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "ignore_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ignore Reason"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "relay_url",
+          "event_id",
+          "event_pubkey",
+          "event_kind",
+          "match_fingerprint",
+          "status",
+          "created_at"
+        ],
+        "title": "CampaignMatchOut"
+      },
+      "CampaignOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "funding_pending",
+              "active",
+              "paused",
+              "completed",
+              "exhausted",
+              "cancelled",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "funding_mode": {
+            "type": "string",
+            "enum": [
+              "intraledger",
+              "external"
+            ],
+            "title": "Funding Mode"
+          },
+          "reward_amount_sat": {
+            "type": "integer",
+            "title": "Reward Amount Sat"
+          },
+          "budget_total_sat": {
+            "type": "integer",
+            "title": "Budget Total Sat"
+          },
+          "budget_reserved_sat": {
+            "type": "integer",
+            "title": "Budget Reserved Sat"
+          },
+          "budget_spent_sat": {
+            "type": "integer",
+            "title": "Budget Spent Sat"
+          },
+          "budget_refunded_sat": {
+            "type": "integer",
+            "title": "Budget Refunded Sat"
+          },
+          "max_rewards_per_user": {
+            "type": "integer",
+            "title": "Max Rewards Per User"
+          },
+          "start_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start At"
+          },
+          "end_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End At"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "triggers": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignTriggerOut"
+            },
+            "type": "array",
+            "title": "Triggers"
+          },
+          "fundings": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignFundingOut"
+            },
+            "type": "array",
+            "title": "Fundings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "status",
+          "funding_mode",
+          "reward_amount_sat",
+          "budget_total_sat",
+          "budget_reserved_sat",
+          "budget_spent_sat",
+          "budget_refunded_sat",
+          "max_rewards_per_user",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "CampaignOut"
+      },
+      "CampaignPayoutOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "match_id": {
+            "type": "string",
+            "title": "Match Id"
+          },
+          "recipient_pubkey": {
+            "type": "string",
+            "title": "Recipient Pubkey"
+          },
+          "amount_sat": {
+            "type": "integer",
+            "title": "Amount Sat"
+          },
+          "fee_sat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fee Sat"
+          },
+          "payment_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payment Hash"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "settled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settled At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "match_id",
+          "recipient_pubkey",
+          "amount_sat",
+          "status",
+          "created_at"
+        ],
+        "title": "CampaignPayoutOut"
+      },
+      "CampaignTriggerIn": {
+        "properties": {
+          "trigger_type": {
+            "type": "string",
+            "enum": [
+              "hashtag",
+              "tag",
+              "content_substring",
+              "author_pubkey",
+              "event_kind"
+            ],
+            "title": "Trigger Type"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "equals",
+              "contains",
+              "in"
+            ],
+            "title": "Operator",
+            "default": "equals"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Value"
+          },
+          "case_sensitive": {
+            "type": "boolean",
+            "title": "Case Sensitive",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "trigger_type",
+          "value"
+        ],
+        "title": "CampaignTriggerIn"
+      },
+      "CampaignTriggerOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "trigger_type": {
+            "type": "string",
+            "enum": [
+              "hashtag",
+              "tag",
+              "content_substring",
+              "author_pubkey",
+              "event_kind"
+            ],
+            "title": "Trigger Type"
+          },
+          "operator": {
+            "type": "string",
+            "enum": [
+              "equals",
+              "contains",
+              "in"
+            ],
+            "title": "Operator"
+          },
+          "value": {
+            "type": "string",
+            "title": "Value"
+          },
+          "case_sensitive": {
+            "type": "boolean",
+            "title": "Case Sensitive"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "trigger_type",
+          "operator",
+          "value",
+          "case_sensitive",
+          "created_at"
+        ],
+        "title": "CampaignTriggerOut"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

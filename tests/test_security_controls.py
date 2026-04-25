@@ -42,7 +42,6 @@ def test_admin_sensitive_endpoint_rate_limits_repeat_requests():
         "WALLET_SERVICE_URL": "http://wallet:8001",
         "TOKENIZATION_SERVICE_URL": "http://tokenization:8002",
         "MARKETPLACE_SERVICE_URL": "http://marketplace:8003",
-        "EDUCATION_SERVICE_URL": "http://education:8004",
         "NOSTR_SERVICE_URL": "http://nostr:8005",
         "ADMIN_SERVICE_URL": "http://admin:8006",
         "POSTGRES_HOST": "localhost",
@@ -155,3 +154,4 @@ def test_admin_sensitive_endpoint_rate_limits_repeat_requests():
     assert second.status_code == 429
     assert second.json()["error"]["code"] == "rate_limit_exceeded"
     assert second.headers["X-Request-ID"] == "req-2"
+

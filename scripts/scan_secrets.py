@@ -7,11 +7,15 @@ import re
 EXCLUDED_DIRS = {
     ".git",
     ".github",
+    ".venv",
     "__pycache__",
     "auth",
+    "env",
     "infra",
+    "site-packages",
     "specs",
     "tests",
+    "venv",
 }
 
 TEXT_EXTENSIONS = {

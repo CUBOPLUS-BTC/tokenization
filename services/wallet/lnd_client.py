@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any
 
 import grpc
 
-from lnd_grpc import lightning_pb2 as ln
-from lnd_grpc import lightning_pb2_grpc as lnrpc
+from .lnd_grpc import lightning_pb2 as ln
+from .lnd_grpc import lightning_pb2_grpc as lnrpc
 
 if TYPE_CHECKING:
     from services.common.config import Settings
@@ -60,14 +60,23 @@ class LNDClient:
             
             # Auth interceptor for macaroon
             auth_creds = grpc.metadata_call_credentials(
-                multicall=lambda _, callback: callback([("macaroon", macaroon)], None)
+                lambda _, callback: callback([("macaroon", macaroon)], None)
             )
             
             combined_creds = grpc.composite_channel_credentials(cert_creds, auth_creds)
 
             # Create channel
             target = f"{self.settings.lnd_grpc_host}:{self.settings.lnd_grpc_port}"
-            self._channel = grpc.secure_channel(target, combined_creds)
+            channel_options: list[tuple[str, str]] = []
+            if self.settings.lnd_tls_server_name:
+                channel_options.extend(
+                    [
+                        ("grpc.ssl_target_name_override", self.settings.lnd_tls_server_name),
+                        ("grpc.default_authority", self.settings.lnd_tls_server_name),
+                    ]
+                )
+
+            self._channel = grpc.secure_channel(target, combined_creds, options=channel_options)
             self._stub = lnrpc.LightningStub(self._channel)
             
             return self._stub
@@ -81,7 +90,7 @@ class LNDClient:
     def create_invoice(self, memo: str, amount_sats: int) -> ln.AddInvoiceResponse:
         stub = self._get_stub()
         invoice = ln.Invoice(memo=memo, value=amount_sats)
-        return stub.AddInvoice(invoice)
+        return stub.AddInvoice(invoice, timeout=10)
 
     def pay_invoice(self, payment_request: str) -> ln.SendResponse:
         stub = self._get_stub()

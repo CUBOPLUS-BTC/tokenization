@@ -30,16 +30,25 @@ class NostrRelayConnector:
                 statuses[relay] = False
         return statuses
 
-    async def publish(self, event: dict[str, Any], *, topic: str) -> None:
+    async def publish(self, event: dict[str, Any], *, topic: str) -> dict[str, bool]:
+        if not self.relays:
+            raise RuntimeError("No Nostr relays are configured.")
+
         message = json.dumps(["EVENT", event], separators=(",", ":"), sort_keys=True)
+        statuses: dict[str, bool] = {}
         for relay in self.relays:
             try:
                 await self._transport(relay, message)
+                statuses[relay] = True
             except Exception:
+                statuses[relay] = False
                 logger.exception(
                     "Failed to publish event to relay",
-                    extra={"relay": relay, "topic": topic, "event": event.get("content")},
+                    extra={"relay": relay, "topic": topic, "event_id": event.get("id")},
                 )
+        if not any(statuses.values()):
+            raise RuntimeError("No configured Nostr relay accepted the event.")
+        return statuses
 
     @staticmethod
     async def _send_over_websocket(relay_url: str, message: str) -> None:

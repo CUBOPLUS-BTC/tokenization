@@ -8,6 +8,7 @@ from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
 
 AssetCategory = Literal["real_estate", "commodity", "invoice", "art", "other"]
 AssetStatus = Literal["pending", "evaluating", "approved", "rejected", "tokenized"]
+AssetTokenVisibility = Literal["public", "private"]
 
 
 def _strip_and_require_text(value: str) -> str:
@@ -40,8 +41,48 @@ class AssetCreateRequest(BaseModel):
 
 
 class AssetTokenizationRequest(BaseModel):
+    ticker: str | None = Field(default=None, min_length=1, max_length=10)
+    liquid_asset_id: str | None = None
+    taproot_asset_id: str | None = None
     total_supply: int = Field(gt=0)
     unit_price_sat: int = Field(gt=0)
+    visibility: AssetTokenVisibility = "public"
+
+    @field_validator("ticker")
+    @classmethod
+    def _validate_ticker(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _strip_and_require_text(value).upper()
+
+    @field_validator("liquid_asset_id", "taproot_asset_id")
+    @classmethod
+    def _validate_optional_asset_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = _normalize_hex_string(value)
+        if len(normalized) != 64:
+            raise ValueError("Asset id must be 64 hexadecimal characters.")
+        return normalized
+
+
+class AssetDocumentOut(BaseModel):
+    storage_key: str
+    filename: str
+    content_type: str
+    size_bytes: int
+
+
+class AssetTokenOut(BaseModel):
+    id: str
+    ticker: str
+    liquid_asset_id: str
+    total_supply: int
+    circulating_supply: int
+    unit_price_sat: int
+    visibility: AssetTokenVisibility
+    issuance_metadata: dict[str, Any] | None = None
+    minted_at: datetime
 
 
 class AssetOut(BaseModel):
@@ -51,7 +92,9 @@ class AssetOut(BaseModel):
     description: str
     category: AssetCategory
     valuation_sat: int
-    documents_url: str | None
+    documents_url: str | None = None
+    document: AssetDocumentOut | None = None
+    token: AssetTokenOut | None = None
     status: AssetStatus
     created_at: datetime
     updated_at: datetime
@@ -61,21 +104,10 @@ class AssetResponse(BaseModel):
     asset: AssetOut
 
 
-class AssetTokenOut(BaseModel):
-    id: str
-    liquid_asset_id: str
-    total_supply: int
-    circulating_supply: int
-    unit_price_sat: int
-    issuance_metadata: dict[str, Any] | None = None
-    minted_at: datetime
-
-
 class AssetDetailOut(AssetOut):
     ai_score: float | None = None
     ai_analysis: dict[str, Any] | None = None
     projected_roi: float | None = None
-    token: AssetTokenOut | None = None
 
 
 class AssetDetailResponse(BaseModel):
@@ -83,7 +115,7 @@ class AssetDetailResponse(BaseModel):
 
 
 class AssetListResponse(BaseModel):
-    assets: list[AssetOut]
+    assets: list[AssetDetailOut]
     next_cursor: str | None
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from services.nostr.relay_client import NostrRelayConnector
 
 
@@ -45,6 +47,24 @@ def test_publish_continues_on_relay_failure():
         transport=transport,
     )
 
-    asyncio.run(connector.publish({"kind": 1, "content": "{}"}, topic="trade.matched"))
+    statuses = asyncio.run(connector.publish({"id": "abc123", "kind": 1, "content": "{}"}, topic="trade.matched"))
 
     assert sent == ["wss://relay.bad.example.com", "wss://relay.good.example.com"]
+    assert statuses == {
+        "wss://relay.bad.example.com": False,
+        "wss://relay.good.example.com": True,
+    }
+
+
+def test_publish_raises_when_all_relays_fail():
+    async def transport(relay: str, message: str) -> None:
+        raise RuntimeError("network issue")
+
+    connector = NostrRelayConnector(
+        ["wss://relay.bad.example.com", "wss://relay.down.example.com"],
+        transport=transport,
+    )
+
+    with pytest.raises(RuntimeError, match="No configured Nostr relay accepted the event."):
+        asyncio.run(connector.publish({"id": "abc123", "kind": 1, "content": "{}"}, topic="trade.matched"))
+

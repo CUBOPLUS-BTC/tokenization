@@ -31,18 +31,6 @@ class FakeUser(NamedTuple):
     totp_secret: str | None = None
 
 
-class FakeCourse(NamedTuple):
-    id: uuid.UUID
-    title: str
-    description: str
-    content_url: str
-    category: str
-    difficulty: str
-    is_published: bool
-    created_at: datetime
-    updated_at: datetime
-
-
 class FakeTreasuryEntry(NamedTuple):
     id: uuid.UUID
     type: str
@@ -86,21 +74,6 @@ def _make_user(*, role: str = "user", totp_secret: str | None = None) -> FakeUse
     )
 
 
-def _make_course() -> FakeCourse:
-    now = datetime.now(tz=timezone.utc)
-    return FakeCourse(
-        id=uuid.uuid4(),
-        title="Bitcoin 101",
-        description="Introduction to Bitcoin.",
-        content_url="https://example.com/bitcoin-101",
-        category="bitcoin",
-        difficulty="beginner",
-        is_published=False,
-        created_at=now,
-        updated_at=now,
-    )
-
-
 def _make_treasury_entry(*, entry_type: str = "fee_income", amount: int = 5000, balance: int = 15000) -> FakeTreasuryEntry:
     return FakeTreasuryEntry(
         id=uuid.uuid4(),
@@ -139,7 +112,6 @@ _ADMIN_SETTINGS = {
     "WALLET_SERVICE_URL": "http://wallet:8001",
     "TOKENIZATION_SERVICE_URL": "http://tokenization:8002",
     "MARKETPLACE_SERVICE_URL": "http://marketplace:8003",
-    "EDUCATION_SERVICE_URL": "http://education:8004",
     "NOSTR_SERVICE_URL": "http://nostr:8005",
     "ADMIN_SERVICE_URL": "http://admin:8006",
     "POSTGRES_HOST": "localhost",
@@ -340,60 +312,6 @@ def test_non_admin_cannot_update_role(client):
 
 
 # ---------------------------------------------------------------------------
-# POST /courses
-# ---------------------------------------------------------------------------
-
-
-def test_admin_can_create_course(client):
-    app_client, settings = client
-    admin = _make_user(role="admin")
-    course = _make_course()
-    token = _issue_token(admin, settings.jwt_secret)
-
-    with (
-        patch("services.admin.main.get_user_by_id", AsyncMock(return_value=admin)),
-        patch("services.admin.main.create_course", AsyncMock(return_value=course)),
-    ):
-        response = app_client.post(
-            "/courses",
-            json={
-                "title": course.title,
-                "description": course.description,
-                "content_url": course.content_url,
-                "category": course.category,
-                "difficulty": course.difficulty,
-            },
-            headers=_auth(token),
-        )
-
-    assert response.status_code == 201
-    data = response.json()
-    assert data["course"]["title"] == course.title
-    assert data["course"]["category"] == "bitcoin"
-
-
-def test_non_admin_cannot_create_course(client):
-    app_client, settings = client
-    regular = _make_user(role="user")
-    token = _issue_token(regular, settings.jwt_secret)
-
-    with patch("services.admin.main.get_user_by_id", AsyncMock(return_value=regular)):
-        response = app_client.post(
-            "/courses",
-            json={
-                "title": "Test",
-                "description": "Desc",
-                "content_url": "https://example.com",
-                "category": "bitcoin",
-                "difficulty": "beginner",
-            },
-            headers=_auth(token),
-        )
-
-    assert response.status_code == 403
-
-
-# ---------------------------------------------------------------------------
 # POST /treasury/disburse
 # ---------------------------------------------------------------------------
 
@@ -412,7 +330,7 @@ def test_admin_can_disburse_treasury_funds(client):
     ):
         response = app_client.post(
             "/treasury/disburse",
-            json={"amount_sat": 500000, "description": "Q2 educational program"},
+            json={"amount_sat": 500000, "description": "Q2 treasury allocation"},
             headers=_auth(token),
         )
 
@@ -601,7 +519,12 @@ def test_admin_can_resolve_dispute(client):
     ):
         response = app_client.post(
             f"/escrows/{dispute.trade_id}/resolve",
-            json={"resolution": "refund_buyer", "notes": "Seller failed to deliver."},
+            json={
+                "resolution": "refund_buyer",
+                "notes": "Seller failed to deliver.",
+                "resolution_txid": "a" * 64,
+                "collected_signatures": {},
+            },
             headers=_auth(token),
         )
 
@@ -622,7 +545,12 @@ def test_resolve_dispute_not_found(client):
     ):
         response = app_client.post(
             f"/escrows/{uuid.uuid4()}/resolve",
-            json={"resolution": "refund_buyer", "notes": "test"},
+            json={
+                "resolution": "refund_buyer",
+                "notes": "test",
+                "resolution_txid": "b" * 64,
+                "collected_signatures": {},
+            },
             headers=_auth(token),
         )
 
@@ -637,8 +565,14 @@ def test_non_admin_cannot_resolve_dispute(client):
     with patch("services.admin.main.get_user_by_id", AsyncMock(return_value=regular)):
         response = app_client.post(
             f"/escrows/{uuid.uuid4()}/resolve",
-            json={"resolution": "refund_buyer", "notes": "test"},
+            json={
+                "resolution": "refund_buyer",
+                "notes": "test",
+                "resolution_txid": "c" * 64,
+                "collected_signatures": {},
+            },
             headers=_auth(token),
         )
 
     assert response.status_code == 403
+

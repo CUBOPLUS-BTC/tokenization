@@ -6,13 +6,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
+import re
 import sys
 from typing import Any
 import uuid
 
-from fastapi import Depends, FastAPI, Query, Request, Security, status
+from fastapi import Depends, FastAPI, File, Form, Header, Query, Request, Security, UploadFile, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy.exc import IntegrityError
@@ -31,10 +32,12 @@ from common import (
     get_settings,
     install_http_security,
     record_audit_event,
+    verify_api_key_via_auth_service,
 )
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
+from common.db.schema_check import ensure_schema_ready
 from tokenization.db import (
     begin_asset_evaluation,
     complete_asset_evaluation,
@@ -52,6 +55,7 @@ from tokenization.schemas import (
     AssetCreateRequest,
     AssetDetailOut,
     AssetDetailResponse,
+    AssetDocumentOut,
     AssetEvaluationRequestResponse,
     AssetListResponse,
     AssetOut,
@@ -60,6 +64,7 @@ from tokenization.schemas import (
     AssetTokenOut,
     AssetTokenizationRequest,
 )
+from tokenization.storage import resolve_document_path, store_pdf_document
 
 settings = get_settings(service_name="tokenization", default_port=8002)
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -93,6 +98,9 @@ class ContractError(Exception):
 class AuthenticatedPrincipal:
     id: str
     role: str
+    auth_method: str = "jwt"
+    scopes: tuple[str, ...] = ()
+    api_key_id: str | None = None
 
 
 def _make_async_url(sync_url: str) -> str:
@@ -118,6 +126,23 @@ def _runtime_engine() -> AsyncEngine | object:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     engine = _runtime_engine()
+    await ensure_schema_ready(
+        engine,
+        ("users", "assets", "tokens"),
+        required_columns={
+            "tokens": (
+                "asset_id",
+                "ticker",
+                "liquid_asset_id",
+                "total_supply",
+                "circulating_supply",
+                "unit_price_sat",
+                "visibility",
+                "metadata",
+                "minted_at",
+            ),
+        },
+    )
     yield
     tasks = tuple(_background_tasks)
     for task in tasks:
@@ -175,6 +200,22 @@ def _invalid_access_token_error() -> ContractError:
     )
 
 
+def _invalid_api_key_error() -> ContractError:
+    return ContractError(
+        code="invalid_api_key",
+        message="API key is invalid, expired, or revoked.",
+        status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+def _auth_service_unavailable_error() -> ContractError:
+    return ContractError(
+        code="auth_service_unavailable",
+        message="API key verification is currently unavailable.",
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+
+
 def _asset_not_found_error() -> ContractError:
     return ContractError(
         code="asset_not_found",
@@ -183,10 +224,18 @@ def _asset_not_found_error() -> ContractError:
     )
 
 
-def _asset_ownership_error() -> ContractError:
+def _asset_evaluation_admin_only_error() -> ContractError:
     return ContractError(
         code="forbidden",
-        message="Only the owning seller can evaluate this asset.",
+        message="Only admins can evaluate assets.",
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def _asset_tokenization_ownership_error() -> ContractError:
+    return ContractError(
+        code="forbidden",
+        message="Only the asset owner can tokenize this asset.",
         status_code=status.HTTP_403_FORBIDDEN,
     )
 
@@ -334,6 +383,27 @@ def _build_liquid_issuance_metadata(
     }
 
 
+def _asset_document_out(row: object) -> AssetDocumentOut | None:
+    storage_key = _optional_row_value(row, "documents_storage_key")
+    if not storage_key:
+        return None
+    return AssetDocumentOut(
+        storage_key=str(storage_key),
+        filename=str(_optional_row_value(row, "documents_filename") or "document.pdf"),
+        content_type=str(_optional_row_value(row, "documents_content_type") or "application/pdf"),
+        size_bytes=int(_optional_row_value(row, "documents_size_bytes") or 0),
+    )
+
+
+def _build_token_ticker(asset_name: object) -> str:
+    words = re.findall(r"[A-Za-z0-9]+", str(asset_name or ""))
+    ticker = "".join(word[0] for word in words if word).upper()[:10]
+    if ticker:
+        return ticker
+    compact = re.sub(r"[^A-Za-z0-9]+", "", str(asset_name or "")).upper()[:10]
+    return compact or "TKN"
+
+
 def _asset_out(row: object) -> AssetOut:
     created_at = _aware_datetime(_row_value(row, "created_at"))
     updated_at = _aware_datetime(_row_value(row, "updated_at"))
@@ -346,6 +416,8 @@ def _asset_out(row: object) -> AssetOut:
         category=_row_value(row, "category"),
         valuation_sat=_row_value(row, "valuation_sat"),
         documents_url=_optional_row_value(row, "documents_url"),
+        document=_asset_document_out(row),
+        token=_asset_token_out(row),
         status=_row_value(row, "status"),
         created_at=created_at,
         updated_at=updated_at,
@@ -359,14 +431,17 @@ def _asset_token_out(row: object) -> AssetTokenOut | None:
 
     minted_at = _aware_datetime(_optional_row_value(row, "minted_at"))
     assert minted_at is not None
-    liquid_asset_id = _row_value(row, "liquid_asset_id") or _row_value(row, "taproot_asset_id")
+    liquid_asset_id = _optional_row_value(row, "liquid_asset_id") or _optional_row_value(row, "taproot_asset_id")
+    assert liquid_asset_id is not None
 
     return AssetTokenOut(
         id=str(token_id),
+        ticker=str(_row_value(row, "ticker") or "TKN"),
         liquid_asset_id=liquid_asset_id,
         total_supply=_row_value(row, "total_supply"),
         circulating_supply=_row_value(row, "circulating_supply"),
         unit_price_sat=_row_value(row, "unit_price_sat"),
+        visibility=_optional_row_value(row, "visibility") or "public",
         issuance_metadata=_optional_row_value(row, "token_metadata"),
         minted_at=minted_at,
     )
@@ -379,7 +454,6 @@ def _asset_detail_out(row: object) -> AssetDetailOut:
         ai_score=_optional_float(_optional_row_value(row, "ai_score")),
         ai_analysis=_optional_row_value(row, "ai_analysis"),
         projected_roi=_optional_float(_optional_row_value(row, "projected_roi")),
-        token=_asset_token_out(row),
     )
 
 
@@ -562,38 +636,79 @@ def _dispatch_asset_evaluation(
 
 async def _get_current_principal(
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer_scheme),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> AuthenticatedPrincipal:
-    if credentials is None:
+    if credentials is None and not x_api_key:
         raise ContractError(
             code="authentication_required",
             message="Authentication is required.",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    try:
-        claims = decode_token(
-            credentials.credentials,
-            _jwt_secret(),
-            expected_type="access",
-        )
-    except JWTError as exc:
-        raise _invalid_access_token_error() from exc
+    if credentials is not None:
+        try:
+            claims = decode_token(
+                credentials.credentials,
+                _jwt_secret(),
+                expected_type="access",
+            )
+        except JWTError as exc:
+            raise _invalid_access_token_error() from exc
 
-    user_id = _normalize_uuid_claim(claims.get("sub"))
-    role = claims.get("role")
-    if user_id is None or not isinstance(role, str):
-        raise _invalid_access_token_error()
+        user_id = _normalize_uuid_claim(claims.get("sub"))
+        role = claims.get("role")
+        if user_id is None or not isinstance(role, str):
+            raise _invalid_access_token_error()
+
+        async with _runtime_engine().connect() as conn:
+            row = await get_user_by_id(conn, user_id)
+
+        if row is None or _row_value(row, "deleted_at") is not None:
+            raise _invalid_access_token_error()
+
+        return AuthenticatedPrincipal(id=user_id, role=role, auth_method="jwt")
+
+    try:
+        verification = await verify_api_key_via_auth_service(x_api_key or "", settings=settings)
+    except RuntimeError as exc:
+        raise _auth_service_unavailable_error() from exc
+
+    if not verification.valid or verification.user_id is None:
+        raise _invalid_api_key_error()
 
     async with _runtime_engine().connect() as conn:
-        row = await get_user_by_id(conn, user_id)
+        row = await get_user_by_id(conn, verification.user_id)
 
     if row is None or _row_value(row, "deleted_at") is not None:
-        raise _invalid_access_token_error()
+        raise _invalid_api_key_error()
 
-    return AuthenticatedPrincipal(id=user_id, role=role)
+    return AuthenticatedPrincipal(
+        id=verification.user_id,
+        role=str(_row_value(row, "role") or "user"),
+        auth_method="api_key",
+        scopes=tuple(verification.scopes),
+        api_key_id=verification.key_id,
+    )
 
 
-def _require_roles(*allowed_roles: str):
+def _require_api_key_scopes(*required_scopes: str):
+    async def dependency(
+        principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    ) -> AuthenticatedPrincipal:
+        if principal.auth_method != "api_key":
+            return principal
+        if not all(scope in principal.scopes for scope in required_scopes):
+            raise ContractError(
+                code="forbidden",
+                message="API key does not grant access to this resource.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+        return principal
+
+    return dependency
+
+
+def _require_roles(*allowed_roles: str, api_key_scopes: tuple[str, ...] = ()):
     async def dependency(
         principal: AuthenticatedPrincipal = Depends(_get_current_principal),
     ) -> AuthenticatedPrincipal:
@@ -603,21 +718,19 @@ def _require_roles(*allowed_roles: str):
                 message="You do not have permission to access this resource.",
                 status_code=status.HTTP_403_FORBIDDEN,
             )
+        if principal.auth_method == "api_key" and api_key_scopes:
+            if not all(scope in principal.scopes for scope in api_key_scopes):
+                raise ContractError(
+                    code="forbidden",
+                    message="API key does not grant access to this resource.",
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
         return principal
 
     return dependency
 
 app = FastAPI(title="Tokenization Service", lifespan=_lifespan)
 
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 install_http_security(
     app,
     settings,
@@ -628,6 +741,7 @@ install_http_security(
 )
 mount_metrics_endpoint(app, settings)
 liquid_client = LiquidClient(settings)
+tapd_client = liquid_client
 
 
 @app.exception_handler(RequestValidationError)
@@ -696,7 +810,7 @@ async def liquid_issuances():
 async def submit_asset(
     request: Request,
     body: AssetCreateRequest,
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin")),
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
     async with _runtime_engine().connect() as conn:
         row = await create_asset(
@@ -729,6 +843,101 @@ async def submit_asset(
     return AssetResponse(asset=_asset_out(row)).model_dump(mode="json")
 
 
+@app.post(
+    "/assets/upload",
+    status_code=status.HTTP_201_CREATED,
+    response_model=AssetResponse,
+    summary="Submit an asset with an uploaded PDF document",
+)
+async def submit_asset_with_document(
+    request: Request,
+    name: str = Form(...),
+    description: str = Form(...),
+    category: AssetCategory = Form(...),
+    valuation_sat: int = Form(..., gt=0),
+    document: UploadFile = File(...),
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    normalized_name = name.strip()
+    normalized_description = description.strip()
+    if not normalized_name or not normalized_description:
+        raise ContractError(
+            code="validation_error",
+            message="Name and description are required.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
+    if (document.content_type or "").lower() != "application/pdf":
+        raise ContractError(
+            code="invalid_document_type",
+            message="Only PDF documents are supported.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
+    payload = await document.read()
+    if not payload:
+        raise ContractError(
+            code="invalid_document",
+            message="Uploaded PDF is empty.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+    if len(payload) > int(settings.tokenization_max_document_size_bytes):
+        raise ContractError(
+            code="document_too_large",
+            message="Uploaded PDF exceeds the configured size limit.",
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        )
+
+    asset_id = uuid.uuid4()
+    stored_document = store_pdf_document(
+        settings=settings,
+        asset_id=str(asset_id),
+        filename=document.filename,
+        payload=payload,
+        content_type=document.content_type,
+    )
+
+    async with _runtime_engine().connect() as conn:
+        row = await create_asset(
+            conn,
+            asset_id=asset_id,
+            owner_id=principal.id,
+            name=normalized_name,
+            description=normalized_description,
+            category=category,
+            valuation_sat=valuation_sat,
+            documents_url=f"/assets/{asset_id}/document",
+            documents_storage_key=stored_document.storage_key,
+            documents_filename=stored_document.filename,
+            documents_content_type=stored_document.content_type,
+            documents_size_bytes=stored_document.size_bytes,
+        )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="tokenization.asset.submit",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="asset",
+            target_id=_row_value(row, "id"),
+            metadata={
+                "category": category,
+                "valuation_sat": valuation_sat,
+                "document_filename": stored_document.filename,
+                "document_size_bytes": stored_document.size_bytes,
+            },
+        )
+
+    try:
+        await _publish_asset_created(row)
+    except Exception:
+        logger.exception("Asset created event publish failed for asset %s", _row_value(row, "id"))
+
+    record_business_event("asset_submit", outcome="document_upload")
+    return AssetResponse(asset=_asset_out(row)).model_dump(mode="json")
+
+
 @app.get(
     "/assets",
     status_code=status.HTTP_200_OK,
@@ -740,7 +949,7 @@ async def get_assets(
     category: AssetCategory | None = Query(default=None),
     cursor: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("tokenization:assets:read")),
 ):
     async with _runtime_engine().connect() as conn:
         rows = await list_assets(
@@ -751,7 +960,7 @@ async def get_assets(
 
     page, next_cursor = _build_asset_page(rows, cursor=cursor, limit=limit)
     return AssetListResponse(
-        assets=[_asset_out(row) for row in page],
+        assets=[_asset_detail_out(row) for row in page],
         next_cursor=next_cursor,
     ).model_dump(mode="json")
 
@@ -760,19 +969,17 @@ async def get_assets(
     "/assets/{asset_id}/evaluate",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=AssetEvaluationRequestResponse,
-    summary="Request AI evaluation for an owned asset",
+    summary="Request AI evaluation for an asset",
 )
 async def request_asset_evaluation(
     request: Request,
     asset_id: uuid.UUID,
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin")),
+    principal: AuthenticatedPrincipal = Depends(_require_roles("admin", api_key_scopes=("tokenization:assets:create",))),
 ):
     async with _runtime_engine().connect() as conn:
         asset_row = await get_asset_by_id(conn, asset_id)
         if asset_row is None:
             raise _asset_not_found_error()
-        if str(_row_value(asset_row, "owner_id")) != principal.id:
-            raise _asset_ownership_error()
 
         previous_status = _row_value(asset_row, "status")
         if previous_status == "evaluating":
@@ -783,7 +990,6 @@ async def request_asset_evaluation(
         queued_row = await begin_asset_evaluation(
             conn,
             asset_id=asset_id,
-            owner_id=principal.id,
         )
         if queued_row is not None:
             await record_audit_event(
@@ -837,7 +1043,7 @@ async def tokenize_asset(
     request: Request,
     asset_id: uuid.UUID,
     body: AssetTokenizationRequest,
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin")),
+    principal: AuthenticatedPrincipal = Depends(_require_roles("user", "seller", "admin", api_key_scopes=("tokenization:assets:create",))),
 ):
     async with _runtime_engine().connect() as conn:
         asset_row = await get_asset_by_id(conn, asset_id)
@@ -845,7 +1051,7 @@ async def tokenize_asset(
     if asset_row is None:
         raise _asset_not_found_error()
     if str(_row_value(asset_row, "owner_id")) != principal.id:
-        raise _asset_ownership_error()
+        raise _asset_tokenization_ownership_error()
 
     asset_status = _row_value(asset_row, "status")
     if _optional_row_value(asset_row, "token_id") is not None or asset_status == "tokenized":
@@ -853,33 +1059,51 @@ async def tokenize_asset(
     if asset_status != "approved":
         raise _asset_tokenization_conflict_error("Only approved assets can be tokenized.")
 
-    try:
-        issuance_result = await liquid_client.issue_asset(amount=body.total_supply)
-    except Exception as exc:
-        raise _liquid_issuance_error() from exc
+    provided_asset_id = body.liquid_asset_id or body.taproot_asset_id
+    multisig_mode = "external_api" if body.visibility == "private" else "standard"
+    ticker = body.ticker or _build_token_ticker(_row_value(asset_row, "name"))
+    if provided_asset_id is not None:
+        liquid_asset_id = provided_asset_id
+        issuance_result = {"asset": liquid_asset_id, "legacy_imported": True}
+        issuance_metadata = {
+            "backend": "liquid",
+            "network": settings.elements_network,
+            "asset_id": liquid_asset_id,
+            "legacy_imported": True,
+            "visibility": body.visibility,
+            "multisig_mode": multisig_mode,
+        }
+        issued_supply = body.total_supply
+    else:
+        try:
+            issuance_result = await liquid_client.issue_asset(amount=body.total_supply)
+        except Exception as exc:
+            raise _liquid_issuance_error() from exc
 
-    liquid_asset_id = str(issuance_result.get("asset") or "").strip().lower()
-    try:
-        bytes.fromhex(liquid_asset_id)
-    except ValueError as exc:
-        raise _liquid_issuance_response_error() from exc
-    if len(liquid_asset_id) != 64:
-        raise _liquid_issuance_response_error()
+        liquid_asset_id = str(issuance_result.get("asset") or "").strip().lower()
+        try:
+            bytes.fromhex(liquid_asset_id)
+        except ValueError as exc:
+            raise _liquid_issuance_response_error() from exc
+        if len(liquid_asset_id) != 64:
+            raise _liquid_issuance_response_error()
 
-    issuance_lookup = None
-    try:
-        issuance_lookup = await liquid_client.get_asset_issuance(liquid_asset_id)
-    except Exception:
-        logger.warning("Unable to fetch issuance lookup details for Liquid asset %s", liquid_asset_id)
+        issuance_lookup = None
+        try:
+            issuance_lookup = await liquid_client.get_asset_issuance(liquid_asset_id)
+        except Exception:
+            logger.warning("Unable to fetch issuance lookup details for Liquid asset %s", liquid_asset_id)
 
-    issued_supply = body.total_supply
-    issuance_metadata = _build_liquid_issuance_metadata(
-        asset_row=asset_row,
-        issuance_result=issuance_result,
-        issuance_lookup=issuance_lookup,
-        total_supply=issued_supply,
-        blind_issuance=True,
-    )
+        issued_supply = body.total_supply
+        issuance_metadata = _build_liquid_issuance_metadata(
+            asset_row=asset_row,
+            issuance_result=issuance_result,
+            issuance_lookup=issuance_lookup,
+            total_supply=issued_supply,
+            blind_issuance=True,
+        )
+        issuance_metadata["visibility"] = body.visibility
+        issuance_metadata["multisig_mode"] = multisig_mode
 
     try:
         async with _runtime_engine().connect() as conn:
@@ -887,10 +1111,12 @@ async def tokenize_asset(
                 conn,
                 asset_id=asset_id,
                 owner_id=principal.id,
+                ticker=ticker,
                 liquid_asset_id=liquid_asset_id,
                 total_supply=issued_supply,
                 circulating_supply=issued_supply,
                 unit_price_sat=body.unit_price_sat,
+                visibility=body.visibility,
                 issuance_metadata=issuance_metadata,
             )
             if tokenized_row is not None:
@@ -909,6 +1135,7 @@ async def tokenize_asset(
                         "issuance_txid": issuance_result.get("txid"),
                         "total_supply": issued_supply,
                         "unit_price_sat": body.unit_price_sat,
+                        "visibility": body.visibility,
                     },
                 )
     except IntegrityError as exc:
@@ -958,6 +1185,58 @@ async def tokenize_asset(
 
 
 @app.get(
+    "/assets/{asset_id}/document",
+    summary="Download the managed PDF document for an asset",
+)
+async def download_asset_document(
+    asset_id: uuid.UUID,
+    principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("tokenization:assets:read")),
+):
+    async with _runtime_engine().connect() as conn:
+        row = await get_asset_by_id(conn, asset_id)
+
+    if row is None:
+        raise _asset_not_found_error()
+
+    if principal.role != "admin" and str(_row_value(row, "owner_id")) != principal.id:
+        raise ContractError(
+            code="forbidden",
+            message="You do not have permission to access this document.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    storage_key = _optional_row_value(row, "documents_storage_key")
+    if not storage_key:
+        raise ContractError(
+            code="document_not_found",
+            message="Asset does not have a managed document.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    try:
+        file_path = resolve_document_path(settings=settings, storage_key=str(storage_key))
+    except ValueError as exc:
+        raise ContractError(
+            code="document_unavailable",
+            message="Managed document path is invalid.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        ) from exc
+
+    if not file_path.exists():
+        raise ContractError(
+            code="document_not_found",
+            message="Managed document file is missing.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    return FileResponse(
+        path=file_path,
+        media_type=str(_optional_row_value(row, "documents_content_type") or "application/pdf"),
+        filename=str(_optional_row_value(row, "documents_filename") or "document.pdf"),
+    )
+
+
+@app.get(
     "/assets/{asset_id}",
     status_code=status.HTTP_200_OK,
     response_model=AssetDetailResponse,
@@ -965,7 +1244,7 @@ async def tokenize_asset(
 )
 async def get_asset(
     asset_id: uuid.UUID,
-    _principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+    _principal: AuthenticatedPrincipal = Depends(_require_api_key_scopes("tokenization:assets:read")),
 ):
     async with _runtime_engine().connect() as conn:
         row = await get_asset_by_id(conn, asset_id)

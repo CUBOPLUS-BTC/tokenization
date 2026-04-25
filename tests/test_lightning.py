@@ -13,7 +13,6 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("WALLET_SERVICE_URL", "http://wallet:8001")
     monkeypatch.setenv("TOKENIZATION_SERVICE_URL", "http://tokenization:8002")
     monkeypatch.setenv("MARKETPLACE_SERVICE_URL", "http://marketplace:8003")
-    monkeypatch.setenv("EDUCATION_SERVICE_URL", "http://education:8004")
     monkeypatch.setenv("NOSTR_SERVICE_URL", "http://nostr:8005")
     monkeypatch.setenv("POSTGRES_HOST", "localhost")
     monkeypatch.setenv("POSTGRES_PORT", "5432")
@@ -274,3 +273,4 @@ def test_decode_lightning_invoice(mock_lnd, client):
     assert data["amount_sat"] == 1000
     assert data["description"] == "Test decode"
     mock_lnd.decode_pay_req.assert_called_once_with(payment_request="lnbc1...")
+

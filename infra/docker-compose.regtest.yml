@@ -1,0 +1,306 @@
+name: tokenization-regtest
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: tokenization-regtest-postgres
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
+    volumes:
+      - regtest_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform
+
+  redis:
+    image: redis:7-alpine
+    container_name: tokenization-regtest-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - regtest_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform
+
+  bitcoind:
+    image: lncm/bitcoind:v28.0
+    container_name: tokenization-regtest-bitcoind
+    user: "0:0"
+    command:
+      - -regtest
+      - -datadir=/data/.bitcoin
+      - -conf=/data/.bitcoin/bitcoin.conf
+      - -printtoconsole
+    restart: unless-stopped
+    volumes:
+      - ./infra/bitcoin/bitcoin.conf:/data/.bitcoin/bitcoin.conf:ro
+      - regtest_bitcoin_data:/data/.bitcoin
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bitcoin-cli -regtest -datadir=/data/.bitcoin getblockchaininfo >/dev/null 2>&1 || exit 1"
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+    networks:
+      - platform
+
+  lnd:
+    image: lightninglabs/lnd:v0.20.0-beta
+    container_name: tokenization-regtest-lnd
+    restart: unless-stopped
+    command:
+      - --lnddir=/data/lnd
+      - --configfile=/etc/lnd/lnd.conf
+      - --bitcoin.active
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=bitcoind:18443
+      - --bitcoind.rpcuser=local_rpc
+      - --bitcoind.rpcpass=local_rpc_password
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    volumes:
+      - ./infra/lnd/lnd.conf:/etc/lnd/lnd.conf:ro
+      - regtest_lnd_data:/data/lnd
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "lncli --network=regtest --rpcserver=localhost:10009 --tlscertpath=/data/lnd/tls.cert --macaroonpath=/data/lnd/data/chain/bitcoin/regtest/admin.macaroon getinfo >/dev/null 2>&1 || exit 1"
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
+    networks:
+      - platform
+
+  elementsd:
+    build:
+      context: ./infra/elements
+      dockerfile: Dockerfile
+    container_name: tokenization-regtest-elementsd
+    restart: unless-stopped
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    environment:
+      ELEMENTS_CONF_FILE: /etc/elements/elements.conf
+      ELEMENTS_DATA_DIR: /data/elements
+      ELEMENTS_NETWORK: elementsregtest
+      ELEMENTS_RPC_USER: user
+      ELEMENTS_RPC_PASSWORD: pass
+      ELEMENTS_RPC_PORT: "7041"
+      ELEMENTS_WALLET_NAME: platform
+    volumes:
+      - ./infra/elements/elements.conf:/etc/elements/elements.conf:ro
+      - regtest_elements_data:/data/elements
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "elements-cli -chain=elementsregtest -rpcuser=user -rpcpassword=pass -rpcport=7041 getblockchaininfo >/dev/null 2>&1 || exit 1"
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+    networks:
+      - platform
+
+  migrate:
+    build:
+      context: .
+      dockerfile: ./services/migrate/Dockerfile
+    pull_policy: build
+    container_name: tokenization-regtest-migrate
+    restart: "no"
+    labels:
+      - "com.tokenization.migrate.role=one-shot"
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - platform
+
+  auth:
+    build:
+      context: .
+      dockerfile: ./services/auth/Dockerfile
+    container_name: tokenization-regtest-auth
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - platform
+
+  wallet:
+    build:
+      context: .
+      dockerfile: ./services/wallet/Dockerfile
+    container_name: tokenization-regtest-wallet
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
+    volumes:
+      - regtest_lnd_data:/run/secrets/lnd:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      bitcoind:
+        condition: service_healthy
+      lnd:
+        condition: service_healthy
+      elementsd:
+        condition: service_healthy
+    networks:
+      - platform
+
+  tokenization:
+    build:
+      context: .
+      dockerfile: ./services/tokenization/Dockerfile
+    container_name: tokenization-regtest-tokenization
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      elementsd:
+        condition: service_healthy
+    networks:
+      - platform
+
+  marketplace:
+    build:
+      context: .
+      dockerfile: ./services/marketplace/Dockerfile
+    container_name: tokenization-regtest-marketplace
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - platform
+
+  nostr:
+    build:
+      context: .
+      dockerfile: ./services/nostr/Dockerfile
+    container_name: tokenization-regtest-nostr
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - platform
+
+  admin:
+    build:
+      context: .
+      dockerfile: ./services/admin/Dockerfile
+    container_name: tokenization-regtest-admin
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - platform
+
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    container_name: tokenization-regtest-gateway
+    restart: unless-stopped
+    env_file:
+      - path: ./infra/.env.regtest
+        required: false
+    environment:
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      CORS_ALLOWED_METHODS: ${CORS_ALLOWED_METHODS:-GET, POST, PUT, PATCH, DELETE, OPTIONS}
+      CORS_ALLOWED_HEADERS: ${CORS_ALLOWED_HEADERS:-Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Request-ID, X-Correlation-ID, X-API-Key, X-2FA-Code, X-Idempotency-Key}
+      CORS_EXPOSE_HEADERS: ${CORS_EXPOSE_HEADERS:-X-Request-ID}
+      CORS_MAX_AGE: ${CORS_MAX_AGE:-86400}
+      CORS_ALLOW_CREDENTIALS: ${CORS_ALLOW_CREDENTIALS:-true}
+    depends_on:
+      - auth
+      - wallet
+      - tokenization
+      - marketplace
+      - nostr
+      - admin
+    networks:
+      - platform
+
+volumes:
+  regtest_postgres_data:
+  regtest_redis_data:
+  regtest_bitcoin_data:
+  regtest_lnd_data:
+  regtest_elements_data:
+
+networks:
+  platform:
+    driver: bridge

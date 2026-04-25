@@ -38,7 +38,6 @@ def test_settings():
         "WALLET_SERVICE_URL": "http://wallet:8001",
         "TOKENIZATION_SERVICE_URL": "http://tokenization:8002",
         "MARKETPLACE_SERVICE_URL": "http://marketplace:8003",
-        "EDUCATION_SERVICE_URL": "http://education:8004",
         "NOSTR_SERVICE_URL": "http://nostr:8005",
         "POSTGRES_HOST": "localhost",
         "POSTGRES_PORT": "5432",
@@ -193,13 +192,21 @@ class TestEndToEndTradingSuite:
             asset_record["status"] = "evaluating"
             return SimpleNamespace(**asset_record)
             
+        admin = SimpleNamespace(id=uuid.uuid4(), role="admin")
+        admin_token = issue_token_pair(
+            user_id=str(admin.id),
+            role="admin",
+            wallet_id=None,
+            secret=tok_settings.jwt_secret,
+        ).access_token
+
         with (
             patch("services.tokenization.main.get_user_by_id", return_value=seller),
             patch("services.tokenization.main.get_asset_by_id", side_effect=mock_get_asset_by_id),
             patch("services.tokenization.main.begin_asset_evaluation", side_effect=mock_begin_asset_eval),
             patch("services.tokenization.main._dispatch_asset_evaluation")
         ):
-            eval_resp = tok_client.post(f"/assets/{asset_id}/evaluate", headers=_auth_headers(seller_token))
+            eval_resp = tok_client.post(f"/assets/{asset_id}/evaluate", headers=_auth_headers(admin_token))
             if eval_resp.status_code != 202:
                 pytest.fail(f"Stage 2 (Evaluation) broken: Expected 202, got {eval_resp.status_code}")
                 
@@ -400,3 +407,4 @@ class TestEndToEndTradingSuite:
             # Check that the escrow assumes regtest addresses properly
             # In mock it produces 'bcrt1q'
             assert escrow_record["multisig_address"].startswith("bcrt1q"), "Stage 5 broken: Escrow address NOT using regtest format"
+

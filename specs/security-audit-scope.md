@@ -1,7 +1,6 @@
 # Security Audit Scope
 
 > Migration notice: this scope document still references some Taproot / tapd infrastructure assumptions. The current runtime dependency for asset issuance and Liquid settlement is Elements RPC.
-
 > Defines the scope, assets, and areas of focus for security audits of the
 > OpenProof asset-tokenization platform.
 

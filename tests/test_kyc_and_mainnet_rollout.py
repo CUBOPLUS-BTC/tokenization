@@ -461,7 +461,15 @@ class TestMainnetEnvironmentSeparation:
         assert "rejection_reason" in column_names
 
     def test_alembic_migration_exists(self):
-        """An Alembic migration for kyc_verifications must exist."""
+        """Schema is applied via a squashed initial migration that loads full metadata (includes kyc_verifications)."""
         versions_dir = Path(__file__).resolve().parent.parent / "alembic" / "versions"
-        migration_files = [f.name for f in versions_dir.iterdir() if "kyc" in f.name.lower()]
-        assert len(migration_files) >= 1, f"No KYC migration found in {versions_dir}"
+        initial = sorted(
+            path
+            for path in versions_dir.iterdir()
+            if path.is_file() and path.name.endswith("_initial_schema.py") and "_0001_" in path.name
+        )
+        assert len(initial) == 1, f"Expected exactly one squashed 0001_initial_schema in {versions_dir}"
+        text = initial[0].read_text(encoding="utf-8")
+        assert "metadata.create_all" in text
+        assert "metadata.py" in text or "_alembic_squash_metadata" in text
+

@@ -99,7 +99,7 @@ def _network_name(network: str) -> str:
         return normalized
     if normalized == "mainnet":
         return "liquidv1"
-    if normalized in {"testnet", "signet"}:
+    if normalized in {"testnet", "testnet4", "signet"}:
         return "liquidtestnet"
     return "elementsregtest"
 

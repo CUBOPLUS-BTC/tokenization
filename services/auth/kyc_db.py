@@ -45,6 +45,7 @@ async def create_kyc_record(
     user_id: str | uuid.UUID,
     document_url: str | None = None,
     notes: str | None = None,
+    metadata: dict | None = None,
 ) -> sa.engine.Row:
     """Insert a new KYC record in ``pending`` state for the user."""
     now = _utc_now()
@@ -55,6 +56,7 @@ async def create_kyc_record(
             user_id=_as_uuid(user_id),
             status="pending",
             document_url=document_url,
+            metadata=metadata,
             notes=notes,
             created_at=now,
             updated_at=now,
@@ -75,6 +77,7 @@ async def update_kyc_status(
     reviewed_by: str | uuid.UUID,
     rejection_reason: str | None = None,
     notes: str | None = None,
+    metadata: dict | None = None,
 ) -> sa.engine.Row | None:
     """Transition the KYC status for *user_id*.
 
@@ -94,11 +97,37 @@ async def update_kyc_status(
         values["rejection_reason"] = rejection_reason
     if notes is not None:
         values["notes"] = notes
+    if metadata is not None:
+        values["metadata"] = metadata
 
     result = await conn.execute(
         sa.update(kyc_table)
         .where(kyc_table.c.user_id == _as_uuid(user_id))
         .values(**values)
+        .returning(kyc_table)
+    )
+    row = result.fetchone()
+    if row is None:
+        await conn.rollback()
+        return None
+    await conn.commit()
+    return row
+
+
+async def update_kyc_metadata(
+    conn: AsyncConnection,
+    *,
+    user_id: str | uuid.UUID,
+    metadata: dict,
+) -> sa.engine.Row | None:
+    now = _utc_now()
+    result = await conn.execute(
+        sa.update(kyc_table)
+        .where(kyc_table.c.user_id == _as_uuid(user_id))
+        .values(
+            metadata=metadata,
+            updated_at=now,
+        )
         .returning(kyc_table)
     )
     row = result.fetchone()

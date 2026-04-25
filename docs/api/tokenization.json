@@ -1,0 +1,1196 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Tokenization Service",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/metrics": {
+      "get": {
+        "tags": [
+          "Observability"
+        ],
+        "summary": "Get Metrics",
+        "operationId": "get_metrics_metrics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ready": {
+      "get": {
+        "summary": "Ready",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/liquid/info": {
+      "get": {
+        "summary": "Liquid Info",
+        "operationId": "liquid_info_liquid_info_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/liquid/issuances": {
+      "get": {
+        "summary": "Liquid Issuances",
+        "operationId": "liquid_issuances_liquid_issuances_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assets": {
+      "post": {
+        "summary": "Submit an asset for review",
+        "operationId": "submit_asset_assets_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssetCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "Return a filtered asset catalog",
+        "operationId": "get_assets_assets_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "evaluating",
+                    "approved",
+                    "rejected",
+                    "tokenized"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "real_estate",
+                    "commodity",
+                    "invoice",
+                    "art",
+                    "other"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assets/upload": {
+      "post": {
+        "summary": "Submit an asset with an uploaded PDF document",
+        "operationId": "submit_asset_with_document_assets_upload_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_submit_asset_with_document_assets_upload_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assets/{asset_id}/evaluate": {
+      "post": {
+        "summary": "Request AI evaluation for an asset",
+        "operationId": "request_asset_evaluation_assets__asset_id__evaluate_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Asset Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetEvaluationRequestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assets/{asset_id}/tokenize": {
+      "post": {
+        "summary": "Tokenize an approved asset into tradable fractions",
+        "operationId": "tokenize_asset_assets__asset_id__tokenize_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Asset Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssetTokenizationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assets/{asset_id}/document": {
+      "get": {
+        "summary": "Download the managed PDF document for an asset",
+        "operationId": "download_asset_document_assets__asset_id__document_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Asset Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assets/{asset_id}": {
+      "get": {
+        "summary": "Return a single asset with AI and tokenization details",
+        "operationId": "get_asset_assets__asset_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Asset Id"
+            }
+          },
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AssetCreateRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Description"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "real_estate",
+              "commodity",
+              "invoice",
+              "art",
+              "other"
+            ],
+            "title": "Category"
+          },
+          "valuation_sat": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Valuation Sat"
+          },
+          "documents_url": {
+            "type": "string",
+            "minLength": 1,
+            "format": "uri",
+            "title": "Documents Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "description",
+          "category",
+          "valuation_sat",
+          "documents_url"
+        ],
+        "title": "AssetCreateRequest"
+      },
+      "AssetDetailOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "owner_id": {
+            "type": "string",
+            "title": "Owner Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "real_estate",
+              "commodity",
+              "invoice",
+              "art",
+              "other"
+            ],
+            "title": "Category"
+          },
+          "valuation_sat": {
+            "type": "integer",
+            "title": "Valuation Sat"
+          },
+          "documents_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documents Url"
+          },
+          "document": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssetDocumentOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "token": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssetTokenOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "evaluating",
+              "approved",
+              "rejected",
+              "tokenized"
+            ],
+            "title": "Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "ai_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Score"
+          },
+          "ai_analysis": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Analysis"
+          },
+          "projected_roi": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Projected Roi"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "owner_id",
+          "name",
+          "description",
+          "category",
+          "valuation_sat",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AssetDetailOut"
+      },
+      "AssetDetailResponse": {
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/AssetDetailOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "asset"
+        ],
+        "title": "AssetDetailResponse"
+      },
+      "AssetDocumentOut": {
+        "properties": {
+          "storage_key": {
+            "type": "string",
+            "title": "Storage Key"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "storage_key",
+          "filename",
+          "content_type",
+          "size_bytes"
+        ],
+        "title": "AssetDocumentOut"
+      },
+      "AssetEvaluationRequestResponse": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "estimated_completion": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Estimated Completion"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message",
+          "estimated_completion"
+        ],
+        "title": "AssetEvaluationRequestResponse"
+      },
+      "AssetListResponse": {
+        "properties": {
+          "assets": {
+            "items": {
+              "$ref": "#/components/schemas/AssetOut"
+            },
+            "type": "array",
+            "title": "Assets"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "assets",
+          "next_cursor"
+        ],
+        "title": "AssetListResponse"
+      },
+      "AssetOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "owner_id": {
+            "type": "string",
+            "title": "Owner Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "real_estate",
+              "commodity",
+              "invoice",
+              "art",
+              "other"
+            ],
+            "title": "Category"
+          },
+          "valuation_sat": {
+            "type": "integer",
+            "title": "Valuation Sat"
+          },
+          "documents_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Documents Url"
+          },
+          "document": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssetDocumentOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "token": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssetTokenOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "evaluating",
+              "approved",
+              "rejected",
+              "tokenized"
+            ],
+            "title": "Status"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "owner_id",
+          "name",
+          "description",
+          "category",
+          "valuation_sat",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AssetOut"
+      },
+      "AssetResponse": {
+        "properties": {
+          "asset": {
+            "$ref": "#/components/schemas/AssetOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "asset"
+        ],
+        "title": "AssetResponse"
+      },
+      "AssetTokenOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "ticker": {
+            "type": "string",
+            "title": "Ticker"
+          },
+          "liquid_asset_id": {
+            "type": "string",
+            "title": "Liquid Asset Id"
+          },
+          "total_supply": {
+            "type": "integer",
+            "title": "Total Supply"
+          },
+          "circulating_supply": {
+            "type": "integer",
+            "title": "Circulating Supply"
+          },
+          "unit_price_sat": {
+            "type": "integer",
+            "title": "Unit Price Sat"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "public",
+              "private"
+            ],
+            "title": "Visibility"
+          },
+          "issuance_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issuance Metadata"
+          },
+          "minted_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Minted At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "ticker",
+          "liquid_asset_id",
+          "total_supply",
+          "circulating_supply",
+          "unit_price_sat",
+          "visibility",
+          "minted_at"
+        ],
+        "title": "AssetTokenOut"
+      },
+      "AssetTokenizationRequest": {
+        "properties": {
+          "ticker": {
+            "type": "string",
+            "maxLength": 10,
+            "minLength": 1,
+            "title": "Ticker"
+          },
+          "liquid_asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Liquid Asset Id"
+          },
+          "taproot_asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Taproot Asset Id"
+          },
+          "total_supply": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Total Supply"
+          },
+          "unit_price_sat": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Unit Price Sat"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "public",
+              "private"
+            ],
+            "title": "Visibility",
+            "default": "public"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ticker",
+          "total_supply",
+          "unit_price_sat"
+        ],
+        "title": "AssetTokenizationRequest"
+      },
+      "Body_submit_asset_with_document_assets_upload_post": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "real_estate",
+              "commodity",
+              "invoice",
+              "art",
+              "other"
+            ],
+            "title": "Category"
+          },
+          "valuation_sat": {
+            "type": "integer",
+            "exclusiveMinimum": 0.0,
+            "title": "Valuation Sat"
+          },
+          "document": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "Document"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "description",
+          "category",
+          "valuation_sat",
+          "document"
+        ],
+        "title": "Body_submit_asset_with_document_assets_upload_post"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

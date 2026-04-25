@@ -19,7 +19,6 @@ def _test_settings() -> Settings:
         wallet_service_url="http://wallet:8001",
         tokenization_service_url="http://tokenization:8002",
         marketplace_service_url="http://marketplace:8003",
-        education_service_url="http://education:8004",
         nostr_service_url="http://nostr:8005",
         postgres_host="postgres",
         postgres_port=5432,
@@ -123,3 +122,4 @@ def test_metrics_endpoint_supports_json(monkeypatch):
     assert payload["env_profile"] == "beta"
     assert payload["bitcoin_network"] == "signet"
     assert payload["readiness"]["status"] == "ready"
+

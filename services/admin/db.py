@@ -11,7 +11,6 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from common.db.metadata import courses as courses_table
 from common.db.metadata import disputes as disputes_table
 from common.db.metadata import treasury as treasury_table
 from common.db.metadata import users as users_table
@@ -80,41 +79,6 @@ async def update_user_role(
     row = result.fetchone()
     if row is None:
         return None
-    await conn.commit()
-    return row
-
-
-# ---------------------------------------------------------------------------
-# Courses
-# ---------------------------------------------------------------------------
-
-async def create_course(
-    conn: AsyncConnection,
-    *,
-    title: str,
-    description: str,
-    content_url: str,
-    category: str,
-    difficulty: str,
-) -> sa.engine.Row:
-    now = _utc_now()
-    result = await conn.execute(
-        sa.insert(courses_table)
-        .values(
-            id=uuid.uuid4(),
-            title=title,
-            description=description,
-            content_url=content_url,
-            category=category,
-            difficulty=difficulty,
-            is_published=False,
-            created_at=now,
-            updated_at=now,
-        )
-        .returning(courses_table)
-    )
-    row = result.fetchone()
-    assert row is not None
     await conn.commit()
     return row
 
@@ -212,3 +176,4 @@ async def get_dispute_by_trade_id(
         )
     )
     return result.fetchone()
+

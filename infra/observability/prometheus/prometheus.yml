@@ -62,18 +62,6 @@ scrape_configs:
           environment: beta
           service: marketplace
 
-  - job_name: education
-    metrics_path: /metrics/education
-    static_configs:
-      - targets: ["prod-gateway.internal:8000"]
-        labels:
-          environment: production
-          service: education
-      - targets: ["beta-gateway.internal:8000"]
-        labels:
-          environment: beta
-          service: education
-
   - job_name: nostr
     metrics_path: /metrics/nostr
     static_configs:
@@ -194,3 +182,4 @@ scrape_configs:
         target_label: instance
       - target_label: __address__
         replacement: blackbox:9115
+

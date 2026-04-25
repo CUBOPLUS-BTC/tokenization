@@ -27,34 +27,6 @@ class UpdateUserRoleRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Course Schemas
-# ---------------------------------------------------------------------------
-
-CourseCategory = Literal["bitcoin", "finance", "programming", "entrepreneurship"]
-CourseDifficulty = Literal["beginner", "intermediate", "advanced"]
-
-
-class CreateCourseRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
-    description: str = Field(min_length=1)
-    content_url: str = Field(pattern=r"^https?://")
-    category: CourseCategory
-    difficulty: CourseDifficulty
-
-
-class CourseOut(BaseModel):
-    id: str
-    title: str
-    description: str
-    category: CourseCategory
-    difficulty: CourseDifficulty
-    content_url: str
-
-
-class CourseResponse(BaseModel):
-    course: CourseOut
-
-
 # ---------------------------------------------------------------------------
 # Treasury Schemas
 # ---------------------------------------------------------------------------
@@ -70,6 +42,7 @@ class TreasuryEntryOut(BaseModel):
     amount_sat: int
     balance_after_sat: int
     reference_id: str | None = None
+    source_referral_reward_id: str | None = None
     description: str | None = None
     created_at: datetime
 
@@ -85,6 +58,9 @@ class TreasuryDisburseResponse(BaseModel):
 class AdminDisputeResolveRequest(BaseModel):
     resolution: Literal["refund_buyer", "release_to_seller"]
     notes: str = Field(min_length=1)
+    resolution_txid: str = Field(min_length=64, max_length=64)
+    collected_signatures: dict = Field(default_factory=dict)
+    settlement_metadata: dict | None = None
 
 
 class DisputeOut(BaseModel):

@@ -45,6 +45,30 @@ users = sa.Table(
     ),
 )
 
+api_keys = sa.Table(
+    "api_keys",
+    metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("name", sa.String(length=100), nullable=False),
+    sa.Column("key_prefix", sa.String(length=12), nullable=False),
+    sa.Column("key_hash", sa.String(length=128), nullable=False),
+    sa.Column("scopes", postgresql.ARRAY(sa.Text()), nullable=False),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("revoked", sa.Boolean(), nullable=False, server_default=sa.false()),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
+    sa.Column("created_by", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.ForeignKeyConstraint(["user_id"], ["users.id"], name="fk_api_keys_user_id_users", ondelete="CASCADE"),
+    sa.ForeignKeyConstraint(["created_by"], ["users.id"], name="fk_api_keys_created_by_users"),
+    sa.UniqueConstraint("key_prefix", name="uq_api_keys_key_prefix"),
+    sa.Index("idx_api_keys_key_prefix", "key_prefix"),
+    sa.Index("idx_api_keys_user_id", "user_id"),
+    sa.Index("idx_api_keys_revoked", "revoked"),
+    sa.CheckConstraint("char_length(trim(name)) > 0", name="name_not_blank"),
+    sa.CheckConstraint("coalesce(array_length(scopes, 1), 0) > 0", name="scopes_non_empty"),
+)
+
 refresh_token_sessions = sa.Table(
     "refresh_token_sessions",
     metadata,
@@ -97,6 +121,166 @@ nostr_identities = sa.Table(
     sa.UniqueConstraint("pubkey", name="uq_nostr_identities_pubkey"),
 )
 
+nostr_campaigns = sa.Table(
+    "nostr_campaigns",
+    metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("name", sa.String(length=140), nullable=False),
+    sa.Column("status", sa.String(length=20), nullable=False, server_default="draft"),
+    sa.Column("funding_mode", sa.String(length=20), nullable=False),
+    sa.Column("reward_amount_sat", sa.BigInteger(), nullable=False),
+    sa.Column("budget_total_sat", sa.BigInteger(), nullable=False),
+    sa.Column("budget_reserved_sat", sa.BigInteger(), nullable=False, server_default="0"),
+    sa.Column("budget_spent_sat", sa.BigInteger(), nullable=False, server_default="0"),
+    sa.Column("budget_refunded_sat", sa.BigInteger(), nullable=False, server_default="0"),
+    sa.Column("max_rewards_per_user", sa.Integer(), nullable=False, server_default="1"),
+    sa.Column("start_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("end_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
+    sa.ForeignKeyConstraint(["user_id"], ["users.id"], name="fk_nostr_campaigns_user_id_users"),
+    sa.Index("ix_nostr_campaigns_user_id", "user_id"),
+    sa.Index("ix_nostr_campaigns_status", "status"),
+    sa.CheckConstraint(
+        "status IN ('draft', 'funding_pending', 'active', 'paused', 'completed', 'exhausted', 'cancelled', 'failed')",
+        name="status_allowed",
+    ),
+    sa.CheckConstraint(
+        "funding_mode IN ('intraledger', 'external')",
+        name="funding_mode_allowed",
+    ),
+    sa.CheckConstraint("reward_amount_sat > 0", name="reward_amount_positive"),
+    sa.CheckConstraint("budget_total_sat > 0", name="budget_total_positive"),
+    sa.CheckConstraint(
+        "budget_reserved_sat >= 0 AND budget_spent_sat >= 0 AND budget_refunded_sat >= 0",
+        name="budget_non_negative",
+    ),
+    sa.CheckConstraint("max_rewards_per_user > 0", name="max_rewards_positive"),
+    sa.CheckConstraint("end_at IS NULL OR start_at IS NULL OR end_at > start_at", name="campaign_window_positive"),
+)
+
+nostr_campaign_triggers = sa.Table(
+    "nostr_campaign_triggers",
+    metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("campaign_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("trigger_type", sa.String(length=30), nullable=False),
+    sa.Column("operator", sa.String(length=20), nullable=False),
+    sa.Column("value", sa.Text(), nullable=False),
+    sa.Column("case_sensitive", sa.Boolean(), nullable=False, server_default=sa.false()),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
+    sa.ForeignKeyConstraint(
+        ["campaign_id"],
+        ["nostr_campaigns.id"],
+        name="fk_nostr_campaign_triggers_campaign_id_nostr_campaigns",
+        ondelete="CASCADE",
+    ),
+    sa.Index("ix_nostr_campaign_triggers_campaign_id", "campaign_id"),
+    sa.CheckConstraint(
+        "trigger_type IN ('hashtag', 'tag', 'content_substring', 'author_pubkey', 'event_kind')",
+        name="trigger_type_allowed",
+    ),
+    sa.CheckConstraint("operator IN ('equals', 'contains', 'in')", name="operator_allowed"),
+    sa.CheckConstraint("char_length(trim(value)) > 0", name="value_not_blank"),
+)
+
+nostr_campaign_fundings = sa.Table(
+    "nostr_campaign_fundings",
+    metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("campaign_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("wallet_id", postgresql.UUID(as_uuid=True), nullable=True),
+    sa.Column("funding_mode", sa.String(length=20), nullable=False),
+    sa.Column("amount_sat", sa.BigInteger(), nullable=False),
+    sa.Column("status", sa.String(length=20), nullable=False, server_default="pending"),
+    sa.Column("ln_payment_hash", sa.String(length=64), nullable=True),
+    sa.Column("transaction_id", postgresql.UUID(as_uuid=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
+    sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.ForeignKeyConstraint(
+        ["campaign_id"],
+        ["nostr_campaigns.id"],
+        name="fk_nostr_campaign_fundings_campaign_id_nostr_campaigns",
+        ondelete="CASCADE",
+    ),
+    sa.ForeignKeyConstraint(["wallet_id"], ["wallets.id"], name="fk_nostr_campaign_fundings_wallet_id_wallets"),
+    sa.ForeignKeyConstraint(
+        ["transaction_id"],
+        ["transactions.id"],
+        name="fk_nostr_campaign_fundings_transaction_id_transactions",
+    ),
+    sa.Index("ix_nostr_campaign_fundings_campaign_id", "campaign_id"),
+    sa.Index("ix_nostr_campaign_fundings_status", "status"),
+    sa.CheckConstraint("funding_mode IN ('intraledger', 'external')", name="funding_mode_allowed"),
+    sa.CheckConstraint("amount_sat > 0", name="amount_positive"),
+    sa.CheckConstraint("status IN ('pending', 'confirmed', 'cancelled', 'refunded')", name="status_allowed"),
+)
+
+nostr_campaign_matches = sa.Table(
+    "nostr_campaign_matches",
+    metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("campaign_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("relay_url", sa.Text(), nullable=False),
+    sa.Column("event_id", sa.String(length=64), nullable=False),
+    sa.Column("event_pubkey", sa.String(length=64), nullable=False),
+    sa.Column("event_kind", sa.Integer(), nullable=False),
+    sa.Column("match_fingerprint", sa.String(length=255), nullable=False),
+    sa.Column("status", sa.String(length=20), nullable=False, server_default="matched"),
+    sa.Column("ignore_reason", sa.Text(), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
+    sa.ForeignKeyConstraint(
+        ["campaign_id"],
+        ["nostr_campaigns.id"],
+        name="fk_nostr_campaign_matches_campaign_id_nostr_campaigns",
+        ondelete="CASCADE",
+    ),
+    sa.UniqueConstraint("campaign_id", "event_id", name="uq_nostr_campaign_matches_campaign_event"),
+    sa.UniqueConstraint("campaign_id", "match_fingerprint", name="uq_nostr_campaign_matches_campaign_fingerprint"),
+    sa.Index("ix_nostr_campaign_matches_campaign_id", "campaign_id"),
+    sa.Index("ix_nostr_campaign_matches_status", "status"),
+    sa.CheckConstraint("status IN ('matched', 'ignored', 'reserved', 'paid', 'failed')", name="status_allowed"),
+)
+
+nostr_campaign_payouts = sa.Table(
+    "nostr_campaign_payouts",
+    metadata,
+    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("campaign_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("match_id", postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column("recipient_pubkey", sa.String(length=64), nullable=False),
+    sa.Column("recipient_lud16", sa.String(length=255), nullable=True),
+    sa.Column("recipient_lud06", sa.Text(), nullable=True),
+    sa.Column("zap_request_event_id", sa.String(length=64), nullable=True),
+    sa.Column("zap_invoice", sa.Text(), nullable=True),
+    sa.Column("payment_hash", sa.String(length=64), nullable=True),
+    sa.Column("amount_sat", sa.BigInteger(), nullable=False),
+    sa.Column("fee_sat", sa.BigInteger(), nullable=True),
+    sa.Column("status", sa.String(length=20), nullable=False, server_default="pending"),
+    sa.Column("failure_reason", sa.Text(), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
+    sa.Column("settled_at", sa.DateTime(timezone=True), nullable=True),
+    sa.ForeignKeyConstraint(
+        ["campaign_id"],
+        ["nostr_campaigns.id"],
+        name="fk_nostr_campaign_payouts_campaign_id_nostr_campaigns",
+        ondelete="CASCADE",
+    ),
+    sa.ForeignKeyConstraint(
+        ["match_id"],
+        ["nostr_campaign_matches.id"],
+        name="fk_nostr_campaign_payouts_match_id_nostr_campaign_matches",
+        ondelete="CASCADE",
+    ),
+    sa.Index("ix_nostr_campaign_payouts_campaign_id", "campaign_id"),
+    sa.Index("ix_nostr_campaign_payouts_match_id", "match_id"),
+    sa.Index("ix_nostr_campaign_payouts_status", "status"),
+    sa.CheckConstraint("amount_sat > 0", name="amount_positive"),
+    sa.CheckConstraint("fee_sat IS NULL OR fee_sat >= 0", name="fee_non_negative"),
+    sa.CheckConstraint("status IN ('pending', 'succeeded', 'failed')", name="status_allowed"),
+)
+
 transactions = sa.Table(
     "transactions",
     metadata,
@@ -137,9 +321,9 @@ wallet_addresses = sa.Table(
     metadata,
     sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
     sa.Column("wallet_id", postgresql.UUID(as_uuid=True), nullable=False),
-    sa.Column("address", sa.String(length=100), nullable=False),
+    sa.Column("address", sa.String(length=255), nullable=False),
     sa.Column("derivation_index", sa.Integer(), nullable=False),
-    sa.Column("script_pubkey", sa.String(length=100), nullable=False),
+    sa.Column("script_pubkey", sa.String(length=255), nullable=False),
     sa.Column("imported_to_node", sa.Boolean(), nullable=False, server_default=sa.false()),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.ForeignKeyConstraint(["wallet_id"], ["wallets.id"], name="fk_wallet_addresses_wallet_id_wallets"),
@@ -184,6 +368,10 @@ assets = sa.Table(
     sa.Column("category", sa.String(length=50), nullable=False),
     sa.Column("valuation_sat", sa.BigInteger(), nullable=False),
     sa.Column("documents_url", sa.Text(), nullable=True),
+    sa.Column("documents_storage_key", sa.Text(), nullable=True),
+    sa.Column("documents_filename", sa.String(length=255), nullable=True),
+    sa.Column("documents_content_type", sa.String(length=100), nullable=True),
+    sa.Column("documents_size_bytes", sa.BigInteger(), nullable=True),
     sa.Column("ai_score", sa.Numeric(precision=5, scale=2), nullable=True),
     sa.Column("ai_analysis", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column("projected_roi", sa.Numeric(precision=5, scale=2), nullable=True),
@@ -206,6 +394,10 @@ assets = sa.Table(
         "ai_score IS NULL OR (ai_score >= 0 AND ai_score <= 100)",
         name="ai_score_range",
     ),
+    sa.CheckConstraint(
+        "documents_size_bytes IS NULL OR documents_size_bytes >= 0",
+        name="documents_size_non_negative",
+    ),
 )
 
 tokens = sa.Table(
@@ -214,15 +406,22 @@ tokens = sa.Table(
     sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
     sa.Column("asset_id", postgresql.UUID(as_uuid=True), nullable=False),
     sa.Column("liquid_asset_id", sa.String(length=64), nullable=False),
+    sa.Column("ticker", sa.String(length=10), nullable=False),
     sa.Column("total_supply", sa.BigInteger(), nullable=False),
     sa.Column("circulating_supply", sa.BigInteger(), nullable=False, server_default="0"),
     sa.Column("unit_price_sat", sa.BigInteger(), nullable=False),
+    sa.Column("visibility", sa.String(length=20), nullable=False, server_default="public"),
     sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column("minted_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.ForeignKeyConstraint(["asset_id"], ["assets.id"], name="fk_tokens_asset_id_assets"),
     sa.UniqueConstraint("liquid_asset_id", name="uq_tokens_liquid_asset_id"),
     sa.Index("ix_tokens_asset_id", "asset_id"),
+    sa.Index("ix_tokens_visibility", "visibility"),
+    sa.CheckConstraint(
+        "visibility IN ('public', 'private')",
+        name="visibility_allowed",
+    ),
 )
 
 token_balances = sa.Table(
@@ -319,6 +518,7 @@ escrows = sa.Table(
     sa.Column("funding_txid", sa.String(length=64), nullable=True),
     sa.Column("release_txid", sa.String(length=64), nullable=True),
     sa.Column("refund_txid", sa.String(length=64), nullable=True),
+    sa.Column("multisig_mode", sa.String(length=20), nullable=False, server_default="standard"),
     sa.Column("collected_signatures", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column("settlement_metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column("status", sa.String(length=20), nullable=False, server_default="created"),
@@ -331,6 +531,10 @@ escrows = sa.Table(
     sa.CheckConstraint(
         "status IN ('created', 'funded', 'inspection_pending', 'released', 'refunded', 'disputed', 'expired')",
         name="status_allowed",
+    ),
+    sa.CheckConstraint(
+        "multisig_mode IN ('standard', 'external_api')",
+        name="multisig_mode_allowed",
     ),
 )
 
@@ -410,43 +614,6 @@ treasury = sa.Table(
     ),
 )
 
-courses = sa.Table(
-    "courses",
-    metadata,
-    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-    sa.Column("title", sa.String(length=200), nullable=False),
-    sa.Column("description", sa.Text(), nullable=False),
-    sa.Column("content_url", sa.Text(), nullable=False),
-    sa.Column("category", sa.String(length=50), nullable=False),
-    sa.Column("difficulty", sa.String(length=20), nullable=False),
-    sa.Column("is_published", sa.Boolean(), nullable=False, server_default=sa.false()),
-    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
-    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
-    sa.CheckConstraint(
-        "category IN ('bitcoin', 'finance', 'programming', 'entrepreneurship')",
-        name="category_allowed",
-    ),
-    sa.CheckConstraint(
-        "difficulty IN ('beginner', 'intermediate', 'advanced')",
-        name="difficulty_allowed",
-    ),
-)
-
-enrollments = sa.Table(
-    "enrollments",
-    metadata,
-    sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
-    sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
-    sa.Column("course_id", postgresql.UUID(as_uuid=True), nullable=False),
-    sa.Column("progress", sa.Numeric(precision=5, scale=2), nullable=False, server_default="0"),
-    sa.Column("enrolled_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
-    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
-    sa.ForeignKeyConstraint(["user_id"], ["users.id"], name="fk_enrollments_user_id_users"),
-    sa.ForeignKeyConstraint(["course_id"], ["courses.id"], name="fk_enrollments_course_id_courses"),
-    sa.UniqueConstraint("user_id", "course_id", name="uq_enrollments_user_course"),
-    sa.CheckConstraint("progress >= 0 AND progress <= 100", name="progress_range"),
-)
-
 disputes = sa.Table(
     "disputes",
     metadata,
@@ -458,6 +625,11 @@ disputes = sa.Table(
     sa.Column("resolution", sa.String(length=10), nullable=True),
     sa.Column("resolved_by", postgresql.UUID(as_uuid=True), nullable=True),
     sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column(
+        "resolution_notes",
+        sa.Text(),
+        nullable=True,
+    ),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("NOW()")),
     sa.ForeignKeyConstraint(["trade_id"], ["trades.id"], name="fk_disputes_trade_id_trades"),
@@ -544,3 +716,4 @@ kyc_verifications = sa.Table(
         name="status_allowed",
     ),
 )
+

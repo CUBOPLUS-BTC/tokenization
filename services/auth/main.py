@@ -14,9 +14,16 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+import base64
+import hashlib
+import ipaddress
 from pathlib import Path
+import logging
+import secrets
+import string
 import sys
+import time
 import uuid
 
 from typing import Annotated, Optional
@@ -44,6 +51,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from common import get_settings
 from common import (
+    ALL_API_KEY_SCOPES,
+    CustodyError,
+    allowed_api_key_scopes_for_role,
     create_referral_signup_reward,
     default_onramp_notices,
     describe_custody_settings,
@@ -52,15 +62,25 @@ from common import (
     list_onramp_provider_views,
     list_referral_rewards_for_user,
     list_referred_users,
+    record_audit_event,
     summarize_referrals_for_user,
+    extract_api_key_prefix,
+    invalidate_api_key_verify_cache,
 )
 from common.security import install_http_security
 from common.readiness import get_readiness_payload
 from common.logging import configure_structured_logging
 from common.metrics import metrics, mount_metrics_endpoint, record_business_event
 from common.alerting import alert_dispatcher, AlertSeverity, configure_alerting
+from common.db.schema_check import ensure_schema_ready
 
 from schemas import (
+    ApiKeyCreateRequest,
+    ApiKeyCreateResponse,
+    ApiKeyListResponse,
+    ApiKeyOut,
+    ApiKeyVerifyRequest,
+    ApiKeyVerifyResponse,
     AuthResponse,
     KycAdminUpdateRequest,
     KycListResponse,
@@ -70,6 +90,7 @@ from schemas import (
     LoginRequest,
     LogoutRequest,
     MessageResponse,
+    NostrChallengeResponse,
     NostrLoginRequest,
     RefreshRequest,
     RegisterRequest,
@@ -86,27 +107,44 @@ from schemas import (
     ReferredUserOut,
 )
 from jwt_utils import decode_token, issue_token_pair
-from nostr_utils import validate_nostr_event, NostrValidationError
+from services.auth.nostr_utils import (
+    NostrValidationError,
+    extract_challenge_from_event,
+    validate_nostr_event,
+)
 from db import (
+    create_api_key,
     create_nostr_identity,
     create_nostr_user,
     create_refresh_session,
     create_user,
+    get_api_key_by_id,
+    get_api_key_by_name,
+    get_api_key_by_prefix,
     enable_2fa,
+    set_user_2fa_verified,
     get_nostr_identity_by_pubkey,
+    get_nostr_identity_by_user_id,
     get_user_2fa_secret,
     get_user_by_email,
     get_user_by_id,
+    list_api_keys_for_user,
     revoke_refresh_session,
+    revoke_api_key,
     rotate_refresh_session,
+    rotate_api_key,
+    touch_api_key_last_used,
 )
+from services.wallet.db import get_or_create_wallet
 from kyc_db import (
     create_kyc_record,
     get_kyc_status,
     is_kyc_verified,
     list_kyc_records,
     update_kyc_status,
+    update_kyc_metadata,
 )
+from ory_kratos import OryKratosAdminClient, OryKratosError
 
 import bcrypt
 
@@ -120,11 +158,17 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncConnection
 
 # -------------------------------------------------------------------------------
 
+logger = logging.getLogger(__name__)
+
 settings = get_settings(service_name="auth", default_port=8000)
 configure_structured_logging(service_name=settings.service_name, log_level=settings.log_level)
 configure_alerting(settings)
 
 # bcrypt hashing config (using default rounds)
+_API_KEY_ALPHABET = string.ascii_letters + string.digits
+_API_KEY_VERIFY_CACHE: dict[str, tuple[float, dict[str, object]]] = {}
+_NOSTR_CHALLENGE_TTL_SECONDS = 300
+_NOSTR_CHALLENGES: dict[str, float] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -153,21 +197,22 @@ async def _lifespan(app: FastAPI):
     global _engine
     async_url = _make_async_url(settings.database_url)
     _engine = create_async_engine(async_url, pool_pre_ping=True)
+    await ensure_schema_ready(
+        _engine,
+        (
+            "users",
+            "api_keys",
+            "refresh_token_sessions",
+            "kyc_verifications",
+            "nostr_identities",
+        ),
+    )
     yield
     await _engine.dispose()
 
 
 app = FastAPI(title="Auth Service", lifespan=_lifespan)
 
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 install_http_security(
     app,
     settings,
@@ -176,6 +221,7 @@ install_http_security(
         "/auth/register",
         "/auth/refresh",
         "/auth/logout",
+        "/auth/nostr/challenge",
         "/auth/nostr",
         "/auth/2fa",
     ),
@@ -230,6 +276,7 @@ def _user_out(row) -> UserOut:
         display_name=row.display_name,
         role=row.role,
         referral_code=getattr(row, "referral_code", None),
+        nostr_pubkey=getattr(row, "nostr_pubkey", None),
         created_at=row.created_at,
     )
 
@@ -258,9 +305,11 @@ def _referral_reward_out(row) -> ReferralRewardOut:
     )
 
 
-def _auth_response_payload(row, tokens) -> dict:
+def _auth_response_payload(row, tokens, *, nostr_pubkey: str | None = None) -> dict:
+    user = _user_out(row)
+    resolved_nostr_pubkey = nostr_pubkey if nostr_pubkey is not None else getattr(row, "nostr_pubkey", None)
     return AuthResponse(
-        user=_user_out(row),
+        user=user.model_copy(update={"nostr_pubkey": resolved_nostr_pubkey}),
         tokens=TokensOut(
             access_token=tokens.access_token,
             refresh_token=tokens.refresh_token,
@@ -298,9 +347,14 @@ async def _issue_auth_response(row, *, conn: AsyncConnection, status_code: int) 
         token_jti=tokens.refresh_token_jti,
         expires_at=tokens.refresh_expires_at,
     )
+    identity_row = await get_nostr_identity_by_user_id(conn, str(row.id))
     return JSONResponse(
         status_code=status_code,
-        content=_auth_response_payload(row, tokens),
+        content=_auth_response_payload(
+            row,
+            tokens,
+            nostr_pubkey=getattr(identity_row, "pubkey", None),
+        ),
     )
 
 
@@ -385,6 +439,7 @@ def _require_roles(*allowed_roles: str):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.warning("Validation error: %s", exc.errors())
     return _error(
         code="validation_error",
         message="Request payload failed validation.",
@@ -395,6 +450,15 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(ContractError)
 async def contract_exception_handler(request: Request, exc: ContractError):
     return _error(exc.code, exc.message, exc.status_code)
+
+
+@app.exception_handler(CustodyError)
+async def custody_exception_handler(request: Request, exc: CustodyError):
+    return _error(
+        exc.code,
+        exc.message,
+        status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
 
 
 @app.exception_handler(HTTPException)
@@ -415,6 +479,185 @@ def _build_auth_response(row, *, secret: str) -> dict:
         secret=secret,
     )
     return _auth_response_payload(row, tokens)
+
+
+def _row_value(row: object, key: str, default=None):
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None and key in mapping:
+        return mapping[key]
+    return getattr(row, key, default)
+
+
+def _api_key_out(row) -> ApiKeyOut:
+    return ApiKeyOut(
+        id=str(_row_value(row, "id")),
+        name=str(_row_value(row, "name")),
+        key_prefix=str(_row_value(row, "key_prefix")),
+        scopes=list(_row_value(row, "scopes") or []),
+        last_used_at=_row_value(row, "last_used_at"),
+        expires_at=_row_value(row, "expires_at"),
+        revoked=bool(_row_value(row, "revoked")),
+        created_at=_row_value(row, "created_at"),
+    )
+
+
+def _validate_requested_api_key_scopes(*, role: str, scopes: list[str]) -> list[str]:
+    normalized_scopes = [str(scope).strip() for scope in scopes if str(scope).strip()]
+    if not normalized_scopes:
+        raise ContractError(
+            code="invalid_scopes",
+            message="At least one API key scope is required.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
+    unknown_scopes = sorted(set(normalized_scopes) - set(ALL_API_KEY_SCOPES))
+    if unknown_scopes:
+        raise ContractError(
+            code="invalid_scopes",
+            message=f"Unknown API key scopes requested: {', '.join(unknown_scopes)}.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
+    allowed_scopes = allowed_api_key_scopes_for_role(role)
+    disallowed_scopes = sorted(set(normalized_scopes) - allowed_scopes)
+    if disallowed_scopes:
+        raise ContractError(
+            code="invalid_scopes",
+            message=f"Requested scopes are not permitted for this user: {', '.join(disallowed_scopes)}.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    return sorted(set(normalized_scopes))
+
+
+def _api_key_response(row, *, key: str) -> dict:
+    return ApiKeyCreateResponse(
+        id=str(_row_value(row, "id")),
+        name=str(_row_value(row, "name")),
+        key=key,
+        key_prefix=str(_row_value(row, "key_prefix")),
+        scopes=list(_row_value(row, "scopes") or []),
+        expires_at=_row_value(row, "expires_at"),
+        created_at=_row_value(row, "created_at"),
+    ).model_dump(mode="json")
+
+
+async def _generate_api_key_material(conn: AsyncConnection) -> tuple[str, str]:
+    suffix_bytes = max(int(settings.api_key_suffix_bytes), 1)
+    prefix_length = max(int(settings.api_key_prefix_length), 1)
+
+    for _ in range(10):
+        prefix = "".join(secrets.choice(_API_KEY_ALPHABET) for _ in range(prefix_length))
+        if await get_api_key_by_prefix(conn, key_prefix=prefix) is not None:
+            continue
+
+        suffix = base64.urlsafe_b64encode(secrets.token_bytes(suffix_bytes)).rstrip(b"=").decode("ascii")
+        return prefix, f"{prefix}_{suffix}"
+
+    raise ContractError(
+        code="api_key_generation_failed",
+        message="Unable to generate a unique API key prefix.",
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
+def _api_key_hash(raw_key: str) -> str:
+    rounds = max(int(settings.api_key_bcrypt_rounds), 4)
+    return bcrypt.hashpw(
+        raw_key.encode("utf-8"),
+        bcrypt.gensalt(rounds=rounds),
+    ).decode("utf-8")
+
+
+def _api_key_cache_digest(raw_key: str) -> str:
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+
+def _clear_api_key_verify_cache(*, key_id: str | None = None, raw_key: str | None = None) -> None:
+    invalidate_api_key_verify_cache(
+        key_id=key_id,
+        digest=_api_key_cache_digest(raw_key) if raw_key else None,
+    )
+    if raw_key:
+        _API_KEY_VERIFY_CACHE.pop(_api_key_cache_digest(raw_key), None)
+    if key_id:
+        stale_digests = [
+            digest
+            for digest, (_, cached_payload) in _API_KEY_VERIFY_CACHE.items()
+            if cached_payload.get("key_id") == key_id
+        ]
+        for digest in stale_digests:
+            _API_KEY_VERIFY_CACHE.pop(digest, None)
+
+
+def _cache_api_key_verify_result(raw_key: str, payload: dict[str, object]) -> None:
+    _API_KEY_VERIFY_CACHE[_api_key_cache_digest(raw_key)] = (time.monotonic(), payload)
+
+
+def _get_cached_api_key_verify_result(raw_key: str) -> dict[str, object] | None:
+    digest = _api_key_cache_digest(raw_key)
+    cached = _API_KEY_VERIFY_CACHE.get(digest)
+    if cached is None:
+        return None
+
+    cached_at, payload = cached
+    if time.monotonic() - cached_at >= max(int(settings.api_key_cache_ttl_seconds), 1):
+        _API_KEY_VERIFY_CACHE.pop(digest, None)
+        return None
+    return payload
+
+
+def _prune_expired_nostr_challenges(*, now: float | None = None) -> None:
+    current_time = time.monotonic() if now is None else now
+    expired = [
+        challenge
+        for challenge, expires_at in _NOSTR_CHALLENGES.items()
+        if expires_at <= current_time
+    ]
+    for challenge in expired:
+        _NOSTR_CHALLENGES.pop(challenge, None)
+
+
+def _issue_nostr_challenge() -> str:
+    _prune_expired_nostr_challenges()
+    nonce = secrets.token_urlsafe(24)
+    _NOSTR_CHALLENGES[nonce] = time.monotonic() + _NOSTR_CHALLENGE_TTL_SECONDS
+    return nonce
+
+
+def _is_active_nostr_challenge(challenge: str) -> bool:
+    _prune_expired_nostr_challenges()
+    expires_at = _NOSTR_CHALLENGES.get(challenge)
+    return expires_at is not None and expires_at > time.monotonic()
+
+
+def _consume_nostr_challenge(challenge: str) -> bool:
+    _prune_expired_nostr_challenges()
+    expires_at = _NOSTR_CHALLENGES.get(challenge)
+    if expires_at is None or expires_at <= time.monotonic():
+        _NOSTR_CHALLENGES.pop(challenge, None)
+        return False
+    _NOSTR_CHALLENGES.pop(challenge, None)
+    return True
+
+
+def _is_private_network_request(request: Request) -> bool:
+    host = request.client.host if request.client is not None else ""
+    if not host:
+        return settings.env_profile == "local"
+    if host == "testclient":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host in {"localhost", "auth", "gateway"}
+    return any(
+        (
+            address.is_private,
+            address.is_loopback,
+            address.is_link_local,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +713,13 @@ async def register(body: RegisterRequest):
                 referral_code=referral_code,
                 referrer_id=referrer_id,
             )
+
+            # Auto-provision a wallet for the new user.
+            # We do this within the same transaction context to ensure consistency.
+            try:
+                await get_or_create_wallet(conn, str(row.id))
+            except Exception as exc:
+                logger.warning("Failed to auto-provision wallet for user %s: %s", row.id, exc)
         except IntegrityError:
             return _error(
                 "email_taken",
@@ -558,6 +808,9 @@ async def verify_2fa_endpoint(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
+    async with _engine.connect() as conn:
+        await set_user_2fa_verified(conn, principal.id)
+
     record_business_event("auth_2fa_verify")
     return {"message": "2FA verification successful."}
 
@@ -607,6 +860,22 @@ async def login(body: LoginRequest):
 
 
 @app.post(
+    "/auth/nostr/challenge",
+    status_code=status.HTTP_200_OK,
+    response_model=NostrChallengeResponse,
+    summary="Issue a one-time Nostr sign-in challenge",
+)
+async def issue_nostr_challenge():
+    challenge = _issue_nostr_challenge()
+    return NostrChallengeResponse(
+        challenge=f"Sign-in challenge: {challenge}",
+        nonce=challenge,
+        kind=22242,
+        expires_in=_NOSTR_CHALLENGE_TTL_SECONDS,
+    )
+
+
+@app.post(
     "/auth/nostr",
     status_code=status.HTTP_200_OK,
     response_model=AuthResponse,
@@ -615,12 +884,42 @@ async def login(body: LoginRequest):
 async def nostr_login(body: NostrLoginRequest):
     """Authenticate via Nostr signature challenge."""
     try:
-        validate_nostr_event(body.pubkey, body.signed_event)
+        challenge = extract_challenge_from_event(body.signed_event)
     except NostrValidationError as e:
         record_business_event("auth_nostr_login", outcome="failure")
         return _error(
             "invalid_credentials",
             str(e),
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    if not _is_active_nostr_challenge(challenge):
+        record_business_event("auth_nostr_login", outcome="failure")
+        return _error(
+            "invalid_credentials",
+            "Challenge is missing, expired, or already used.",
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    try:
+        validate_nostr_event(
+            body.pubkey,
+            body.signed_event,
+            expected_challenge=challenge,
+        )
+    except NostrValidationError as e:
+        record_business_event("auth_nostr_login", outcome="failure")
+        return _error(
+            "invalid_credentials",
+            str(e),
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    if not _consume_nostr_challenge(challenge):
+        record_business_event("auth_nostr_login", outcome="failure")
+        return _error(
+            "invalid_credentials",
+            "Challenge is missing, expired, or already used.",
             status.HTTP_401_UNAUTHORIZED,
         )
 
@@ -694,6 +993,7 @@ async def refresh(body: RefreshRequest):
             replacement_token_jti=tokens.refresh_token_jti,
             replacement_expires_at=tokens.refresh_expires_at,
         )
+        identity_row = await get_nostr_identity_by_user_id(conn, user_id)
 
     if not rotated:
         record_business_event("auth_refresh", outcome="failure")
@@ -702,7 +1002,11 @@ async def refresh(body: RefreshRequest):
     record_business_event("auth_refresh")
     return JSONResponse(
         status_code=status.HTTP_200_OK,
-        content=_auth_response_payload(row, tokens),
+        content=_auth_response_payload(
+            row,
+            tokens,
+            nostr_pubkey=getattr(identity_row, "pubkey", None),
+        ),
     )
 
 
@@ -747,11 +1051,15 @@ async def logout(body: LogoutRequest):
 async def get_current_user(
     principal: AuthenticatedPrincipal = Depends(_get_current_principal),
 ):
+    async with _engine.connect() as conn:
+        identity_row = await get_nostr_identity_by_user_id(conn, principal.id)
+
     return UserOut(
         id=principal.id,
-        email=principal.email or "",
+        email=principal.email,
         display_name=principal.display_name,
         role=principal.role,
+        nostr_pubkey=getattr(identity_row, "pubkey", None),
         created_at=principal.created_at,
     )
 
@@ -780,6 +1088,297 @@ async def get_referral_summary(
         referred_users=[_referred_user_out(row) for row in referred_rows],
         rewards=[_referral_reward_out(row) for row in reward_rows],
     ).model_dump(mode="json")
+
+
+def _api_key_target_user_id(
+    principal: AuthenticatedPrincipal,
+    requested_user_id: str | None,
+) -> str:
+    if requested_user_id is None:
+        return principal.id
+    if requested_user_id == principal.id:
+        return principal.id
+    if principal.role != "admin":
+        raise ContractError(
+            code="forbidden",
+            message="Only admins can manage API keys for other users.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    return requested_user_id
+
+
+@app.post(
+    "/auth/api-keys",
+    status_code=status.HTTP_201_CREATED,
+    response_model=ApiKeyCreateResponse,
+    summary="Create a new API key",
+)
+async def create_api_key_endpoint(
+    request: Request,
+    body: ApiKeyCreateRequest,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    if body.expires_at is not None and body.expires_at <= datetime.now(tz=timezone.utc):
+        raise ContractError(
+            code="invalid_expiration",
+            message="API key expiration must be in the future.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+
+    scopes = _validate_requested_api_key_scopes(role=principal.role, scopes=body.scopes)
+
+    async with _engine.connect() as conn:
+        existing = await get_api_key_by_name(conn, user_id=principal.id, name=body.name)
+        if existing is not None:
+            raise ContractError(
+                code="api_key_name_taken",
+                message="An API key with that name already exists.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        key_prefix, raw_key = await _generate_api_key_material(conn)
+        row = await create_api_key(
+            conn,
+            user_id=principal.id,
+            name=body.name,
+            key_prefix=key_prefix,
+            key_hash=_api_key_hash(raw_key),
+            scopes=scopes,
+            expires_at=body.expires_at,
+            created_by=principal.id,
+        )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="api_key_create",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="api_key",
+            target_id=_row_value(row, "id"),
+            metadata={
+                "key_prefix": key_prefix,
+                "name": body.name,
+                "scopes": scopes,
+                "expires_at": body.expires_at.isoformat() if body.expires_at else None,
+            },
+        )
+
+    record_business_event("auth_api_key_create")
+    return _api_key_response(row, key=raw_key)
+
+
+@app.get(
+    "/auth/api-keys",
+    status_code=status.HTTP_200_OK,
+    response_model=ApiKeyListResponse,
+    summary="List API keys",
+)
+async def list_api_keys_endpoint(
+    user_id: str | None = None,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    target_user_id = _api_key_target_user_id(principal, user_id)
+    async with _engine.connect() as conn:
+        rows = await list_api_keys_for_user(conn, user_id=target_user_id)
+    return ApiKeyListResponse(keys=[_api_key_out(row) for row in rows]).model_dump(mode="json")
+
+
+@app.delete(
+    "/auth/api-keys/{key_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=MessageResponse,
+    summary="Revoke an API key",
+)
+async def revoke_api_key_endpoint(
+    request: Request,
+    key_id: str,
+    user_id: str | None = None,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    target_user_id = _api_key_target_user_id(principal, user_id)
+    async with _engine.connect() as conn:
+        existing = await get_api_key_by_id(conn, key_id=key_id)
+        if existing is None or str(_row_value(existing, "user_id")) != target_user_id:
+            raise ContractError(
+                code="api_key_not_found",
+                message="API key not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        if bool(_row_value(existing, "revoked")):
+            return MessageResponse(message="Key revoked").model_dump()
+
+        revoked_row = await revoke_api_key(conn, key_id=key_id)
+        if revoked_row is None:
+            raise ContractError(
+                code="api_key_not_found",
+                message="API key not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="api_key_revoke",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="api_key",
+            target_id=key_id,
+            metadata={"owner_id": target_user_id, "key_prefix": _row_value(revoked_row, "key_prefix")},
+        )
+
+    _clear_api_key_verify_cache(key_id=key_id)
+    record_business_event("auth_api_key_revoke")
+    return MessageResponse(message="Key revoked").model_dump()
+
+
+@app.patch(
+    "/auth/api-keys/{key_id}/rotate",
+    status_code=status.HTTP_200_OK,
+    response_model=ApiKeyCreateResponse,
+    summary="Rotate an API key",
+)
+async def rotate_api_key_endpoint(
+    request: Request,
+    key_id: str,
+    user_id: str | None = None,
+    principal: AuthenticatedPrincipal = Depends(_get_current_principal),
+):
+    target_user_id = _api_key_target_user_id(principal, user_id)
+    async with _engine.connect() as conn:
+        existing = await get_api_key_by_id(conn, key_id=key_id)
+        if existing is None or str(_row_value(existing, "user_id")) != target_user_id:
+            raise ContractError(
+                code="api_key_not_found",
+                message="API key not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        if bool(_row_value(existing, "revoked")):
+            raise ContractError(
+                code="api_key_revoked",
+                message="Revoked API keys cannot be rotated.",
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        key_prefix, raw_key = await _generate_api_key_material(conn)
+        rotated_row = await rotate_api_key(
+            conn,
+            key_id=key_id,
+            key_prefix=key_prefix,
+            key_hash=_api_key_hash(raw_key),
+        )
+        if rotated_row is None:
+            raise ContractError(
+                code="api_key_not_found",
+                message="API key not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="api_key_rotate",
+            actor_id=principal.id,
+            actor_role=principal.role,
+            target_type="api_key",
+            target_id=key_id,
+            metadata={"owner_id": target_user_id, "key_prefix": key_prefix},
+        )
+
+    _clear_api_key_verify_cache(key_id=key_id)
+    record_business_event("auth_api_key_rotate")
+    return _api_key_response(rotated_row, key=raw_key)
+
+
+@app.post(
+    "/internal/api-keys/verify",
+    status_code=status.HTTP_200_OK,
+    response_model=ApiKeyVerifyResponse,
+    summary="Verify an API key for internal services",
+)
+async def verify_api_key_endpoint(
+    request: Request,
+    body: ApiKeyVerifyRequest,
+):
+    if not _is_private_network_request(request):
+        raise ContractError(
+            code="forbidden",
+            message="This endpoint is only available on the internal network.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    cached = _get_cached_api_key_verify_result(body.api_key)
+    if cached is not None:
+        if not bool(cached.get("valid")):
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=cached)
+        return cached
+
+    key_prefix = extract_api_key_prefix(
+        body.api_key,
+        prefix_length=settings.api_key_prefix_length,
+    )
+    if key_prefix is None:
+        payload = {"valid": False, "reason": "not_found"}
+        _cache_api_key_verify_result(body.api_key, payload)
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=payload)
+
+    async with _engine.connect() as conn:
+        row = await get_api_key_by_prefix(conn, key_prefix=key_prefix)
+        if row is None:
+            payload = {"valid": False, "reason": "not_found"}
+            _cache_api_key_verify_result(body.api_key, payload)
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=payload)
+
+        if bool(_row_value(row, "revoked")):
+            payload = {"valid": False, "reason": "revoked"}
+            _cache_api_key_verify_result(body.api_key, payload)
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=payload)
+
+        expires_at = _row_value(row, "expires_at")
+        if expires_at is not None and expires_at <= datetime.now(tz=timezone.utc):
+            payload = {"valid": False, "reason": "expired"}
+            _cache_api_key_verify_result(body.api_key, payload)
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=payload)
+
+        try:
+            valid = bcrypt.checkpw(
+                body.api_key.encode("utf-8"),
+                str(_row_value(row, "key_hash")).encode("utf-8"),
+            )
+        except ValueError:
+            valid = False
+
+        if not valid:
+            payload = {"valid": False, "reason": "not_found"}
+            _cache_api_key_verify_result(body.api_key, payload)
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED, content=payload)
+
+        await touch_api_key_last_used(conn, key_id=str(_row_value(row, "id")))
+        user_row = await get_user_by_id(conn, str(_row_value(row, "user_id")))
+        await record_audit_event(
+            conn,
+            settings=settings,
+            request=request,
+            action="api_key_authenticate",
+            actor_id=str(_row_value(row, "user_id")),
+            actor_role=_row_value(user_row, "role"),
+            target_type="api_key",
+            target_id=_row_value(row, "id"),
+            metadata={
+                "key_id": str(_row_value(row, "id")),
+                "scopes": list(_row_value(row, "scopes") or []),
+                "key_prefix": str(_row_value(row, "key_prefix")),
+            },
+        )
+
+    payload = ApiKeyVerifyResponse(
+        valid=True,
+        user_id=str(_row_value(row, "user_id")),
+        scopes=list(_row_value(row, "scopes") or []),
+        key_id=str(_row_value(row, "id")),
+    ).model_dump(mode="json")
+    _cache_api_key_verify_result(body.api_key, payload)
+    return payload
 
 
 def _role_response(principal: AuthenticatedPrincipal, *required_roles: str) -> RoleCheckResponse:
@@ -871,6 +1470,67 @@ def _kyc_state_label(row) -> str:
     return str(getattr(row, "status", "not_started"))
 
 
+def _kyc_metadata(row) -> dict[str, object]:
+    mapping = getattr(row, "_mapping", None)
+    value = mapping.get("metadata") if mapping is not None else getattr(row, "metadata", None)
+    return dict(value or {})
+
+
+async def _sync_kyc_to_ory(
+    *,
+    user_row: object,
+    kyc_row: object,
+) -> object:
+    if not settings.ory_kratos_admin_url or not settings.ory_kratos_admin_token:
+        return kyc_row
+
+    metadata = _kyc_metadata(kyc_row)
+    provider_metadata = dict(metadata.get("ory_kratos") or {})
+
+    try:
+        client = OryKratosAdminClient(settings)
+        try:
+            identity = await client.ensure_identity_for_user(user_row)
+            synced_identity = await client.sync_kyc_state(identity=identity, kyc_row=kyc_row)
+        finally:
+            await client.aclose()
+
+        provider_metadata.update(
+            {
+                "identity_id": str(synced_identity.get("id") or identity.get("id")),
+                "external_id": str(synced_identity.get("external_id") or identity.get("external_id") or _user_out(user_row).id),
+                "last_sync_status": "ok",
+                "last_synced_at": datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+                "last_sync_error": None,
+            }
+        )
+    except OryKratosError as exc:
+        provider_metadata.update(
+            {
+                "last_sync_status": "error",
+                "last_sync_error": str(exc),
+                "last_sync_attempt_at": datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+        )
+        logger.exception("Ory Kratos KYC sync failed for user %s", _user_out(user_row).id)
+        await alert_dispatcher.fire(
+            severity=AlertSeverity.ERROR,
+            title="Ory Kratos KYC sync failed",
+            detail=f"Failed to sync KYC state for user {_user_out(user_row).id}: {exc}",
+            source=settings.service_name,
+            tags={"user_id": _user_out(user_row).id},
+        )
+
+    metadata["ory_kratos"] = provider_metadata
+    async with _engine.connect() as conn:
+        updated_row = await update_kyc_metadata(
+            conn,
+            user_id=str(_user_out(user_row).id),
+            metadata=metadata,
+        )
+    return updated_row or kyc_row
+
+
 @app.get(
     "/auth/onboarding/summary",
     status_code=status.HTTP_200_OK,
@@ -883,6 +1543,7 @@ async def onboarding_summary(
     async with _engine.connect() as conn:
         user_row = await get_user_by_id(conn, principal.id)
         kyc_row = await get_kyc_status(conn, principal.id)
+        identity_row = await get_nostr_identity_by_user_id(conn, principal.id)
 
     if user_row is None:
         raise _invalid_access_token_error()
@@ -891,7 +1552,7 @@ async def onboarding_summary(
     providers = list_onramp_provider_views(kyc_verified=is_kyc_verified(kyc_row))
     record_business_event("auth_onboarding_summary")
     return OnboardingSummaryResponse(
-        user=_user_out(user_row),
+        user=_user_out(user_row).model_copy(update={"nostr_pubkey": getattr(identity_row, "pubkey", None)}),
         kyc_status=_kyc_state_label(kyc_row),
         custody=OnboardingCustodyOut(
             configured_backend=custody.backend,
@@ -937,6 +1598,7 @@ async def submit_kyc(
     operator reviews and approves/rejects via the admin endpoint.
     """
     async with _engine.connect() as conn:
+        user_row = await get_user_by_id(conn, principal.id)
         existing = await get_kyc_status(conn, principal.id)
         if existing is not None:
             return JSONResponse(
@@ -944,12 +1606,16 @@ async def submit_kyc(
                 content=KycStatusResponse(kyc=_kyc_out(existing)).model_dump(mode="json"),
             )
 
+        if user_row is None:
+            raise _invalid_access_token_error()
+
         row = await create_kyc_record(
             conn,
             user_id=principal.id,
             document_url=body.document_url,
             notes=body.notes,
         )
+    row = await _sync_kyc_to_ory(user_row=user_row, kyc_row=row)
 
     record_business_event("kyc_submit")
     return KycStatusResponse(kyc=_kyc_out(row)).model_dump(mode="json")
@@ -1012,10 +1678,17 @@ async def update_kyc_admin(
     """Admin-only endpoint to approve, reject, or expire a user's KYC status."""
     async with _engine.connect() as conn:
         existing = await get_kyc_status(conn, user_id)
+        user_row = await get_user_by_id(conn, user_id)
         if existing is None:
             return _error(
                 "kyc_not_found",
                 "No KYC verification record found for this user.",
+                status.HTTP_404_NOT_FOUND,
+            )
+        if user_row is None:
+            return _error(
+                "user_not_found",
+                "User not found.",
                 status.HTTP_404_NOT_FOUND,
             )
 
@@ -1043,6 +1716,7 @@ async def update_kyc_admin(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
+    row = await _sync_kyc_to_ory(user_row=user_row, kyc_row=row)
     record_business_event("kyc_admin_update")
     return KycStatusResponse(kyc=_kyc_out(row)).model_dump(mode="json")
 

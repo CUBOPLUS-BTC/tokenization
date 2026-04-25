@@ -15,7 +15,6 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("WALLET_SERVICE_URL", "http://wallet:8001")
     monkeypatch.setenv("TOKENIZATION_SERVICE_URL", "http://tokenization:8002")
     monkeypatch.setenv("MARKETPLACE_SERVICE_URL", "http://marketplace:8003")
-    monkeypatch.setenv("EDUCATION_SERVICE_URL", "http://education:8004")
     monkeypatch.setenv("NOSTR_SERVICE_URL", "http://nostr:8005")
     monkeypatch.setenv("POSTGRES_HOST", "localhost")
     monkeypatch.setenv("POSTGRES_PORT", "5432")
@@ -203,3 +202,4 @@ def test_get_wallet_yield_summary_returns_breakdown(
     assert data["total_yield_earned_sat"] == 7000
     assert data["by_token"][0]["asset_name"] == "Deep Ocean Blue"
     assert data["accruals"][0]["amount_sat"] == 7000
+

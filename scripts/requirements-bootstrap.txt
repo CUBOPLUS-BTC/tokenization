@@ -1,0 +1,10 @@
+# Runtime dependencies for scripts/db_bootstrap.py.
+#
+# Kept separate from services/auth/requirements.txt so the `migrate` image
+# does not drag in auth-only native deps (e.g. secp256k1) that require a
+# C toolchain unavailable in python:3.11-slim.
+#
+# Extras on top of scripts/requirements-migrations.txt (alembic, SQLAlchemy,
+# pg8000, python-dotenv, cryptography, pydantic-settings are already there).
+asyncpg>=0.30.0
+bcrypt>=4.0.0

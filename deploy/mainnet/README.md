@@ -49,8 +49,8 @@ All checks must pass before deployment begins.
    docker compose -f infra/docker-compose.mainnet.yml build
    docker compose -f infra/docker-compose.mainnet.yml push
 
-3. Run database migrations:
-   ENV_PROFILE=production alembic upgrade head
+3. Run schema bootstrap manually from a standalone container attached to the production Docker network:
+   python scripts/run_db_bootstrap.py --env-file infra/.env.mainnet --network <mainnet-compose-network>
 
 4. Deploy services with zero-downtime rolling restart:
    docker compose -f infra/docker-compose.mainnet.yml up -d --remove-orphans
@@ -142,3 +142,5 @@ Mainnet deployments must enforce KYC checks for high-value trades:
 | `staging` | testnet | No | `.env.staging` |
 | `beta` | signet | No | `.env.beta` |
 | `production` | mainnet | **Yes** | Docker secrets |
+
+Bootstrap note: configure `INITIAL_ADMIN_EMAIL` and `INITIAL_ADMIN_PASSWORD_FILE` in the mainnet environment before the first rollout so the manual bootstrap command can create the initial platform administrator idempotently.

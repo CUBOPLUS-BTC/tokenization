@@ -44,3 +44,13 @@ class LiquidClient:
         if not asset_id:
             raise RuntimeError("Elements issueasset did not return an asset id")
         return result
+
+    async def fetch_asset(self, asset_id: str) -> dict[str, Any]:
+        return await self.get_asset_issuance(asset_id)
+
+    async def fetch_asset_meta(self, asset_id: str) -> dict[str, Any] | None:
+        try:
+            issuance = await self.get_asset_issuance(asset_id)
+        except LookupError:
+            return None
+        return issuance.get("contract") if isinstance(issuance, dict) else None

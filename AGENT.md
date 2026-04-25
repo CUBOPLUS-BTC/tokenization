@@ -89,7 +89,7 @@ tokenization/
 ├── alembic.ini               # Alembic configuration
 ├── alembic/                  # Database migrations
 │   ├── env.py                # Migration environment (loads metadata, env vars)
-│   └── versions/             # 11 sequential migration files
+│   └── versions/             # Squashed initial migration (0001) + follow-up revisions
 ├── services/                 # All platform microservices
 │   ├── __init__.py
 │   ├── common/               # Shared infrastructure (no port)
@@ -137,7 +137,8 @@ tokenization/
 │   │   ├── main.py, schemas.py, db.py
 │   ├── gateway/              # Nginx reverse proxy (:8000)
 │   │   ├── Dockerfile        # nginx:1.25-alpine
-│   │   └── default.conf      # Proxy rules, rate limiting, TLS
+│   │   ├── 30-render-cors-map.sh   # Startup: CORS_ALLOWED_ORIGINS (CSV) → cors_map.conf
+│   │   └── gateway.conf            # Routing, CORS preflight + headers on /v1/*
 │   └── frontend/             # React app (spec only, not yet built)
 ├── tests/                    # Cross-service integration & E2E tests
 ├── specs/                    # Architecture, API, DB, frontend, security specs
@@ -366,9 +367,9 @@ graph TB
 | Constants | UPPER_SNAKE_CASE | `REFERRAL_SIGNUP_BONUS_SAT`, `_TOTP_DIGITS` |
 | Module-private | leading underscore | `_runtime_engine()`, `_get_current_principal()` |
 | DB tables | snake_case, plural | `users`, `token_balances`, `yield_accruals` |
-| DB constraints | `ck_<table>_<column>`, `uq_<table>_<columns>`, `fk_<table>_<column>_<ref>` |
-| Branches | `feat/…`, `fix/…`, `docs/…`, `chore/…` |
-| Commits | `type(scope): short description` |
+| DB constraints | `ck_<table>_<column>`, `uq_<table>_<columns>`, `fk_<table>_<column>_<ref>` | `ck_users_status`, `uq_wallets_user_id`, `fk_orders_user_id_users` |
+| Branches | `feat/...`, `fix/...`, `docs/...`, `chore/...` | `feat/marketplace-stop-limit`, `docs/nostr-integration` |
+| Commits | `type(scope): short description` | `feat(wallet): add withdrawal idempotency` |
 
 ### File Organization (per service)
 
@@ -500,7 +501,7 @@ pip install fastapi uvicorn sqlalchemy asyncpg pydantic-settings python-jose bcr
 cp infra/.env.local.example infra/.env.local
 
 # Start all services + infrastructure
-docker compose -f infra/docker-compose.local.yml up -d
+docker compose --project-directory . -f infra/docker-compose.local.yml up -d
 
 # Verify
 curl http://localhost:8000/health          # Gateway
@@ -510,7 +511,7 @@ curl http://localhost:8000/v1/wallet/health # Wallet via gateway
 ### Shutdown
 
 ```bash
-docker compose -f infra/docker-compose.local.yml down
+docker compose --project-directory . -f infra/docker-compose.local.yml down
 ```
 
 ### Run Tests
@@ -566,7 +567,7 @@ npx markdownlint-cli2 "**/*.md"
 ### Run Observability Stack
 
 ```bash
-docker compose -f infra/docker-compose.observability.yml up -d
+docker compose --project-directory . -f infra/docker-compose.observability.yml up -d
 # Grafana: http://localhost:3000 (admin/admin)
 # Prometheus: http://localhost:9090
 ```
@@ -575,7 +576,7 @@ docker compose -f infra/docker-compose.observability.yml up -d
 
 ```bash
 cp infra/.env.beta.example infra/.env.beta
-docker compose -f infra/docker-compose.public-beta.yml up -d
+docker compose --project-directory . -f infra/docker-compose.public-beta.yml up -d
 ```
 
 ---
@@ -968,7 +969,7 @@ Each dependency has health checks (pg_isready, Redis PING, getblockchaininfo).
 6. Configure logging: `configure_structured_logging(...)`.
 7. Configure alerting: `configure_alerting(settings)`.
 8. Add to `infra/docker-compose.local.yml`.
-9. Add proxy rules to `services/gateway/default.conf`.
+9. Add proxy rules to `services/gateway/gateway.conf` (and extend `30-render-cors-map.sh` / `CORS_ALLOWED_ORIGINS` if needed).
 10. Add tests in `tests/test_<service>.py`.
 11. Update `specs/architecture.md` and `README.md`.
 
@@ -992,11 +993,11 @@ Each dependency has health checks (pg_isready, Redis PING, getblockchaininfo).
 
 ### Debugging Production-Like Issues Locally
 
-1. Start full stack: `docker compose -f infra/docker-compose.local.yml up -d`.
+1. Start full stack: `docker compose --project-directory . -f infra/docker-compose.local.yml up -d`.
 2. Check service health: `curl http://localhost:<port>/health`.
 3. Check readiness: `curl http://localhost:<port>/readiness` (if exposed).
 4. Check metrics: `curl http://localhost:<port>/metrics`.
-5. Tail logs: `docker compose -f infra/docker-compose.local.yml logs -f <service>`.
+5. Tail logs: `docker compose --project-directory . -f infra/docker-compose.local.yml logs -f <service>`.
 6. Query audit logs: `SELECT * FROM audit_logs WHERE action = '...' ORDER BY created_at DESC LIMIT 10;`.
 7. Trace requests by `request_id` across service logs.
 
@@ -1048,7 +1049,7 @@ Each dependency has health checks (pg_isready, Redis PING, getblockchaininfo).
 
 - All 6 services + admin + gateway + common module structure and code.
 - 19 database tables defined in `services/common/db/metadata.py`.
-- 11 Alembic migrations with full up/down support.
+- One squashed Alembic baseline (`0001_initial_schema`) generated from `services/common/db/metadata.py`, with full up/down support.
 - API contracts documented in `specs/api-contracts.md`.
 - 7 security findings tracked in `specs/security-findings-registry.md`.
 - CI pipeline defined in `.github/workflows/ci.yml`.
@@ -1076,7 +1077,7 @@ Each dependency has health checks (pg_isready, Redis PING, getblockchaininfo).
 - **HSM vendor/implementation** — abstract interface exists but no concrete provider.
 - **Production deployment tooling** — mainnet runbook describes process but no CI/CD pipeline for production was found.
 - **WebSocket implementation details** — marketplace `main.py` imports WebSocket support but full implementation was not deeply inspected.
-- **Exact nginx gateway routing rules** — `default.conf` was not fully read.
+- **Exact nginx gateway routing rules** — `gateway.conf` / `30-render-cors-map.sh` were not fully read.
 - **`.env.*.example` template contents** — referenced but not read.
 
 ---

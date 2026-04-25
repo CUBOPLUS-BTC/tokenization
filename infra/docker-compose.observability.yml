@@ -8,8 +8,8 @@ services:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
     volumes:
-      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./observability/prometheus/alerts:/etc/prometheus/alerts:ro
+      - ./infra/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/observability/prometheus/alerts:/etc/prometheus/alerts:ro
       - prometheus_data:/prometheus
     ports:
       - "9090:9090"
@@ -21,7 +21,7 @@ services:
       - --config.file=/etc/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
     volumes:
-      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./infra/observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager
     ports:
       - "9093:9093"
@@ -34,8 +34,8 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
-      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     ports:
       - "3000:3000"
@@ -46,7 +46,7 @@ services:
     command:
       - --config.file=/etc/blackbox_exporter/config.yml
     volumes:
-      - ./observability/blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+      - ./infra/observability/blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
     ports:
       - "9115:9115"
 
@@ -66,3 +66,4 @@ volumes:
   prometheus_data:
   alertmanager_data:
   grafana_data:
+

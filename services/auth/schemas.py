@@ -32,8 +32,18 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str
+
+    @field_validator("email")
+    @classmethod
+    def _allow_local_login_emails(cls, v: str) -> str:
+        normalized = v.strip()
+        if not normalized:
+            raise ValueError("value is not a valid email address")
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
+            raise ValueError("value is not a valid email address")
+        return normalized.casefold()
 
 
 class RefreshRequest(BaseModel):
@@ -49,13 +59,30 @@ class NostrSignedEvent(BaseModel):
     kind: int
     created_at: int
     content: str
-    tags: list[list[str]] = []
+    tags: list[list[str]] = Field(default_factory=list)
     sig: str = Field(min_length=128, max_length=128)
 
 
 class NostrLoginRequest(BaseModel):
     pubkey: str = Field(min_length=64, max_length=64)
     signed_event: NostrSignedEvent
+
+
+class NostrChallengeResponse(BaseModel):
+    challenge: str
+    nonce: str | None = None
+    kind: Literal[22242]
+    expires_in: int
+
+
+class ApiKeyCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    scopes: list[str] = Field(min_length=1)
+    expires_at: datetime | None = None
+
+
+class ApiKeyVerifyRequest(BaseModel):
+    api_key: str = Field(min_length=1, max_length=256)
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +95,7 @@ class UserOut(BaseModel):
     display_name: str
     role: str
     referral_code: str | None = None
+    nostr_pubkey: str | None = None
     created_at: datetime
 
 
@@ -210,4 +238,36 @@ class ReferralSummaryResponse(BaseModel):
     total_reward_sat: int
     referred_users: list[ReferredUserOut]
     rewards: list[ReferralRewardOut]
+
+
+class ApiKeyOut(BaseModel):
+    id: str
+    name: str
+    key_prefix: str
+    scopes: list[str]
+    last_used_at: datetime | None = None
+    expires_at: datetime | None = None
+    revoked: bool
+    created_at: datetime
+
+
+class ApiKeyCreateResponse(BaseModel):
+    id: str
+    name: str
+    key: str
+    key_prefix: str
+    scopes: list[str]
+    expires_at: datetime | None = None
+    created_at: datetime
+
+
+class ApiKeyListResponse(BaseModel):
+    keys: list[ApiKeyOut]
+
+
+class ApiKeyVerifyResponse(BaseModel):
+    valid: bool
+    user_id: str
+    scopes: list[str]
+    key_id: str
 

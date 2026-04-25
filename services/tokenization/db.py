@@ -42,24 +42,33 @@ async def get_user_by_id(
 async def create_asset(
     conn: AsyncConnection,
     *,
+    asset_id: uuid.UUID | None = None,
     owner_id: str,
     name: str,
     description: str,
     category: str,
     valuation_sat: int,
-    documents_url: str,
+    documents_url: str | None,
+    documents_storage_key: str | None = None,
+    documents_filename: str | None = None,
+    documents_content_type: str | None = None,
+    documents_size_bytes: int | None = None,
 ) -> sa.engine.Row:
     now = _utc_now()
     result = await conn.execute(
         sa.insert(assets_table)
         .values(
-            id=uuid.uuid4(),
+            id=asset_id or uuid.uuid4(),
             owner_id=_as_uuid(owner_id),
             name=name,
             description=description,
             category=category,
             valuation_sat=valuation_sat,
             documents_url=documents_url,
+            documents_storage_key=documents_storage_key,
+            documents_filename=documents_filename,
+            documents_content_type=documents_content_type,
+            documents_size_bytes=documents_size_bytes,
             status="pending",
             created_at=now,
             updated_at=now,
@@ -80,10 +89,12 @@ async def get_asset_by_id(
         sa.select(
             assets_table,
             tokens_table.c.id.label("token_id"),
+            tokens_table.c.ticker,
             tokens_table.c.liquid_asset_id,
             tokens_table.c.total_supply,
             tokens_table.c.circulating_supply,
             tokens_table.c.unit_price_sat,
+            tokens_table.c.visibility,
             tokens_table.c.metadata.label("token_metadata"),
             tokens_table.c.minted_at,
         )
@@ -99,19 +110,22 @@ async def begin_asset_evaluation(
     conn: AsyncConnection,
     *,
     asset_id: str | uuid.UUID,
-    owner_id: str | uuid.UUID,
+    owner_id: str | uuid.UUID | None = None,
 ) -> sa.engine.Row | None:
     now = _utc_now()
-    result = await conn.execute(
+    stmt = (
         sa.update(assets_table)
         .where(assets_table.c.id == _as_uuid(asset_id))
-        .where(assets_table.c.owner_id == _as_uuid(owner_id))
         .where(assets_table.c.status.in_(_EVALUABLE_ASSET_STATUSES))
-        .values(
+    )
+    if owner_id is not None:
+        stmt = stmt.where(assets_table.c.owner_id == _as_uuid(owner_id))
+
+    result = await conn.execute(
+        stmt.values(
             status="evaluating",
             updated_at=now,
-        )
-        .returning(assets_table)
+        ).returning(assets_table)
     )
     row = result.fetchone()
     await conn.commit()
@@ -174,7 +188,22 @@ async def list_assets(
     asset_status: str | None = None,
     category: str | None = None,
 ) -> list[sa.engine.Row]:
-    stmt = sa.select(assets_table)
+    stmt = (
+        sa.select(
+            assets_table,
+            tokens_table.c.id.label("token_id"),
+            tokens_table.c.liquid_asset_id,
+            tokens_table.c.total_supply,
+            tokens_table.c.circulating_supply,
+            tokens_table.c.unit_price_sat,
+            tokens_table.c.visibility,
+            tokens_table.c.metadata.label("token_metadata"),
+            tokens_table.c.minted_at,
+        )
+        .select_from(
+            assets_table.outerjoin(tokens_table, tokens_table.c.asset_id == assets_table.c.id)
+        )
+    )
 
     if asset_status is not None:
         stmt = stmt.where(assets_table.c.status == asset_status)
@@ -192,14 +221,19 @@ async def create_asset_token(
     *,
     asset_id: str | uuid.UUID,
     owner_id: str | uuid.UUID,
+    ticker: str,
     liquid_asset_id: str,
     total_supply: int,
     circulating_supply: int,
     unit_price_sat: int,
+    visibility: str,
     issuance_metadata: dict[str, object] | None,
 ) -> sa.engine.Row | None:
     now = _utc_now()
     token_id = uuid.uuid4()
+    resolved_asset_id = liquid_asset_id
+    if not resolved_asset_id:
+        raise ValueError("liquid_asset_id is required")
 
     try:
         updated_asset = await conn.execute(
@@ -221,10 +255,12 @@ async def create_asset_token(
             sa.insert(tokens_table).values(
                 id=token_id,
                 asset_id=_as_uuid(asset_id),
-                liquid_asset_id=liquid_asset_id,
+                ticker=ticker,
+                liquid_asset_id=resolved_asset_id,
                 total_supply=total_supply,
                 circulating_supply=circulating_supply,
                 unit_price_sat=unit_price_sat,
+                visibility=visibility,
                 metadata=issuance_metadata,
                 minted_at=now,
                 created_at=now,
