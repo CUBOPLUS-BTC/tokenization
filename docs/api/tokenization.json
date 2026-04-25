@@ -335,7 +335,7 @@
     },
     "/assets/{asset_id}/evaluate": {
       "post": {
-        "summary": "Request AI evaluation for an owned asset",
+        "summary": "Request AI evaluation for an asset",
         "operationId": "request_asset_evaluation_assets__asset_id__evaluate_post",
         "security": [
           {
