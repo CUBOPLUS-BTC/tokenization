@@ -80,6 +80,7 @@ from marketplace.db import (
     record_escrow_signature,
     resolve_escrow_signing_material,
     resolve_dispute,
+    settle_trade,
     update_escrow_settlement_metadata,
 )
 from marketplace.liquid_rpc import ElementsRPCError, FundingObservation, get_liquid_rpc
@@ -418,7 +419,7 @@ async def _filter_rows_by_token_access(
 async def _publish_trade_matched(
     trade_row: object,
     *,
-    escrow_row: object,
+    escrow_row: object | None,
     buy_order: object,
     sell_order: object,
 ) -> None:
@@ -436,7 +437,7 @@ async def _publish_trade_matched(
         "fee_sat": int(_row_value(trade_row, "fee_sat", 0)),
         "status": _row_value(trade_row, "status"),
         "settled_at": _isoformat(_row_value(trade_row, "settled_at")),
-        "escrow_id": str(_row_value(escrow_row, "id")),
+        "escrow_id": None if escrow_row is None else str(_row_value(escrow_row, "id")),
         "multisig_address": _row_value(escrow_row, "multisig_address"),
         "escrow_status": _row_value(escrow_row, "status"),
         "escrow_expires_at": _isoformat(_row_value(escrow_row, "expires_at")),
@@ -515,6 +516,14 @@ def _insufficient_token_balance_error() -> ContractError:
     return ContractError(
         code="insufficient_token_balance",
         message="Insufficient token balance for this sell order.",
+        status_code=status.HTTP_409_CONFLICT,
+    )
+
+
+def _insufficient_liquidity_error() -> ContractError:
+    return ContractError(
+        code="insufficient_liquidity",
+        message="No sell order can immediately fulfill this purchase.",
         status_code=status.HTTP_409_CONFLICT,
     )
 
@@ -1490,6 +1499,25 @@ async def place_order(
         trade_total_sat = body.quantity * body.price_sat
         await _enforce_kyc_threshold(conn, principal.id, trade_total_sat)
 
+        instant_match = None
+        primary_seller_id = None
+        if body.execution_mode == "instant":
+            instant_match = await find_best_match(
+                conn,
+                token_id=body.token_id,
+                incoming_side=body.side,
+                incoming_price=body.price_sat,
+                requester_id=principal.id,
+            )
+            if instant_match is None or _remaining_quantity(instant_match) < body.quantity:
+                owner_id = _row_value(token_row, "asset_owner_id")
+                owner_balance = await get_token_balance_for_user(conn, owner_id, body.token_id)
+                owner_available = int(_row_value(owner_balance, "balance", 0))
+                if str(owner_id) == principal.id or owner_available < body.quantity:
+                    raise _insufficient_liquidity_error()
+                primary_seller_id = owner_id
+                instant_match = None
+
         triggered_at = None
         if body.order_type == "stop_limit" and body.trigger_price_sat is not None:
             reference_price = await get_reference_price_for_token(conn, body.token_id)
@@ -1514,7 +1542,48 @@ async def place_order(
 
         published_trades: list[tuple[object, object, object, object]] = []
 
-        while triggered_at is not None or body.order_type == "limit":
+        if body.execution_mode == "instant":
+            sell_order = instant_match
+            if sell_order is None:
+                sell_order = await create_order(
+                    conn,
+                    user_id=primary_seller_id,
+                    token_id=body.token_id,
+                    side="sell",
+                    order_type="limit",
+                    quantity=body.quantity,
+                    price_sat=body.price_sat,
+                )
+
+            trade_price = int(_row_value(sell_order, "price_sat", 0))
+            try:
+                trade_row = await settle_trade(
+                    conn,
+                    buy_order=order_row,
+                    sell_order=sell_order,
+                    quantity=body.quantity,
+                    price_sat=trade_price,
+                )
+            except ValueError as exc:
+                await cancel_order(conn, order_id=_row_value(order_row, "id"), user_id=principal.id)
+                if primary_seller_id is not None:
+                    await cancel_order(conn, order_id=_row_value(sell_order, "id"), user_id=primary_seller_id)
+                if str(exc) == "insufficient_token_balance":
+                    raise _insufficient_liquidity_error() from exc
+                raise
+            except LookupError as exc:
+                await cancel_order(conn, order_id=_row_value(order_row, "id"), user_id=principal.id)
+                if primary_seller_id is not None:
+                    await cancel_order(conn, order_id=_row_value(sell_order, "id"), user_id=primary_seller_id)
+                if str(exc) == "wallet_not_found":
+                    raise _wallet_not_found_error() from exc
+                raise
+
+            order_row = await get_order_by_id(conn, _row_value(order_row, "id")) or order_row
+            sell_order = await get_order_by_id(conn, _row_value(sell_order, "id")) or sell_order
+            published_trades.append((trade_row, None, order_row, sell_order))
+
+        while body.execution_mode != "instant" and (triggered_at is not None or body.order_type == "limit"):
             current_order = await get_order_by_id(conn, _row_value(order_row, "id"))
             if current_order is None or _remaining_quantity(current_order) <= 0:
                 order_row = current_order or order_row
@@ -1600,6 +1669,7 @@ async def place_order(
                 "token_id": str(body.token_id),
                 "side": body.side,
                 "order_type": body.order_type,
+                "execution_mode": body.execution_mode,
                 "quantity": body.quantity,
                 "price_sat": body.price_sat,
                 "trigger_price_sat": body.trigger_price_sat,

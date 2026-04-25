@@ -960,6 +960,32 @@ async def mark_escrow_funded(
     settlement_metadata = settlement_metadata_update or {}
 
     try:
+        trade_lookup = await conn.execute(
+            sa.select(trades_table).where(trades_table.c.id == _as_uuid(trade_id))
+        )
+        trade_snapshot = trade_lookup.fetchone()
+        if trade_snapshot is None:
+            raise LookupError("trade_not_found")
+
+        buy_order_lookup = await conn.execute(
+            sa.select(orders_table).where(
+                orders_table.c.id == _as_uuid(_row_value(trade_snapshot, "buy_order_id"))
+            )
+        )
+        buy_order = buy_order_lookup.fetchone()
+        if buy_order is None:
+            raise LookupError("orders_not_found")
+
+        buyer_wallet = await get_wallet_by_user_id(conn, _row_value(buy_order, "user_id"))
+        if buyer_wallet is None:
+            raise LookupError("wallet_not_found")
+
+        await debit_wallet_balance(
+            conn,
+            wallet_row=buyer_wallet,
+            amount_sat=int(_row_value(trade_snapshot, "total_sat", 0)) + int(_row_value(trade_snapshot, "fee_sat", 0)),
+        )
+
         escrow_result = await conn.execute(
             sa.update(escrows_table)
             .where(escrows_table.c.trade_id == _as_uuid(trade_id))
@@ -1065,6 +1091,10 @@ async def process_escrow_signature(
     multisig_mode = str(updated_metadata.get("multisig_mode") or _row_value(escrow_row, "multisig_mode") or "standard")
 
     try:
+        seller_wallet = await get_wallet_by_user_id(conn, _row_value(sell_order, "user_id"))
+        if seller_wallet is None:
+            raise LookupError("wallet_not_found")
+
         escrow_result = await conn.execute(
             sa.update(escrows_table)
             .where(escrows_table.c.id == escrow_id)
@@ -1093,6 +1123,11 @@ async def process_escrow_signature(
         if trade_row is None:
             raise LookupError("trade_not_found")
 
+        await credit_wallet_balance(
+            conn,
+            wallet_row=seller_wallet,
+            amount_sat=int(_row_value(trade_row, "total_sat", 0)),
+        )
         await increment_token_balance(
             conn,
             user_id=_row_value(buy_order, "user_id"),
@@ -1309,12 +1344,21 @@ async def resolve_dispute(
         seller_id = _row_value(sell_order, "user_id")
         token_id = _row_value(trade_row, "token_id")
         quantity = int(_row_value(trade_row, "quantity", 0))
+        buyer_wallet = await get_wallet_by_user_id(conn, _row_value(buy_order, "user_id"))
+        seller_wallet = await get_wallet_by_user_id(conn, seller_id)
+        if buyer_wallet is None or seller_wallet is None:
+            raise LookupError("wallet_not_found")
         updated_metadata = _merge_settlement_metadata(
             _row_value(escrow_row, "settlement_metadata") or {},
             settlement_metadata,
         )
 
         if resolution == "release":
+            await credit_wallet_balance(
+                conn,
+                wallet_row=seller_wallet,
+                amount_sat=int(_row_value(trade_row, "total_sat", 0)),
+            )
             await increment_token_balance(
                 conn,
                 user_id=_row_value(buy_order, "user_id"),
@@ -1324,6 +1368,11 @@ async def resolve_dispute(
             new_escrow_status = "released"
             trade_status = "settled"
         else:
+            await credit_wallet_balance(
+                conn,
+                wallet_row=buyer_wallet,
+                amount_sat=int(_row_value(trade_row, "total_sat", 0)) + int(_row_value(trade_row, "fee_sat", 0)),
+            )
             await increment_token_balance(conn, user_id=seller_id, token_id=token_id, quantity=quantity)
             new_escrow_status = "refunded"
             trade_status = "cancelled"
