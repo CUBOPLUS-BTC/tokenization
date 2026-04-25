@@ -223,10 +223,18 @@ def _asset_not_found_error() -> ContractError:
     )
 
 
-def _asset_ownership_error() -> ContractError:
+def _asset_evaluation_admin_only_error() -> ContractError:
     return ContractError(
         code="forbidden",
-        message="Only the owning seller can evaluate this asset.",
+        message="Only admins can evaluate assets.",
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def _asset_tokenization_ownership_error() -> ContractError:
+    return ContractError(
+        code="forbidden",
+        message="Only the asset owner can tokenize this asset.",
         status_code=status.HTTP_403_FORBIDDEN,
     )
 
@@ -950,19 +958,17 @@ async def get_assets(
     "/assets/{asset_id}/evaluate",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=AssetEvaluationRequestResponse,
-    summary="Request AI evaluation for an owned asset",
+    summary="Request AI evaluation for an asset",
 )
 async def request_asset_evaluation(
     request: Request,
     asset_id: uuid.UUID,
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin", api_key_scopes=("tokenization:assets:create",))),
+    principal: AuthenticatedPrincipal = Depends(_require_roles("admin", api_key_scopes=("tokenization:assets:create",))),
 ):
     async with _runtime_engine().connect() as conn:
         asset_row = await get_asset_by_id(conn, asset_id)
         if asset_row is None:
             raise _asset_not_found_error()
-        if str(_row_value(asset_row, "owner_id")) != principal.id:
-            raise _asset_ownership_error()
 
         previous_status = _row_value(asset_row, "status")
         if previous_status == "evaluating":
@@ -973,7 +979,6 @@ async def request_asset_evaluation(
         queued_row = await begin_asset_evaluation(
             conn,
             asset_id=asset_id,
-            owner_id=principal.id,
         )
         if queued_row is not None:
             await record_audit_event(
@@ -1027,7 +1032,7 @@ async def tokenize_asset(
     request: Request,
     asset_id: uuid.UUID,
     body: AssetTokenizationRequest,
-    principal: AuthenticatedPrincipal = Depends(_require_roles("seller", "admin", api_key_scopes=("tokenization:assets:create",))),
+    principal: AuthenticatedPrincipal = Depends(_require_roles("user", "seller", "admin", api_key_scopes=("tokenization:assets:create",))),
 ):
     async with _runtime_engine().connect() as conn:
         asset_row = await get_asset_by_id(conn, asset_id)
@@ -1035,7 +1040,7 @@ async def tokenize_asset(
     if asset_row is None:
         raise _asset_not_found_error()
     if str(_row_value(asset_row, "owner_id")) != principal.id:
-        raise _asset_ownership_error()
+        raise _asset_tokenization_ownership_error()
 
     asset_status = _row_value(asset_row, "status")
     if _optional_row_value(asset_row, "token_id") is not None or asset_status == "tokenized":

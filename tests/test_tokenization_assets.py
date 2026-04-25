@@ -638,10 +638,10 @@ class TestGetAssetDetails:
 
 
 class TestRequestAssetEvaluation:
-    def test_owner_can_request_asset_evaluation(self, client):
+    def test_admin_can_request_asset_evaluation_for_any_asset(self, client):
         app_client, settings = client
-        fake_user = _make_fake_user(role="seller")
-        pending_asset = _make_fake_asset(fake_user.id, status="pending")
+        fake_user = _make_fake_user(role="admin")
+        pending_asset = _make_fake_asset(uuid.uuid4(), status="pending")
         queued_asset = pending_asset._replace(status="evaluating")
         access_token = _issue_access_token(fake_user, settings.jwt_secret)
 
@@ -667,22 +667,20 @@ class TestRequestAssetEvaluation:
         begin_evaluation_mock.assert_awaited_once()
         assert begin_evaluation_mock.await_args.kwargs == {
             "asset_id": pending_asset.id,
-            "owner_id": str(fake_user.id),
         }
         dispatch_mock.assert_called_once_with(
             pending_asset.id,
             fallback_status="pending",
         )
 
-    def test_non_owner_cannot_request_asset_evaluation(self, client):
+    def test_seller_cannot_request_asset_evaluation(self, client):
         app_client, settings = client
         fake_user = _make_fake_user(role="seller")
-        other_owner_asset = _make_fake_asset(uuid.uuid4(), status="pending")
+        other_owner_asset = _make_fake_asset(fake_user.id, status="pending")
         access_token = _issue_access_token(fake_user, settings.jwt_secret)
 
         with (
             patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
-            patch("services.tokenization.main.get_asset_by_id", AsyncMock(return_value=other_owner_asset)),
             patch("services.tokenization.main.begin_asset_evaluation", AsyncMock()),
         ):
             resp = app_client.post(
@@ -693,7 +691,7 @@ class TestRequestAssetEvaluation:
         assert resp.status_code == 403
         assert resp.json()["error"] == {
             "code": "forbidden",
-            "message": "Only the owning seller can evaluate this asset.",
+            "message": "Only admins can evaluate assets.",
         }
 
 
