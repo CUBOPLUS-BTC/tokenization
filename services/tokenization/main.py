@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
+import re
 import sys
 from typing import Any
 import uuid
@@ -392,6 +393,15 @@ def _asset_document_out(row: object) -> AssetDocumentOut | None:
         content_type=str(_optional_row_value(row, "documents_content_type") or "application/pdf"),
         size_bytes=int(_optional_row_value(row, "documents_size_bytes") or 0),
     )
+
+
+def _build_token_ticker(asset_name: object) -> str:
+    words = re.findall(r"[A-Za-z0-9]+", str(asset_name or ""))
+    ticker = "".join(word[0] for word in words if word).upper()[:10]
+    if ticker:
+        return ticker
+    compact = re.sub(r"[^A-Za-z0-9]+", "", str(asset_name or "")).upper()[:10]
+    return compact or "TKN"
 
 
 def _asset_out(row: object) -> AssetOut:
@@ -1099,6 +1109,7 @@ async def tokenize_asset(
                 conn,
                 asset_id=asset_id,
                 owner_id=principal.id,
+                ticker=_build_token_ticker(_row_value(asset_row, "name")),
                 liquid_asset_id=liquid_asset_id,
                 total_supply=issued_supply,
                 circulating_supply=issued_supply,

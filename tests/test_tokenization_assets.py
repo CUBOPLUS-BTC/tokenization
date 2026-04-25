@@ -767,6 +767,7 @@ class TestTokenizeAsset:
         assert create_asset_token_mock.await_args.kwargs["circulating_supply"] == 1_000
         assert create_asset_token_mock.await_args.kwargs["unit_price_sat"] == 100_000
         assert create_asset_token_mock.await_args.kwargs["visibility"] == "public"
+        assert create_asset_token_mock.await_args.kwargs["ticker"] == "DOB"
         issuance_metadata = create_asset_token_mock.await_args.kwargs["issuance_metadata"]
         assert issuance_metadata["backend"] == "liquid"
         assert issuance_metadata["asset_id"] == liquid_asset_id
