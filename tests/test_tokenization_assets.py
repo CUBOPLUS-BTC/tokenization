@@ -1126,6 +1126,35 @@ class TestListAssets:
             "category": "art",
         }
 
+    def test_asset_catalog_includes_token_details_for_tokenized_assets(self, client):
+        app_client, settings = client
+        fake_user = _make_fake_user(role="user")
+        access_token = _issue_access_token(fake_user, settings.jwt_secret)
+        tokenized_asset = _make_fake_asset(fake_user.id, status="tokenized", tokenized=True)
+
+        with (
+            patch("services.tokenization.main.get_user_by_id", AsyncMock(return_value=fake_user)),
+            patch("services.tokenization.main.list_assets", AsyncMock(return_value=[tokenized_asset])),
+        ):
+            resp = app_client.get(
+                "/assets?status=tokenized",
+                headers=_auth_headers(access_token),
+            )
+
+        assert resp.status_code == 200
+        asset = resp.json()["assets"][0]
+        assert asset["status"] == "tokenized"
+        assert asset["token"] == {
+            "id": str(tokenized_asset.token_id),
+            "liquid_asset_id": tokenized_asset.liquid_asset_id,
+            "total_supply": tokenized_asset.total_supply,
+            "circulating_supply": tokenized_asset.circulating_supply,
+            "unit_price_sat": tokenized_asset.unit_price_sat,
+            "visibility": "public",
+            "issuance_metadata": tokenized_asset.token_metadata,
+            "minted_at": tokenized_asset.minted_at.isoformat().replace("+00:00", "Z"),
+        }
+
     def test_asset_catalog_supports_cursor_pagination(self, client):
         app_client, settings = client
         fake_user = _make_fake_user(role="user")

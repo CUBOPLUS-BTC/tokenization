@@ -959,7 +959,7 @@ async def get_assets(
 
     page, next_cursor = _build_asset_page(rows, cursor=cursor, limit=limit)
     return AssetListResponse(
-        assets=[_asset_out(row) for row in page],
+        assets=[_asset_detail_out(row) for row in page],
         next_cursor=next_cursor,
     ).model_dump(mode="json")
 

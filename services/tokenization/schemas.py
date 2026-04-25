@@ -106,7 +106,7 @@ class AssetDetailResponse(BaseModel):
 
 
 class AssetListResponse(BaseModel):
-    assets: list[AssetOut]
+    assets: list[AssetDetailOut]
     next_cursor: str | None
 
 
